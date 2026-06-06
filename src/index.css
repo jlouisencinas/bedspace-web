@@ -75,6 +75,27 @@ a { text-decoration: none; color: inherit; }
 }
 .nav-link:hover  { color: #fff; background: rgba(255,255,255,.10); }
 .nav-link.active { color: #fff; background: rgba(255,255,255,.18); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+
+/* Topbar user / role / sign-out */
+.topbar-user { display: flex; align-items: center; gap: 10px; margin-left: auto; padding: 8px 0; }
+.role-badge {
+  font-size: 10px; font-weight: 800; letter-spacing: .4px; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px; border: 1px solid rgba(255,255,255,.25);
+}
+.role-badge.admin { background: #fef3c7; color: #92400e; border-color: transparent; }
+.role-badge.owner { background: rgba(255,255,255,.16); color: #fff; }
+.topbar-email {
+  font-size: 12px; color: rgba(255,255,255,.82); max-width: 180px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.btn-signout {
+  background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.22); color: #fff;
+  border-radius: 9px; padding: 7px 13px; font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: .15s ease; white-space: nowrap;
+}
+.btn-signout:hover { background: rgba(255,255,255,.22); }
+@media (max-width: 640px) { .topbar-email { display: none; } }
+
 .topbar-right { margin-left: auto; }
 .btn-refresh {
   background: rgba(255,255,255,.12);

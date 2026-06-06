@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { fetchMonthlyReports, fetchCutoffs, saveManualReport, deleteMonthlyReport } from '../lib/supabase'
 import { buildAndSaveSnapshot } from '../lib/snapshot'
 import { useToast } from '../components/Toast'
+import { useAuth } from '../lib/auth'
 
 const peso = n => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -32,6 +33,7 @@ export default function Reports() {
   const [quarter, setQuarter] = useState(null)
   const [editRow, setEditRow] = useState(undefined)   // undefined = closed, null = new, obj = edit
   const { show, ToastEl } = useToast()
+  const { isAdmin } = useAuth()
 
   async function load() {
     setLoading(true)
@@ -83,10 +85,12 @@ export default function Reports() {
           {quarters.map(q => { const [y, n] = q.split('-Q'); return <option key={q} value={q}>{`Q${n} ${y}`}</option> })}
         </select>
         <span className="pager-info">{reports.length} month(s) saved</span>
-        <button className="btn secondary" style={{ marginLeft: 'auto' }} onClick={() => setEditRow(null)}>+ Manual month</button>
-        <button className="btn primary" disabled={busy} onClick={snapshotNow}>
-          {busy ? 'Saving…' : '📸 Snapshot current month'}
-        </button>
+        {isAdmin && <>
+          <button className="btn secondary" style={{ marginLeft: 'auto' }} onClick={() => setEditRow(null)}>+ Manual month</button>
+          <button className="btn primary" disabled={busy} onClick={snapshotNow}>
+            {busy ? 'Saving…' : '📸 Snapshot current month'}
+          </button>
+        </>}
       </div>
 
       {reports.length === 0 ? (
@@ -135,8 +139,8 @@ export default function Reports() {
         </div>
       )}
 
-      {/* Manage snapshots (edit / delete / backfill) */}
-      {reports.length > 0 && (
+      {/* Manage snapshots (edit / delete / backfill) — admin only */}
+      {isAdmin && reports.length > 0 && (
         <div className="card" style={{ marginTop: 16, padding: '12px 16px' }}>
           <div className="card-header" style={{ padding: 0, border: 'none', marginBottom: 8 }}>All saved months</div>
           {[...reports].sort((a, b) => a.period_date.localeCompare(b.period_date)).map(r => (
