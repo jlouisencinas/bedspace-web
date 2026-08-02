@@ -18,3 +18,8 @@ npm-debug.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Claude Code
+.claude/
+.agents/
+skills-lock.json
