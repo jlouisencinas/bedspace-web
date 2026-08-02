@@ -50,11 +50,21 @@ export function splitRoomUtility(points, tenants, rate, startNum, endNum) {
 
     const dAmt = segAmt / days
     const dCons = segCons / days
+    // Tenants who overlap this segment at all (moveIn ≤ segEnd−1 AND moveOut ≥ segStart).
+    // Used as fallback for days where no tenant is individually "present" (e.g. gap
+    // between a move-out and the next move-in). This ensures no consumption goes
+    // unbilled as long as the segment has at least one occupant.
+    const segOccupants = tenants.filter(t => {
+      const inD  = t.moveInNum  == null ? -Infinity : t.moveInNum
+      const outD = t.moveOutNum == null ? endNum - 1 : t.moveOutNum
+      return inD <= segEndExcl - 1 && outD >= segStart
+    })
     for (let d = segStart; d < segEndExcl; d++) {
       const here = tenants.filter(t => present(t, d, endNum))
-      if (here.length === 0) { unbilled += dAmt; continue }
-      const sA = dAmt / here.length, sC = dCons / here.length
-      here.forEach(t => { amt[t.id] += sA; cons[t.id] += sC })
+      const effective = here.length > 0 ? here : segOccupants
+      if (effective.length === 0) { unbilled += dAmt; continue }
+      const sA = dAmt / effective.length, sC = dCons / effective.length
+      effective.forEach(t => { amt[t.id] += sA; cons[t.id] += sC })
     }
   }
   return { amt, cons, roomCons, roomAmt, unbilled }
@@ -88,7 +98,7 @@ function splitByWeights(points, roomTenants, rate, weightById) {
   return { amt, cons, roomCons, roomAmt, unbilled: roomAmt - used }
 }
 
-export function computeBilling(cutoff, billRows, interims, tenants, splits = [], addons = [], areaReadings = []) {
+export function computeBilling(cutoff, billRows, interims, tenants, splits = [], addons = [], areaReadings = [], transfers = []) {
   // Custom splits indexed by room|utility → { tenant_id: weight_pct }
   const splitMap = {}
   splits.forEach(s => {
@@ -100,12 +110,20 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
     return w ? splitByWeights(points, roomTenants, rate, w)
              : splitRoomUtility(points, roomTenants, rate, sNum, eNum)
   }
-  const wStart = dayNum(cutoff.water_start),    wEnd = dayNum(cutoff.water_end)
-  const eStart = dayNum(cutoff.electric_start), eEnd = dayNum(cutoff.electric_end)
+  // For open (active) periods where water_end / electric_end is not yet set, fall back
+  // to tomorrow so overlaps() and splitRoomUtility() work correctly. Without a finite
+  // end, overlaps() evaluates `moveInNum <= null - 1 = -1` and drops every tenant.
+  const tomorrowNum = Math.floor(Date.now() / MS_DAY) + 1
+  const wStart = dayNum(cutoff.water_start),    wEnd = dayNum(cutoff.water_end)    ?? tomorrowNum
+  const eStart = dayNum(cutoff.electric_start), eEnd = dayNum(cutoff.electric_end) ?? tomorrowNum
 
-  // Index tenants by room with day-numbers
+  // Index tenants by room with day-numbers.
+  // Only active tenants appear in billing — settled/moved-out tenants still hold
+  // their old bed_id FK after move-out, which would otherwise pull them into the
+  // wrong billing period. Their billing is handled at the time of move-out.
   const tByRoom = {}
   tenants.forEach(t => {
+    if (!t.is_active) return
     const roomId = t.beds?.room_id
     if (!roomId) return
     const moveIn  = t.move_in_date
@@ -117,6 +135,33 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
       moveOutNum: dayNum(moveOut),  // null = still active
     }
     ;(tByRoom[roomId] ||= []).push(rec)
+  })
+
+  // Transfer-aware: when a tenant moved rooms within this billing window, split their
+  // presence across old and new room so each room's water/electric billing sees them.
+  transfers.forEach(xfer => {
+    const xDate = dayNum(xfer.transfer_date)
+    if (!xDate || xDate <= wStart || xDate >= wEnd) return
+
+    // In new room: tenant starts from transfer date, not original move-in
+    const newRecs = tByRoom[xfer.to_room_id] || []
+    const newRec  = newRecs.find(r => r.id === xfer.tenant_id)
+    if (newRec) newRec.moveInNum = xDate
+
+    // In old room: tenant was present up to (and including) day before transfer
+    const alreadyInOld = (tByRoom[xfer.from_room_id] || []).some(r => r.id === xfer.tenant_id)
+    if (!alreadyInOld) {
+      ;(tByRoom[xfer.from_room_id] ||= []).push({
+        id:         xfer.tenant_id,
+        name:       newRec?.name || '',
+        rate:       num(xfer.old_rate),
+        is_active:  false,
+        bed:        '',
+        moveInNum:  null,       // present from period start (or their move-in date)
+        moveOutNum: xDate - 1,  // last day in old room
+        _isTransfer: true,
+      })
+    }
   })
 
   // Interim readings grouped by room+utility
@@ -143,9 +188,48 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
 
   const perRoom = []
   const tenantAcc = {}  // id → { water, waterCons, elec, elecCons }
-  const ensure = (t) => (tenantAcc[t.id] ||= {
-    id: t.id, name: t.name, bed: t.bed, room_id: null, room_no: null, room_type: null,
-    rent: 0, water: 0, waterCons: 0, elec: 0, elecCons: 0, settled: !t.is_active,
+
+  // Real-tenant lookup so _isTransfer virtual entries don't corrupt name/bed/settled
+  const tenantById = {}
+  tenants.forEach(t => { tenantById[t.id] = t })
+
+  const ensure = (t) => {
+    if (tenantAcc[t.id]) return tenantAcc[t.id]
+    const real = tenantById[t.id]
+    return (tenantAcc[t.id] = {
+      id: t.id,
+      name:  real?.name             || t.name,
+      bed:   real?.beds?.bed_letter || t.bed,
+      room_id: null, room_no: null, room_type: null,
+      rent: 0, water: 0, waterCons: 0, elec: 0, elecCons: 0,
+      oldWater: 0, oldWaterCons: 0, oldElec: 0, oldElecCons: 0,
+      waterPrev: null, waterCurr: null, elecPrev: null, elecCurr: null,
+      fromRoomNo: null,
+      transferred: false,
+      wholeRoom:   false,
+      settled: real ? !real.is_active : !t.is_active,
+    })
+  }
+
+  // ── Whole-room rental detection ─────────────────────────────────────────────
+  // If every currently-active occupant in a room shares the same name they are
+  // one person renting the entire room. Collapse to a single billing row so the
+  // full room utility and combined rent appear on one line.
+  const wholeRoomRates = {}  // roomId → { tenantId, combinedRate }
+  Object.keys(tByRoom).forEach(roomIdStr => {
+    const roomId = Number(roomIdStr)
+    const recs   = tByRoom[roomId]
+    const active = recs.filter(r => !r._isTransfer && r.moveOutNum == null)
+    if (active.length < 2) return
+    const uniq = new Set(active.map(r => (tenantById[r.id]?.name || '').trim().toLowerCase()))
+    if (uniq.size !== 1) return  // different names → normal per-bed billing
+    const primary = active[0]
+    wholeRoomRates[roomId] = {
+      tenantId:     primary.id,
+      combinedRate: active.reduce((s, r) => s + num(tenantById[r.id]?.rate), 0),
+    }
+    // Remove all but the primary so utility split gives them 100% of the room
+    tByRoom[roomId] = recs.filter(r => r.id === primary.id || r._isTransfer)
   })
 
   billRows.forEach(br => {
@@ -161,8 +245,10 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
     const ePts = buildPoints(br.room_id, 'ELECTRIC', eStart, eEnd, num(br.elec_prev), num(br.elec_curr))
     const eRes = distribute(ePts, et, num(br.elec_rate), eStart, eEnd, br.room_id, 'ELECTRIC')
 
-    wt.forEach(t => { const a = ensure(t); a.room_id = br.room_id; a.room_no = br.room_no; a.room_type = br.room_type; a.water += wRes.amt[t.id]; a.waterCons += wRes.cons[t.id] })
-    et.forEach(t => { const a = ensure(t); a.room_id = br.room_id; a.room_no = br.room_no; a.room_type = br.room_type; a.elec  += eRes.amt[t.id]; a.elecCons += eRes.cons[t.id] })
+    // Skip room-info update for _isTransfer virtual entries so they don't overwrite the
+    // tenant's current (new) room — room info is corrected in the post-process below.
+    wt.forEach(t => { const a = ensure(t); if (!t._isTransfer) { a.room_id = br.room_id; a.room_no = br.room_no; a.room_type = br.room_type; a.waterPrev = br.water_prev; a.waterCurr = br.water_curr } a.water += wRes.amt[t.id]; a.waterCons += wRes.cons[t.id]; if (t._isTransfer) { a.oldWater += wRes.amt[t.id]; a.oldWaterCons += wRes.cons[t.id] } })
+    et.forEach(t => { const a = ensure(t); if (!t._isTransfer) { a.room_id = br.room_id; a.room_no = br.room_no; a.room_type = br.room_type; a.elecPrev = br.elec_prev; a.elecCurr = br.elec_curr } a.elec  += eRes.amt[t.id]; a.elecCons += eRes.cons[t.id]; if (t._isTransfer) { a.oldElec += eRes.amt[t.id]; a.oldElecCons += eRes.cons[t.id] } })
 
     const wSum = wt.reduce((s, t) => s + wRes.amt[t.id], 0)
     const eSum = et.reduce((s, t) => s + eRes.amt[t.id], 0)
@@ -173,12 +259,85 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
     })
   })
 
-  // Rent for BED tenants (still active at month-end). Moved-out → 0.
+  // Ensure transferred tenants display under their current (new) room, not the old one.
+  // Also override meter readings so billing shows the old-room context (period-start reading
+  // → transfer reading) — matching exactly what was entered in the transfer modal.
+  transfers.forEach(xfer => {
+    const a = tenantAcc[xfer.tenant_id]
+    if (!a) return
+    const real = tenantById[xfer.tenant_id]
+    if (!real?.beds?.room_id) return
+
+    // ── Room: pin to new room ──────────────────────────────────────────────────
+    const newBill = billRows.find(b => b.room_id === real.beds.room_id)
+    if (newBill) {
+      a.room_id   = newBill.room_id
+      a.room_no   = newBill.room_no
+      a.room_type = newBill.room_type
+    } else if (!a.room_id) {
+      a.room_id   = real.beds.room_id
+      a.room_no   = real.beds.rooms?.room_no   ?? '?'
+      a.room_type = real.beds.rooms?.room_type ?? ''
+    }
+
+    // ── Readings: show old-room period-start → transfer reading ───────────────
+    // This makes the meter reading the user entered in the transfer modal visible
+    // in billing. Water (m³) and Elec (kWh) amounts already include both the old
+    // and new room portions; the readings here represent the old-room segment.
+    const fromBill = billRows.find(b => b.room_id === xfer.from_room_id)
+    if (fromBill) {
+      a.fromRoomNo = fromBill.room_no
+      if (xfer.water_reading    != null) { a.waterPrev = fromBill.water_prev; a.waterCurr = xfer.water_reading }
+      if (xfer.electric_reading != null) { a.elecPrev  = fromBill.elec_prev;  a.elecCurr  = xfer.electric_reading }
+    }
+
+    a.transferred = true   // flag for UI badge
+  })
+
+  // Rent: prorated for mid-period move-ins; transfer splits rent across old+new room.
+  // Moved-out tenants → 0 (they settle on move-out).
   Object.values(tenantAcc).forEach(a => {
     const t = tenants.find(x => x.id === a.id)
-    const moveOut = t && (t.actual_move_out_date || t.move_out_date)
-    const stillActive = t && t.is_active && (!moveOut || dayNum(moveOut) >= wEnd - 1)
-    a.rent = stillActive ? num(t.rate) : 0
+    if (!t) return
+
+    const moveOut = t.actual_move_out_date || t.move_out_date
+    const movedOut = !t.is_active || (moveOut && dayNum(moveOut) < wEnd - 1)
+    if (movedOut) { a.rent = 0; return }
+
+    const periodDays = wEnd - wStart
+
+    // Transferred within this billing window: split rent at old rate + new rate
+    const xfer = transfers.find(x =>
+      x.tenant_id === a.id &&
+      dayNum(x.transfer_date) > wStart &&
+      dayNum(x.transfer_date) < wEnd
+    )
+    if (xfer) {
+      const xDate  = dayNum(xfer.transfer_date)
+      const moveIn = dayNum(t.move_in_date)
+      // Days in old room (from period start or their move-in, to day before transfer)
+      const oldStart = Math.max(moveIn ?? wStart, wStart)
+      const oldDays  = Math.max(0, xDate - oldStart)
+      // Days in new room (from transfer day to period end)
+      const newDays  = Math.max(0, wEnd - xDate)
+      a.rent = num(xfer.old_rate) * (oldDays / periodDays)
+             + num(xfer.new_rate || t.rate) * (newDays / periodDays)
+      return
+    }
+
+    // Whole-room rental: use the combined rate of all same-name beds
+    const wr = wholeRoomRates[a.room_id]
+    const effectiveRate = (wr && wr.tenantId === a.id) ? wr.combinedRate : num(t.rate)
+    if (wr && wr.tenantId === a.id) a.wholeRoom = true
+
+    // Mid-period move-in: prorate by days present
+    const moveIn = dayNum(t.move_in_date)
+    if (moveIn != null && moveIn > wStart) {
+      const daysPresent = Math.max(0, wEnd - moveIn)
+      a.rent = effectiveRate * (daysPresent / periodDays)
+    } else {
+      a.rent = effectiveRate
+    }
   })
 
   // ── Special / non-bed tenants (commercial, parking-only) ───────────────────

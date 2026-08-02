@@ -1,66 +1,132 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/auth'
+import BrandIcon from '../components/BrandIcon'
+import { BedDouble, CreditCard, Zap, Users } from 'lucide-react'
 
 export default function Login() {
   const { signIn } = useAuth()
-  const [email, setEmail] = useState('')
+  const [email,    setEmail]    = useState('')
   const [password, setPassword] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState('')
+  const [busy,     setBusy]     = useState(false)
+  const [err,      setErr]      = useState('')
 
   async function submit(e) {
     e.preventDefault()
     setErr(''); setBusy(true)
     const { error } = await signIn(email.trim(), password)
     if (error) { setErr(error.message); setBusy(false) }
-    // on success the AuthProvider session listener swaps the screen automatically
   }
 
   return (
-    <div style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      minHeight: '100vh', background: '#F0F4F8', padding: 24,
-    }}>
-      <form onSubmit={submit} style={{
-        background: '#fff', borderRadius: 14, padding: 32, maxWidth: 380, width: '100%',
-        boxShadow: '0 8px 30px rgba(15,23,42,.12)', borderTop: '4px solid #1B3A8C',
-      }}>
-        <div style={{ textAlign: 'center', marginBottom: 20 }}>
-          <img src="/bedspace-logo.png" alt="Bedspace" style={{ height: 46, marginBottom: 10 }}
-               onError={e => { e.currentTarget.style.display = 'none' }} />
-          <h2 style={{ fontSize: 19, fontWeight: 800, color: '#0F172A', margin: 0 }}>Bedspace Manager</h2>
-          <p style={{ color: '#64748B', fontSize: 13, margin: '4px 0 0' }}>Sign in to continue</p>
+    <div className="min-h-screen flex bg-slate-50">
+      {/* ── Left branding panel ── */}
+      <div className="hidden lg:flex w-[420px] shrink-0 flex-col justify-between p-10"
+           style={{ background: 'linear-gradient(160deg, #1C1714 0%, #292420 60%, #3a3028 100%)' }}>
+        <div className="flex items-center gap-3">
+          <BrandIcon size={36} className="text-white/90" />
+          <span className="text-white font-bold text-[16px] tracking-tight">Bedspace Manager</span>
         </div>
 
-        <label style={lbl}>Email</label>
-        <input style={inp} type="email" value={email} autoComplete="username"
-               onChange={e => setEmail(e.target.value)} required />
+        <div>
+          <h1 className="text-white text-[32px] font-bold leading-snug mb-4">
+            Manage your<br />property with ease
+          </h1>
+          <p className="text-white/60 text-[14px] leading-relaxed max-w-xs">
+            Track bed occupancy, utilities, billing, and tenant details — all in one place.
+          </p>
 
-        <label style={lbl}>Password</label>
-        <input style={inp} type="password" value={password} autoComplete="current-password"
-               onChange={e => setPassword(e.target.value)} required />
+          {/* Feature pills */}
+          <div className="mt-8 flex flex-col gap-3">
+            {[
+              [BedDouble,   'Live bed map & occupancy tracking'],
+              [CreditCard,  'Automated billing & payment logs'],
+              [Zap,         'Utility split calculations'],
+              [Users,       'Multi-role team access'],
+            ].map(([Icon, text]) => (
+              <div key={text} className="flex items-center gap-3 text-white/70 text-[13px]">
+                <Icon size={15} className="shrink-0 text-white/50" />
+                {text}
+              </div>
+            ))}
+          </div>
+        </div>
 
-        {err && <div style={{
-          background: '#FEF2F2', color: '#B91C1C', fontSize: 13, borderRadius: 8,
-          padding: '8px 12px', margin: '4px 0 12px',
-        }}>{err}</div>}
-
-        <button type="submit" disabled={busy} style={{
-          width: '100%', background: '#1B3A8C', color: '#fff', border: 'none',
-          borderRadius: 8, padding: '11px 0', fontSize: 15, fontWeight: 700,
-          cursor: busy ? 'default' : 'pointer', opacity: busy ? .7 : 1, marginTop: 4,
-        }}>{busy ? 'Signing in…' : 'Sign in'}</button>
-
-        <p style={{ color: '#94A3B8', fontSize: 11, textAlign: 'center', marginTop: 16 }}>
-          Accounts are created by the administrator.
+        <p className="text-white/30 text-[11px]">
+          © {new Date().getFullYear()} LKL Reports — All rights reserved
         </p>
-      </form>
+      </div>
+
+      {/* ── Right form panel ── */}
+      <div className="flex-1 flex items-center justify-center p-6">
+        <div className="w-full max-w-[360px]">
+          {/* Mobile brand */}
+          <div className="lg:hidden flex items-center gap-2.5 mb-8">
+            <BrandIcon size={32} className="text-navy-500 shrink-0" />
+            <span className="font-bold text-slate-900 text-[16px]">Bedspace Manager</span>
+          </div>
+
+          <h2 className="text-[24px] font-bold text-slate-900 mb-1">Welcome back</h2>
+          <p className="text-slate-500 text-sm mb-7">Sign in to your account to continue.</p>
+
+          <form onSubmit={submit} className="space-y-4">
+            <div>
+              <label className="block text-[12px] font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">
+                Email address
+              </label>
+              <input
+                type="email"
+                autoComplete="username"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                required
+                placeholder="you@example.com"
+                className="w-full px-3.5 py-2.5 text-[14px] text-slate-900 bg-white border border-slate-200 rounded-xl
+                           placeholder:text-slate-400
+                           focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600
+                           transition-all"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[12px] font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">
+                Password
+              </label>
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                required
+                placeholder="••••••••"
+                className="w-full px-3.5 py-2.5 text-[14px] text-slate-900 bg-white border border-slate-200 rounded-xl
+                           placeholder:text-slate-400
+                           focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600
+                           transition-all"
+              />
+            </div>
+
+            {err && (
+              <div className="bg-red-50 text-red-700 text-[13px] rounded-xl px-4 py-3 border border-red-100">
+                {err}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={busy}
+              className="w-full py-2.5 bg-navy-500 hover:bg-navy-600 text-navy-950 font-semibold text-[14px]
+                         rounded-xl transition-all duration-150 active:scale-[0.98]
+                         disabled:opacity-60 disabled:cursor-not-allowed mt-1 shadow-sm"
+            >
+              {busy ? 'Signing in…' : 'Sign in'}
+            </button>
+          </form>
+
+          <p className="text-slate-400 text-[12px] text-center mt-6">
+            Accounts are created by the administrator.
+          </p>
+        </div>
+      </div>
     </div>
   )
-}
-
-const lbl = { display: 'block', fontSize: 12, fontWeight: 600, color: '#334155', margin: '10px 0 4px' }
-const inp = {
-  width: '100%', boxSizing: 'border-box', border: '1px solid #CBD5E1', borderRadius: 8,
-  padding: '10px 12px', fontSize: 14, outline: 'none',
 }

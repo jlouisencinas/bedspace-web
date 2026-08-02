@@ -1,30 +1,35 @@
 import { useState, useEffect, useMemo } from 'react'
 import {
   fetchCutoffs, fetchUtilityBill, fetchTenants,
-  fetchInterimReadings, addInterimReading, deleteInterimReading,
+  fetchInterimReadings, deleteInterimReading,
   fetchSplits, setRoomSplit, fetchAddons, saveAddon, deleteAddon, fetchAreaReadings,
+  fetchTransfersForCutoff,
 } from '../lib/supabase'
 import { computeBilling } from '../lib/billing'
+import { cacheBilling } from '../lib/billingCache'
 import { useToast } from '../components/Toast'
 import { Link } from 'react-router-dom'
+import { Printer, Droplets, Zap, Settings2, PlusCircle, Receipt, X } from 'lucide-react'
 
 const peso = n => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const m3   = n => Number(n || 0).toLocaleString('en-PH', { maximumFractionDigits: 2 })
 
 export default function Billing() {
-  const [cutoffs,  setCutoffs]  = useState([])
-  const [cutoffId, setCutoffId] = useState(null)
-  const [bill,     setBill]     = useState([])
-  const [interims, setInterims] = useState([])
-  const [tenants,  setTenants]  = useState([])
-  const [loading,  setLoading]  = useState(true)
-  const [view,     setView]     = useState('tenants')   // tenants | rooms
-  const [showRec,  setShowRec]  = useState(false)
-  const [splits,   setSplits]   = useState([])
-  const [splitRoom, setSplitRoom] = useState(null)      // room object for split editor
-  const [addons,   setAddons]   = useState([])
-  const [areas,    setAreas]    = useState([])
-  const [addonTenant, setAddonTenant] = useState(null)  // tenant row for add-on editor
+  const [cutoffs,     setCutoffs]     = useState([])
+  const [cutoffId,    setCutoffId]    = useState(null)
+  const [bill,        setBill]        = useState([])
+  const [interims,    setInterims]    = useState([])
+  const [tenants,     setTenants]     = useState([])
+  const [loading,     setLoading]     = useState(true)
+  const [view,        setView]        = useState('tenants')
+  const [billCat,     setBillCat]     = useState('RENT_WATER')
+
+  const [splits,      setSplits]      = useState([])
+  const [splitRoom,   setSplitRoom]   = useState(null)
+  const [addons,      setAddons]      = useState([])
+  const [areas,       setAreas]       = useState([])
+  const [transfers,   setTransfers]   = useState([])
+  const [addonTenant, setAddonTenant] = useState(null)
   const { show, ToastEl } = useToast()
 
   const cutoff = cutoffs.find(c => c.id === cutoffId)
@@ -33,19 +38,28 @@ export default function Billing() {
     fetchCutoffs().then(cs => {
       setCutoffs(cs)
       const active = cs.find(c => c.is_active) || cs[0]
-      if (active) setCutoffId(active.id); else setLoading(false)
+      // Pass the active cutoff ID AND the fresh list into load() so there is no
+      // stale-closure window between setCutoffs and the [cutoffId] effect firing.
+      if (active) { setCutoffId(active.id); load(active.id) }
+      else setLoading(false)
     }).catch(e => { show(e.message, 'error'); setLoading(false) })
   }, [])
 
-  async function load() {
-    if (!cutoffId) return
+  async function load(overrideCutoffId) {
+    const id = overrideCutoffId ?? cutoffId
+    if (!id) return
     setLoading(true)
     try {
-      const [b, ir, t, sp, ad, ar] = await Promise.all([
-        fetchUtilityBill(cutoffId), fetchInterimReadings(cutoffId), fetchTenants(),
-        fetchSplits(cutoffId), fetchAddons(cutoffId), fetchAreaReadings(cutoffId),
+      // Re-fetch cutoff directly to avoid stale closure over `cutoffs` state
+      const freshCutoffs = await fetchCutoffs()
+      const cutoffObj = freshCutoffs.find(c => c.id === id)
+      const [b, ir, t, sp, ad, ar, xf] = await Promise.all([
+        fetchUtilityBill(id), fetchInterimReadings(id), fetchTenants(),
+        fetchSplits(id), fetchAddons(id), fetchAreaReadings(id),
+        cutoffObj ? fetchTransfersForCutoff(cutoffObj) : Promise.resolve([]),
       ])
-      setBill(b); setInterims(ir); setTenants(t); setSplits(sp); setAddons(ad); setAreas(ar)
+      setCutoffs(freshCutoffs)
+      setBill(b); setInterims(ir); setTenants(t); setSplits(sp); setAddons(ad); setAreas(ar); setTransfers(xf)
     } catch (e) { show(e.message, 'error') }
     setLoading(false)
   }
@@ -53,10 +67,11 @@ export default function Billing() {
 
   const { perRoom, perTenant } = useMemo(() => {
     if (!cutoff || !bill.length) return { perRoom: [], perTenant: [] }
-    return computeBilling(cutoff, bill, interims, tenants, splits, addons, areas)
-  }, [cutoff, bill, interims, tenants, splits, addons, areas])
+    const result = computeBilling(cutoff, bill, interims, tenants, splits, addons, areas, transfers)
+    cacheBilling(cutoff.id, result.perTenant)
+    return result
+  }, [cutoff, bill, interims, tenants, splits, addons, areas, transfers])
 
-  // Which (room|utility) have a custom split, for the badge
   const splitFlags = useMemo(() => {
     const s = new Set(); splits.forEach(x => s.add(`${x.room_id}|${x.utility}`)); return s
   }, [splits])
@@ -67,136 +82,242 @@ export default function Billing() {
   }), { rent: 0, water: 0, elec: 0, addons: 0, total: 0 }), [perTenant])
 
   if (loading && !cutoffs.length) return (
-    <div className="loading-screen"><div className="spinner" />
-      <span style={{ color: '#1B3A8C', fontWeight: 600 }}>Loading…</span></div>
+    <div className="loading-screen"><div className="spinner" /></div>
   )
   if (!cutoffs.length) return (
-    <div className="page"><div className="page-title">Billing</div>
-      <div className="card"><div className="empty"><div className="empty-icon">🧾</div>
-        <p>No cutoffs yet. Open one in the Utilities tab first.</p></div></div></div>
+    <div className="page">
+      <div className="page-title">Billing</div>
+      <div className="card"><div className="empty"><Receipt size={32} className="mx-auto mb-3 text-slate-300" />
+        <p>No cutoffs yet. Open one in the Utilities tab first.</p>
+      </div></div>
+    </div>
   )
 
   return (
-    <div className="page" style={{ maxWidth: 1200 }}>
-      <div className="page-title">Billing <small>Per-tenant rent &amp; utilities</small></div>
+    <div className="page">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Billing <small>Per-tenant rent &amp; utilities</small></h1>
+          {cutoff && (
+            <p className="page-sub text-[11px] flex items-center gap-1.5 flex-wrap">
+              <Droplets size={11} className="text-blue-500 shrink-0" /> Water: {cutoff.water_start} → {cutoff.water_end} &nbsp;·&nbsp;
+              <Zap size={11} className="text-amber-500 shrink-0" /> Electric: {cutoff.electric_start} → {cutoff.electric_end}
+              {interims.length > 0 && <> &nbsp;·&nbsp; {interims.length} move-out reading(s)</>}
+              {splitFlags.size > 0 && <> &nbsp;·&nbsp; <span className="text-navy-500 font-semibold">⚙ custom split</span> on {splitFlags.size} room-utility(ies)</>}
+            </p>
+          )}
+        </div>
+        <div className="flex gap-2 flex-wrap items-center">
+          {cutoffId && (
+            <Link className="btn secondary" to={`/print/rent-water?cutoff=${cutoffId}`}>
+              <Printer size={13} /> Rent + Water
+            </Link>
+          )}
+          {cutoffId && (
+            <Link className="btn amber" to={`/print/electricity?cutoff=${cutoffId}`}>
+              <Printer size={13} /> Electricity
+            </Link>
+          )}
+        </div>
+      </div>
 
+      {/* ── Toolbar ── */}
       <div className="toolbar">
         <select value={cutoffId || ''} onChange={e => setCutoffId(Number(e.target.value))}>
           {cutoffs.map(c => <option key={c.id} value={c.id}>{c.name}{c.is_active ? ' (active)' : ''}</option>)}
         </select>
-        <div style={{ display: 'flex', border: '1px solid var(--border)', borderRadius: 7, overflow: 'hidden' }}>
-          {[['tenants', 'Per Tenant'], ['rooms', 'Per Room (reconcile)'], ['report', 'Report']].map(([v, label]) => (
-            <button key={v} onClick={() => setView(v)} style={{
-              padding: '8px 16px', border: 'none', fontSize: 13, fontWeight: 700,
-              background: view === v ? '#1B3A8C' : '#fff', color: view === v ? '#fff' : '#64748B',
-            }}>{label}</button>
+
+        {/* View switcher tabs */}
+        <div className="flex gap-1 p-1 bg-slate-100 rounded-lg">
+          {[['tenants', 'Per Tenant'], ['rooms', 'Per Room'], ['report', 'Report']].map(([v, label]) => (
+            <button key={v} onClick={() => setView(v)}
+              className={`px-3 py-1.5 rounded-md text-[12px] font-semibold transition-all ${
+                view === v ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+              }`}>
+              {label}
+            </button>
           ))}
         </div>
-        <button className="btn secondary" style={{ marginLeft: 'auto' }} onClick={() => setShowRec(true)}>
-          + Record Move-out Reading
-        </button>
-        {cutoffId && (
-          <Link className="btn primary" to={`/print/rent-water?cutoff=${cutoffId}`}>
-            🖨 Rent + Water
-          </Link>
+
+        {/* Category toggle — only in Per Tenant view */}
+        {view === 'tenants' && (
+          <div className="flex gap-1 p-1 bg-slate-100 rounded-lg">
+            {[['RENT_WATER', 'Rent + Water'], ['ELECTRICITY', 'Electricity']].map(([cat, label]) => (
+              <button key={cat} onClick={() => setBillCat(cat)}
+                className={`px-3 py-1.5 rounded-md text-[12px] font-semibold transition-all inline-flex items-center gap-1.5 ${
+                  billCat === cat
+                    ? cat === 'RENT_WATER' ? 'bg-blue-600 text-white shadow-sm' : 'bg-amber-500 text-white shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}>
+                {cat === 'RENT_WATER' ? <><Droplets size={13} /> Rent + Water</> : <><Zap size={13} /> Electricity</>}
+              </button>
+            ))}
+          </div>
         )}
-        {cutoffId && (
-          <Link className="btn amber" to={`/print/electricity?cutoff=${cutoffId}`}>
-            🖨 Electricity
-          </Link>
-        )}
+
       </div>
 
-      {cutoff && (
-        <div style={{ fontSize: 12, color: '#64748B', marginBottom: 12 }}>
-          💧 Water: {cutoff.water_start} → {cutoff.water_end} &nbsp;·&nbsp;
-          ⚡ Electric: {cutoff.electric_start} → {cutoff.electric_end}
-          {interims.length > 0 && <> &nbsp;·&nbsp; {interims.length} move-out reading(s)</>}
-          {splitFlags.size > 0 && <> &nbsp;·&nbsp; <span style={{ color: '#1B3A8C' }}>⚙ custom split</span> on {splitFlags.size} room-utility(ies)</>}
-        </div>
-      )}
-
+      {/* ── Content ── */}
       {loading ? (
-        <div className="loading-screen" style={{ height: 180 }}><div className="spinner" /></div>
+        <div className="loading-screen min-h-[200px]"><div className="spinner" /></div>
       ) : view === 'tenants' ? (
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>Tenant</th><th>Room</th><th>Bed</th>
-                <th style={{ textAlign: 'right' }}>Rent</th>
-                <th style={{ textAlign: 'right' }}>Water (m³)</th>
-                <th style={{ textAlign: 'right' }}>Water ₱</th>
-                <th style={{ textAlign: 'right' }}>Elec (kWh)</th>
-                <th style={{ textAlign: 'right' }}>Elec ₱</th>
-                <th style={{ textAlign: 'right' }}>Add-ons</th>
-                <th style={{ textAlign: 'right' }}>Total</th>
+                {billCat === 'RENT_WATER' ? (
+                  <>
+                    <th className="text-right">Rent</th>
+                    <th className="text-right text-slate-400">W. Prev Rdg</th>
+                    <th className="text-right text-slate-400">W. Actual</th>
+                    <th className="text-right">Water (m³)</th>
+                    <th className="text-right">Water ₱</th>
+                    <th className="text-right">Add-ons</th>
+                    <th className="text-right">RW Total</th>
+                  </>
+                ) : (
+                  <>
+                    <th className="text-right text-slate-400">E. Prev Rdg</th>
+                    <th className="text-right text-slate-400">E. Actual</th>
+                    <th className="text-right">Elec (kWh)</th>
+                    <th className="text-right">Elec ₱</th>
+                    <th className="text-right">Add-ons</th>
+                    <th className="text-right">Elec Total</th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody>
-              {perTenant.map(t => (
-                <tr key={t.id}>
-                  <td className="td-name">{t.name}{t.settled && <span className="badge oor" style={{ marginLeft: 6 }}>moved out</span>}</td>
-                  <td>{t.room_no}</td>
-                  <td><strong>{t.bed}</strong></td>
-                  <td style={{ textAlign: 'right' }}>{t.rent ? peso(t.rent) : '—'}</td>
-                  <td style={{ textAlign: 'right', color: '#64748B' }}>{m3(t.waterCons)}</td>
-                  <td style={{ textAlign: 'right' }}>
-                    {peso(t.water)}
-                    {splitFlags.has(`${t.room_id}|WATER`) && <span title="custom split" style={{ marginLeft: 4, color: '#2563EB' }}>⚙</span>}
-                  </td>
-                  <td style={{ textAlign: 'right', color: '#64748B' }}>{m3(t.elecCons)}</td>
-                  <td style={{ textAlign: 'right' }}>
-                    {peso(t.elec)}
-                    {splitFlags.has(`${t.room_id}|ELECTRIC`) && <span title="custom split" style={{ marginLeft: 4, color: '#D97706' }}>⚙</span>}
-                  </td>
-                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    {((t.addonRentWater || 0) + (t.addonElectric || 0)) > 0
-                      ? <span title={(t.addons || []).map(a => `${a.label}: ${peso(a.amount)} [${a.bill_on === 'ELECTRIC' ? 'Elec' : 'Rent+Water'}${a.recurring ? '' : ', one-time'}]`).join('\n')}>
-                          {peso((t.addonRentWater || 0) + (t.addonElectric || 0))}
-                        </span>
-                      : <span style={{ color: '#CBD5E1' }}>—</span>}
-                    <button className="btn-xs blue" style={{ marginLeft: 6 }} onClick={() => setAddonTenant(t)}>⊕</button>
-                  </td>
-                  <td className="td-rate" style={{ textAlign: 'right' }}>{peso(t.total)}</td>
-                </tr>
-              ))}
+              {perTenant.map(t => {
+                const rwTotal   = (t.rent || 0) + (t.water || 0) + (t.addonRentWater || 0)
+                const elecTotal = (t.elec  || 0) + (t.addonElectric || 0)
+                return (
+                  <tr key={t.id}>
+                    <td className="td-name">
+                      {t.name}
+                      {t.settled     && <span className="badge oor ml-1.5">moved out</span>}
+                      {t.transferred && <span className="badge leased ml-1.5" title="Mid-period room transfer — readings show old room (period start → transfer date); amounts include both rooms">XFER</span>}
+                      {t.wholeRoom   && <span className="badge ml-1.5" style={{background:'#f0f9ff',color:'#0369a1',border:'1px solid #bae6fd'}} title="Single tenant renting the entire room — all bed rates combined, full room utilities">ROOM</span>}
+                    </td>
+                    <td>{t.room_no}</td>
+                    <td><strong>{t.bed}</strong></td>
+                    {billCat === 'RENT_WATER' ? (
+                      <>
+                        <td className="text-right">{t.rent ? peso(t.rent) : '—'}</td>
+                        <td className="text-right text-slate-400 tabular-nums" title={t.transferred ? 'Old room period-start reading' : 'Period start reading'}>{t.waterPrev != null ? m3(t.waterPrev) : '—'}</td>
+                        <td className="text-right text-slate-400 tabular-nums" title={t.transferred ? 'Transfer reading (as entered)' : 'Period end reading'}>{t.waterCurr != null ? m3(t.waterCurr) : '—'}</td>
+                        <td className="text-right text-slate-400">
+                          {m3(t.waterCons)}
+                          {t.transferred && t.oldWaterCons > 0 && (
+                            <div className="text-[10px] text-slate-400 leading-[1.3] mt-0.5 tabular-nums">
+                              R{t.fromRoomNo}:{m3(t.oldWaterCons)}<br />R{t.room_no}:{m3(t.waterCons - t.oldWaterCons)}
+                            </div>
+                          )}
+                        </td>
+                        <td className="text-right">
+                          {peso(t.water)}
+                          {t.transferred && t.oldWater > 0 && (
+                            <div className="text-[10px] text-slate-400 leading-[1.3] mt-0.5 tabular-nums">
+                              R{t.fromRoomNo}:{peso(t.oldWater)}<br />R{t.room_no}:{peso(t.water - t.oldWater)}
+                            </div>
+                          )}
+                          {splitFlags.has(`${t.room_id}|WATER`) && <Settings2 size={11} title="custom split" className="inline ml-1 text-blue-600" />}
+                        </td>
+                        <td className="text-right whitespace-nowrap">
+                          {(t.addonRentWater || 0) > 0
+                            ? <span title={(t.addons || []).filter(a => a.bill_on !== 'ELECTRIC').map(a => `${a.label}: ${peso(a.amount)}${a.recurring ? '' : ' (one-time)'}`).join('\n')}>
+                                {peso(t.addonRentWater)}
+                              </span>
+                            : <span className="text-slate-200">—</span>}
+                          <button className="btn-xs blue ml-1.5" onClick={() => setAddonTenant(t)}><PlusCircle size={10} /></button>
+                        </td>
+                        <td className="td-rate text-right">{peso(rwTotal)}</td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="text-right text-slate-400 tabular-nums" title={t.transferred ? 'Old room period-start reading' : 'Period start reading'}>{t.elecPrev != null ? m3(t.elecPrev) : '—'}</td>
+                        <td className="text-right text-slate-400 tabular-nums" title={t.transferred ? 'Transfer reading (as entered)' : 'Period end reading'}>{t.elecCurr != null ? m3(t.elecCurr) : '—'}</td>
+                        <td className="text-right text-slate-400">
+                          {m3(t.elecCons)}
+                          {t.transferred && t.oldElecCons > 0 && (
+                            <div className="text-[10px] text-slate-400 leading-[1.3] mt-0.5 tabular-nums">
+                              R{t.fromRoomNo}:{m3(t.oldElecCons)}<br />R{t.room_no}:{m3(t.elecCons - t.oldElecCons)}
+                            </div>
+                          )}
+                        </td>
+                        <td className="text-right">
+                          {peso(t.elec)}
+                          {t.transferred && t.oldElec > 0 && (
+                            <div className="text-[10px] text-slate-400 leading-[1.3] mt-0.5 tabular-nums">
+                              R{t.fromRoomNo}:{peso(t.oldElec)}<br />R{t.room_no}:{peso(t.elec - t.oldElec)}
+                            </div>
+                          )}
+                          {splitFlags.has(`${t.room_id}|ELECTRIC`) && <Settings2 size={11} title="custom split" className="inline ml-1 text-amber-500" />}
+                        </td>
+                        <td className="text-right whitespace-nowrap">
+                          {(t.addonElectric || 0) > 0
+                            ? <span title={(t.addons || []).filter(a => a.bill_on === 'ELECTRIC').map(a => `${a.label}: ${peso(a.amount)}${a.recurring ? '' : ' (one-time)'}`).join('\n')}>
+                                {peso(t.addonElectric)}
+                              </span>
+                            : <span className="text-slate-200">—</span>}
+                          <button className="btn-xs blue ml-1.5" onClick={() => setAddonTenant(t)}><PlusCircle size={10} /></button>
+                        </td>
+                        <td className="td-rate text-right">{peso(elecTotal)}</td>
+                      </>
+                    )}
+                  </tr>
+                )
+              })}
             </tbody>
             <tfoot>
-              <tr style={{ background: '#F8FAFC', borderTop: '2px solid #1B3A8C' }}>
-                <td colSpan={3} style={{ fontWeight: 800, color: '#475569', textTransform: 'uppercase', fontSize: 11 }}>Totals</td>
-                <td style={{ textAlign: 'right', fontWeight: 800 }}>{peso(totals.rent)}</td>
-                <td></td>
-                <td style={{ textAlign: 'right', fontWeight: 800 }}>{peso(totals.water)}</td>
-                <td></td>
-                <td style={{ textAlign: 'right', fontWeight: 800 }}>{peso(totals.elec)}</td>
-                <td style={{ textAlign: 'right', fontWeight: 800 }}>{peso(totals.addons)}</td>
-                <td style={{ textAlign: 'right', fontWeight: 800, color: '#1B3A8C' }}>{peso(totals.total)}</td>
-              </tr>
+              {billCat === 'RENT_WATER' ? (
+                <tr className="bg-slate-50 border-t-2 border-navy-700">
+                  <td colSpan={3} className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wide">Totals</td>
+                  <td className="text-right font-extrabold">{peso(totals.rent)}</td>
+                  <td colSpan={2}></td>
+                  <td></td>
+                  <td className="text-right font-extrabold">{peso(totals.water)}</td>
+                  <td className="text-right font-extrabold">{peso(perTenant.reduce((s,t) => s + (t.addonRentWater||0), 0))}</td>
+                  <td className="text-right font-extrabold text-navy-500">{peso(perTenant.reduce((s,t) => s + (t.rent||0) + (t.water||0) + (t.addonRentWater||0), 0))}</td>
+                </tr>
+              ) : (
+                <tr className="bg-slate-50 border-t-2 border-amber-500">
+                  <td colSpan={3} className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wide">Totals</td>
+                  <td colSpan={2}></td>
+                  <td></td>
+                  <td className="text-right font-extrabold">{peso(totals.elec)}</td>
+                  <td className="text-right font-extrabold">{peso(perTenant.reduce((s,t) => s + (t.addonElectric||0), 0))}</td>
+                  <td className="text-right font-extrabold text-amber-600">{peso(perTenant.reduce((s,t) => s + (t.elec||0) + (t.addonElectric||0), 0))}</td>
+                </tr>
+              )}
             </tfoot>
           </table>
         </div>
       ) : view === 'rooms' ? (
-        <div className="rooms-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))' }}>
+        <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))' }}>
           {perRoom.map(r => (
-            <div key={r.room_id} className="card" style={{ padding: '12px 14px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <div style={{ fontWeight: 800, fontSize: 14 }}>Room {r.room_no}
-                  <span style={{ fontSize: 11, fontWeight: 400, color: '#94A3B8' }}> · {r.room_type}</span></div>
-                <button className="btn-xs blue" onClick={() => setSplitRoom(r)}>⚙ Split</button>
+            <div key={r.room_id} className="card p-4">
+              <div className="flex justify-between items-center mb-3">
+                <div className="text-[14px] font-bold text-slate-900">
+                  Room {r.room_no}
+                  <span className="text-[11px] font-normal text-slate-400 ml-1">· {r.room_type}</span>
+                </div>
+                <button className="btn-xs blue" onClick={() => setSplitRoom(r)}><Settings2 size={10} /> Split</button>
               </div>
-              {[['💧 Water', r.water, 'WATER'], ['⚡ Electric', r.electric, 'ELECTRIC']].map(([label, u, util]) => (
-                <div key={label} style={{ marginBottom: 8, fontSize: 12 }}>
-                  <div style={{ fontWeight: 700, color: '#475569' }}>{label}
-                    <span style={{ fontWeight: 400, color: '#94A3B8' }}> · {u.segments} segment(s)</span>
-                    {splitFlags.has(`${r.room_id}|${util}`) && <span className="badge leased" style={{ marginLeft: 6 }}>custom split</span>}
+              {[['Water', r.water, 'WATER', <Droplets key="w" size={12} />], ['Electric', r.electric, 'ELECTRIC', <Zap key="e" size={12} />]].map(([label, u, util, icon]) => (
+                <div key={label} className="mb-3 text-[12px]">
+                  <div className="font-semibold text-slate-600 mb-1 flex items-center gap-1.5">
+                    {icon}{label}
+                    <span className="font-normal text-slate-400"> · {u.segments} segment(s)</span>
+                    {splitFlags.has(`${r.room_id}|${util}`) && <span className="badge leased ml-1.5">custom split</span>}
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748B' }}>
+                  <div className="flex justify-between text-slate-500 mb-0.5">
                     <span>Room: {m3(u.roomCons)} → {peso(u.roomAmt)}</span>
                     <span>Tenants: {peso(u.sum)}{u.unbilled > 0.01 ? ` (+${peso(u.unbilled)} vacant)` : ''}</span>
                   </div>
-                  <div style={{ fontWeight: 700, color: u.ok ? '#16a34a' : '#DC2626' }}>
-                    {u.ok ? '✓ reconciled' : '✗ mismatch — check readings'}
+                  <div className={`font-semibold ${u.ok ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {u.ok ? 'Reconciled' : 'Mismatch — check readings'}
                   </div>
                 </div>
               ))}
@@ -207,13 +328,22 @@ export default function Billing() {
         <ReportView totals={totals} perTenant={perTenant} cutoffName={cutoff?.name} />
       )}
 
-      {showRec && (
-        <RecordReadingModal
-          cutoffId={cutoffId} rooms={bill} tenants={tenants}
-          onClose={() => setShowRec(false)}
-          onDone={async () => { setShowRec(false); await load(); show('Move-out reading recorded.', 'success') }}
-          show={show}
-        />
+      {/* Existing interim readings */}
+      {interims.length > 0 && (
+        <div className="card mt-4 p-4">
+          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Move-out readings this cutoff</div>
+          {interims.map(ir => {
+            const room = bill.find(b => b.room_id === ir.room_id)
+            return (
+              <div key={ir.id} className="flex justify-between items-center text-[13px] py-2 border-b border-slate-100 last:border-0">
+                <span className="text-slate-700">
+                  Room {room?.room_no || ir.room_id} · {ir.utility} · {ir.reading_date} · reading <strong>{ir.reading_value}</strong>
+                </span>
+                <button className="btn-xs red" onClick={async () => { await deleteInterimReading(ir.id); await load() }}>Delete</button>
+              </div>
+            )
+          })}
+        </div>
       )}
 
       {splitRoom && (
@@ -234,100 +364,11 @@ export default function Billing() {
         />
       )}
 
-      {/* Existing interim readings (deletable) */}
-      {interims.length > 0 && (
-        <div className="card" style={{ marginTop: 16, padding: '12px 16px' }}>
-          <div className="card-header" style={{ padding: 0, border: 'none', marginBottom: 8 }}>Move-out readings this cutoff</div>
-          {interims.map(ir => {
-            const room = bill.find(b => b.room_id === ir.room_id)
-            return (
-              <div key={ir.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, padding: '5px 0', borderBottom: '1px solid #F1F5F9' }}>
-                <span>Room {room?.room_no || ir.room_id} · {ir.utility} · {ir.reading_date} · reading <strong>{ir.reading_value}</strong></span>
-                <button className="btn-xs red" onClick={async () => { await deleteInterimReading(ir.id); await load() }}>Delete</button>
-              </div>
-            )
-          })}
-        </div>
-      )}
-
       {ToastEl}
     </div>
   )
 }
 
-// ── Record Move-out Reading modal ─────────────────────────────────────────────
-function RecordReadingModal({ cutoffId, rooms, tenants, onClose, onDone, show }) {
-  const today = new Date().toISOString().slice(0, 10)
-  const [f, setF] = useState({ room_id: '', utility: 'WATER', reading_date: today, reading_value: '', moving_out_tenant_id: '' })
-  const [busy, setBusy] = useState(false)
-  const set = (k, v) => setF(s => ({ ...s, [k]: v }))
-
-  const roomTenants = tenants.filter(t => String(t.beds?.room_id) === String(f.room_id))
-
-  async function submit(e) {
-    e.preventDefault()
-    if (!f.room_id || !f.reading_date || f.reading_value === '') {
-      show('Room, date, and reading value are required.', 'error'); return
-    }
-    setBusy(true)
-    try {
-      await addInterimReading({
-        cutoff_id: cutoffId,
-        room_id: Number(f.room_id),
-        utility: f.utility,
-        reading_date: f.reading_date,
-        reading_value: Number(f.reading_value),
-        moving_out_tenant_id: f.moving_out_tenant_id ? Number(f.moving_out_tenant_id) : null,
-      })
-      onDone()
-    } catch (e) { show(e.message, 'error'); setBusy(false) }
-  }
-
-  return (
-    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal modal-sm">
-        <div className="modal-head"><h3>📏 Record Move-out Reading</h3>
-          <button className="btn-close" onClick={onClose}>✕</button></div>
-        <form onSubmit={submit}>
-          <div className="modal-body">
-            <div className="form-grid">
-              <div className="fg full"><label>Room *</label>
-                <select value={f.room_id} onChange={e => set('room_id', e.target.value)} required>
-                  <option value="">Select room…</option>
-                  {rooms.map(r => <option key={r.room_id} value={r.room_id}>Room {r.room_no} — {r.room_type}</option>)}
-                </select>
-              </div>
-              <div className="fg"><label>Utility *</label>
-                <select value={f.utility} onChange={e => set('utility', e.target.value)}>
-                  <option value="WATER">💧 Water</option>
-                  <option value="ELECTRIC">⚡ Electric</option>
-                </select>
-              </div>
-              <div className="fg"><label>Move-out Date *</label>
-                <input type="date" value={f.reading_date} onChange={e => set('reading_date', e.target.value)} required /></div>
-              <div className="fg"><label>Room Meter Reading *</label>
-                <input type="number" step="0.01" value={f.reading_value} onChange={e => set('reading_value', e.target.value)} required /></div>
-              <div className="fg"><label>Moving-out Tenant</label>
-                <select value={f.moving_out_tenant_id} onChange={e => set('moving_out_tenant_id', e.target.value)}>
-                  <option value="">(optional)</option>
-                  {roomTenants.map(t => <option key={t.id} value={t.id}>{t.name} ({t.beds?.bed_letter})</option>)}
-                </select>
-              </div>
-            </div>
-            <p style={{ fontSize: 11, color: '#94A3B8', marginTop: 12 }}>
-              Record the room meter reading on the move-out date. The cutoff is sliced into
-              segments and each tenant is billed for the days they were actually present.
-            </p>
-          </div>
-          <div className="modal-foot">
-            <button type="button" className="btn secondary" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn primary" disabled={busy}>{busy ? 'Saving…' : '✓ Record'}</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  )
-}
 
 // ── Custom split editor (per room, per utility) ───────────────────────────────
 function SplitModal({ cutoffId, room, tenants, splits, onClose, onDone, show }) {
@@ -348,7 +389,6 @@ function SplitModal({ cutoffId, room, tenants, splits, onClose, onDone, show }) 
   const cur = w[util]
   const sum = roomTenants.reduce((s, t) => s + (Number(cur[t.id]) || 0), 0)
   const ok = Math.abs(sum - 100) < 0.1
-  const accent = util === 'WATER' ? '#2563EB' : '#D97706'
 
   const setVal = (tid, v) => setW(s => ({ ...s, [util]: { ...s[util], [tid]: v } }))
   const resetEqual = () => setW(s => ({ ...s, [util]: Object.fromEntries(roomTenants.map(t => [t.id, eq])) }))
@@ -364,48 +404,64 @@ function SplitModal({ cutoffId, room, tenants, splits, onClose, onDone, show }) 
   }
 
   return (
-    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+    <div className="overlay" onClick={e => e.stopPropagation()}>
       <div className="modal modal-sm">
-        <div className="modal-head"><h3>⚙ Custom Split — Room {room.room_no}</h3>
-          <button className="btn-close" onClick={onClose}>✕</button></div>
-        <div className="modal-body">
-          <div style={{ display: 'flex', border: '1px solid var(--border)', borderRadius: 9, overflow: 'hidden', marginBottom: 14 }}>
+        <div className="modal-head">
+          <h3 className="flex items-center gap-2"><Settings2 size={15} className="text-slate-400" /> Custom Split — Room {room.room_no}</h3>
+          <button className="btn-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="modal-body space-y-4">
+          {/* Utility tabs */}
+          <div className="flex gap-1 p-1 bg-slate-100 rounded-lg">
             {['WATER', 'ELECTRIC'].map(u => (
-              <button key={u} onClick={() => setUtil(u)} style={{
-                flex: 1, padding: '8px', border: 'none', fontSize: 13, fontWeight: 700,
-                background: util === u ? (u === 'WATER' ? '#2563EB' : '#D97706') : '#fff',
-                color: util === u ? '#fff' : '#64748B',
-              }}>{u === 'WATER' ? '💧 Water' : '⚡ Electric'}</button>
+              <button key={u} onClick={() => setUtil(u)}
+                className={`flex-1 py-2 rounded-md text-[12px] font-semibold transition-all flex items-center justify-center gap-1.5 ${
+                  util === u
+                    ? u === 'WATER' ? 'bg-blue-600 text-white shadow-sm' : 'bg-amber-500 text-white shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}>
+                {u === 'WATER' ? <><Droplets size={13} /> Water</> : <><Zap size={13} /> Electric</>}
+              </button>
             ))}
           </div>
 
           {roomTenants.length === 0 ? (
             <div className="empty"><p>No active tenants in this room.</p></div>
           ) : (
-            <>
+            <div className="space-y-1">
               {roomTenants.map(t => (
-                <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
-                  <div style={{ flex: 1, fontSize: 13 }}>{t.name} <span style={{ color: '#94A3B8' }}>· Bed {t.beds?.bed_letter}</span></div>
-                  <input type="number" step="0.1" value={cur[t.id] ?? 0}
+                <div key={t.id} className="flex items-center gap-3 py-2 border-b border-slate-100 last:border-0">
+                  <div className="flex-1 text-[13px] text-slate-800">
+                    {t.name} <span className="text-slate-400">· Bed {t.beds?.bed_letter}</span>
+                  </div>
+                  <input
+                    type="number" step="0.1" value={cur[t.id] ?? 0}
                     onChange={e => setVal(t.id, e.target.value)}
-                    style={{ width: 80, padding: '6px 8px', border: '1px solid var(--border)', borderRadius: 7, fontSize: 13, textAlign: 'right' }} />
-                  <span style={{ width: 14, color: '#64748B' }}>%</span>
+                    className="w-20 px-2 py-1.5 border border-slate-200 rounded-lg text-[13px] text-right
+                               focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600"
+                  />
+                  <span className="text-[13px] text-slate-500 w-4">%</span>
                 </div>
               ))}
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontWeight: 800, color: ok ? '#16a34a' : '#DC2626' }}>
-                <span>Total</span><span>{sum.toFixed(1)}% {ok ? '✓' : '(must be 100%)'}</span>
+              <div className={`flex justify-between pt-2 font-bold text-[13px] ${ok ? 'text-emerald-600' : 'text-red-600'}`}>
+                <span>Total</span>
+                <span>{sum.toFixed(1)}% {ok ? '✓' : '(must be 100%)'}</span>
               </div>
-              <button className="btn-xs gray" style={{ marginTop: 10 }} onClick={resetEqual}>Reset to equal</button>
-              <p style={{ fontSize: 11, color: '#94A3B8', marginTop: 10 }}>
+              <button className="btn-xs gray mt-2" onClick={resetEqual}>Reset to equal</button>
+              <p className="text-[11px] text-slate-400 mt-2 leading-relaxed">
                 Applies to <strong>{util === 'WATER' ? 'water' : 'electric'}</strong> only for this cutoff. Switch tabs to set the other. "Use default" reverts to the per-day split.
               </p>
-            </>
+            </div>
           )}
         </div>
         <div className="modal-foot">
           <button className="btn secondary" onClick={onClose}>Cancel</button>
           <button className="btn secondary" disabled={busy} onClick={() => save(true)}>Use default</button>
-          <button className="btn primary" disabled={busy || !roomTenants.length || !ok} onClick={() => save(false)} style={{ background: accent }}>
+          <button
+            className={`btn ${ok ? 'primary' : 'secondary'}`}
+            disabled={busy || !roomTenants.length || !ok}
+            onClick={() => save(false)}
+          >
             {busy ? 'Saving…' : ok ? 'Save split' : `Total ${sum.toFixed(1)}%`}
           </button>
         </div>
@@ -449,26 +505,27 @@ function AddonModal({ cutoffId, cutoffName, tenant, addons, onClose, onDone, sho
   }
   async function remove(id) { setBusy(true); try { await deleteAddon(id); onDone() } catch (e) { show(e.message, 'error'); setBusy(false) } }
 
-  const peso = n => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
   return (
-    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+    <div className="overlay" onClick={e => e.stopPropagation()}>
       <div className="modal">
-        <div className="modal-head"><h3>⊕ Add-ons — {tenant.name}</h3>
-          <button className="btn-close" onClick={onClose}>✕</button></div>
-        <div className="modal-body">
+        <div className="modal-head">
+          <h3 className="flex items-center gap-2"><PlusCircle size={15} className="text-slate-400" /> Add-ons — {tenant.name}</h3>
+          <button className="btn-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="modal-body space-y-4">
           {/* Existing add-ons */}
           {mine.length > 0 && (
-            <div style={{ marginBottom: 14 }}>
+            <div>
               {mine.map(a => (
-                <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #F1F5F9', fontSize: 13 }}>
-                  <div style={{ flex: 1 }}>
-                    <strong>{a.label}</strong> · {peso(a.amount)}
-                    <span className="badge" style={{ marginLeft: 6, background: a.bill_on === 'ELECTRIC' ? '#FFFBEB' : '#EFF6FF', color: a.bill_on === 'ELECTRIC' ? '#D97706' : '#2563EB' }}>
-                      {a.bill_on === 'ELECTRIC' ? 'Electric bill' : 'Rent+Water bill'}
+                <div key={a.id} className="flex items-center gap-2 py-2.5 border-b border-slate-100 last:border-0 text-[13px]">
+                  <div className="flex-1">
+                    <span className="font-semibold text-slate-900">{a.label}</span>
+                    <span className="text-slate-500 ml-1.5">· {peso(a.amount)}</span>
+                    <span className={`badge ml-1.5 ${a.bill_on === 'ELECTRIC' ? 'bg-amber-50 text-amber-700' : 'bg-blue-50 text-blue-700'}`}>
+                      {a.bill_on === 'ELECTRIC' ? 'Electric' : 'Rent+Water'}
                     </span>
-                    <span className="badge" style={{ marginLeft: 4, background: a.recurring ? '#ECFDF5' : '#F1F5F9', color: a.recurring ? '#16a34a' : '#64748B' }}>
-                      {a.recurring ? 'recurring' : 'this cutoff only'}
+                    <span className={`badge ml-1 ${a.recurring ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                      {a.recurring ? 'recurring' : 'this cutoff'}
                     </span>
                   </div>
                   <button className="btn-xs red" disabled={busy} onClick={() => remove(a.id)}>Delete</button>
@@ -477,10 +534,11 @@ function AddonModal({ cutoffId, cutoffName, tenant, addons, onClose, onDone, sho
             </div>
           )}
 
-          {/* New add-on */}
-          <div className="form-section" style={{ borderBottom: '1px solid var(--border)', paddingBottom: 4, marginBottom: 10 }}>Add a charge</div>
+          {/* New add-on form */}
+          <div className="form-section border-b border-slate-100 pb-2">Add a charge</div>
           <div className="form-grid">
-            <div className="fg"><label>Type</label>
+            <div className="fg">
+              <label>Type</label>
               <select value={f.category} onChange={e => pickCat(e.target.value)}>
                 <option value="PARKING_CAR">Car Parking (₱3,500)</option>
                 <option value="PARKING_MC">Motorcycle Parking (₱1,500)</option>
@@ -488,8 +546,10 @@ function AddonModal({ cutoffId, cutoffName, tenant, addons, onClose, onDone, sho
                 <option value="OTHER">Other</option>
               </select>
             </div>
-            <div className="fg"><label>Label</label>
-              <input type="text" value={f.label} onChange={e => set('label', e.target.value)} placeholder="e.g. Car Parking" /></div>
+            <div className="fg">
+              <label>Label</label>
+              <input type="text" value={f.label} onChange={e => set('label', e.target.value)} placeholder="e.g. Car Parking" />
+            </div>
 
             {f.aircon ? (
               <>
@@ -500,21 +560,24 @@ function AddonModal({ cutoffId, cutoffName, tenant, addons, onClose, onDone, sho
               <div className="fg"><label>Amount (₱)</label><input type="number" step="0.01" value={f.amount} onChange={e => set('amount', e.target.value)} /></div>
             )}
 
-            <div className="fg"><label>Bill on</label>
+            <div className="fg">
+              <label>Bill on</label>
               <select value={f.bill_on} onChange={e => set('bill_on', e.target.value)}>
                 <option value="RENT_WATER">Rent + Water bill</option>
                 <option value="ELECTRIC">Electricity bill</option>
               </select>
             </div>
-            <div className="fg" style={{ justifyContent: 'flex-end' }}>
-              <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <input type="checkbox" checked={f.recurring} onChange={e => set('recurring', e.target.checked)} /> Recurring (every cutoff)
+            <div className="fg justify-end">
+              <label className="flex gap-2 items-center cursor-pointer">
+                <input type="checkbox" checked={f.recurring} onChange={e => set('recurring', e.target.checked)} className="w-4 h-4 rounded accent-navy-700" />
+                <span>Recurring (every cutoff)</span>
               </label>
             </div>
           </div>
-          <div style={{ marginTop: 10, fontSize: 13, color: '#475569' }}>
-            Amount: <strong style={{ color: '#1B3A8C' }}>{peso(computedAmount)}</strong>
-            {!f.recurring && <span style={{ color: '#94A3B8' }}> · applies to {cutoffName} only</span>}
+
+          <div className="text-[13px] text-slate-600 bg-slate-50 rounded-lg px-3 py-2">
+            Amount: <strong className="text-navy-500">{peso(computedAmount)}</strong>
+            {!f.recurring && <span className="text-slate-400 ml-2">· applies to {cutoffName} only</span>}
           </div>
         </div>
         <div className="modal-foot">
@@ -528,33 +591,48 @@ function AddonModal({ cutoffId, cutoffName, tenant, addons, onClose, onDone, sho
 
 // ── Report (grand totals) ─────────────────────────────────────────────────────
 function ReportView({ totals, perTenant, cutoffName }) {
-  const peso = n => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const counts = perTenant.reduce((c, t) => {
     if (t.special) c.special++; else c.bed++
     return c
   }, { bed: 0, special: 0 })
-  const tile = (label, val, color) => (
-    <div className="stat-card" style={{ borderTopColor: color }}>
-      <div className="stat-label">{label}</div>
-      <div className="stat-value" style={{ fontSize: 20 }}>{val}</div>
-    </div>
-  )
+
+  const tiles = [
+    { label: 'Rent',        value: peso(totals.rent),   color: '#f4a522' },
+    { label: 'Water',       value: peso(totals.water),  color: '#2563EB' },
+    { label: 'Electricity', value: peso(totals.elec),   color: '#D97706' },
+    { label: 'Add-ons',     value: peso(totals.addons), color: '#f4a522' },
+    { label: 'Grand Total', value: peso(totals.total),  color: '#16a34a' },
+  ]
+
   return (
     <div>
-      <div style={{ fontSize: 12, color: '#64748B', marginBottom: 12 }}>Collections summary · {cutoffName} · {counts.bed} bed tenants + {counts.special} special/commercial</div>
+      <p className="text-[12px] text-slate-400 mb-4">
+        Collections summary · {cutoffName} · {counts.bed} bed tenant(s) + {counts.special} special/commercial
+      </p>
       <div className="stats-grid">
-        {tile('Rent',        peso(totals.rent),   '#1B3A8C')}
-        {tile('Water',       peso(totals.water),  '#2563EB')}
-        {tile('Electricity', peso(totals.elec),   '#D97706')}
-        {tile('Add-ons',     peso(totals.addons), '#7C3AED')}
-        {tile('Grand Total', peso(totals.total),  '#16a34a')}
+        {tiles.map(t => (
+          <div key={t.label} className="stat-card" style={{ borderTopColor: t.color }}>
+            <div className="stat-label">{t.label}</div>
+            <div className="stat-value text-[20px]">{t.value}</div>
+          </div>
+        ))}
       </div>
-      <div className="card" style={{ padding: 16, marginTop: 4 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, padding: '4px 0' }}><span>Rent collections</span><strong>{peso(totals.rent)}</strong></div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, padding: '4px 0' }}><span>Water charging</span><strong>{peso(totals.water)}</strong></div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, padding: '4px 0' }}><span>Electricity charging</span><strong>{peso(totals.elec)}</strong></div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, padding: '4px 0' }}><span>Add-ons</span><strong>{peso(totals.addons)}</strong></div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, padding: '8px 0 0', marginTop: 6, borderTop: '2px solid #1B3A8C', fontWeight: 800, color: '#1B3A8C' }}><span>TOTAL BILLED</span><span>{peso(totals.total)}</span></div>
+      <div className="card p-4 mt-2">
+        {[
+          ['Rent collections',    peso(totals.rent),   false],
+          ['Water charging',      peso(totals.water),  false],
+          ['Electricity charging',peso(totals.elec),   false],
+          ['Add-ons',             peso(totals.addons), false],
+        ].map(([label, val]) => (
+          <div key={label} className="flex justify-between text-[14px] py-1.5 border-b border-slate-100 last:border-0">
+            <span className="text-slate-600">{label}</span>
+            <strong className="text-slate-900">{val}</strong>
+          </div>
+        ))}
+        <div className="flex justify-between text-[16px] pt-3 mt-2 border-t-2 border-navy-500 font-extrabold text-navy-500">
+          <span>TOTAL BILLED</span>
+          <span>{peso(totals.total)}</span>
+        </div>
       </div>
     </div>
   )

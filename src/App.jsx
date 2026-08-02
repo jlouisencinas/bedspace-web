@@ -1,101 +1,79 @@
-import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { isMissingConfig } from './lib/supabase'
 import { AuthProvider, useAuth } from './lib/auth'
-import Login      from './pages/Login'
-import Dashboard  from './pages/Dashboard'
-import BedMap     from './pages/BedMap'
-import Tenants    from './pages/Tenants'
-import Utilities  from './pages/Utilities'
-import Billing    from './pages/Billing'
-import Reports    from './pages/Reports'
-import PrintRentWater from './pages/PrintRentWater'
-import PrintElectricity from './pages/PrintElectricity'
-import Activity   from './pages/Activity'
+import BrandIcon      from './components/BrandIcon'
+import { AlertTriangle } from 'lucide-react'
+import Sidebar        from './components/Sidebar'
+import Login          from './pages/Login'
+import Dashboard      from './pages/Dashboard'
+import BedMap         from './pages/BedMap'
+import Tenants        from './pages/Tenants'
+import Collections    from './pages/Collections'
+import Utilities      from './pages/Utilities'
+import Billing        from './pages/Billing'
+import Reports        from './pages/Reports'
+import PrintRentWater    from './pages/PrintRentWater'
+import PrintElectricity  from './pages/PrintElectricity'
+import Activity       from './pages/Activity'
+import Approvals      from './pages/Approvals'
+import Users          from './pages/Users'
+import Maintenance    from './pages/Maintenance'
+import Property      from './pages/Property'
 
-// Shown when .env credentials are missing
 function SetupScreen() {
   return (
-    <div style={{
-      display:'flex', alignItems:'center', justifyContent:'center',
-      minHeight:'100vh', background:'#F0F4F8', padding:24
-    }}>
-      <div style={{
-        background:'#fff', borderRadius:12, padding:32,
-        maxWidth:480, width:'100%', boxShadow:'0 4px 24px rgba(0,0,0,.1)',
-        borderTop:'4px solid #1B3A8C'
-      }}>
-        <div style={{ fontSize:32, marginBottom:12 }}>🏠</div>
-        <h2 style={{ fontSize:20, fontWeight:800, color:'#0F172A', marginBottom:8 }}>
-          Bedspace Manager
-        </h2>
-        <p style={{ color:'#DC2626', fontWeight:600, marginBottom:20, fontSize:14 }}>
-          ⚠️ Supabase credentials not configured
-        </p>
-        <ol style={{ color:'#334155', fontSize:13, lineHeight:2, paddingLeft:20 }}>
-          <li>Set <code style={{ background:'#F1F5F9', padding:'1px 6px', borderRadius:4 }}>VITE_SUPABASE_URL</code> and <code style={{ background:'#F1F5F9', padding:'1px 6px', borderRadius:4 }}>VITE_SUPABASE_ANON_KEY</code></li>
-          <li>Locally: in <code style={{ background:'#F1F5F9', padding:'1px 6px', borderRadius:4 }}>.env</code>. On Vercel: Project → Settings → Environment Variables, then redeploy.</li>
+    <div className="flex items-center justify-center min-h-screen bg-slate-50 p-6">
+      <div className="bg-white rounded-2xl p-8 max-w-md w-full shadow-modal border-t-4 border-navy-700">
+        <BrandIcon size={36} className="text-navy-500 mb-3" />
+        <h2 className="text-xl font-bold text-slate-900 mb-1">Bedspace Manager</h2>
+        <p className="text-red-600 font-semibold text-sm mb-5 flex items-center gap-1.5"><AlertTriangle size={14} className="shrink-0" /> Supabase credentials not configured</p>
+        <ol className="text-slate-600 text-sm leading-8 list-decimal pl-5">
+          <li>Set <code className="bg-slate-100 px-1.5 py-0.5 rounded text-xs">VITE_SUPABASE_URL</code> and <code className="bg-slate-100 px-1.5 py-0.5 rounded text-xs">VITE_SUPABASE_ANON_KEY</code></li>
+          <li>Locally: in <code className="bg-slate-100 px-1.5 py-0.5 rounded text-xs">.env</code>. On Vercel: Project → Settings → Environment Variables, then redeploy.</li>
         </ol>
       </div>
     </div>
   )
 }
 
-const ALL_TABS = [
-  { to: '/',          label: 'Dashboard'    },
-  { to: '/beds',      label: 'Bed Map'      },
-  { to: '/tenants',   label: 'Tenants'      },
-  { to: '/utilities', label: 'Utilities'    },
-  { to: '/billing',   label: 'Billing'      },
-  { to: '/reports',   label: 'Reports'      },
-  { to: '/activity',  label: 'Activity Log' },
-]
-const OWNER_TABS = [
-  { to: '/',          label: 'Dashboard' },
-  { to: '/reports',   label: 'Reports'   },
-]
-
 function Layout() {
-  const { isAdmin, user, signOut } = useAuth()
-  const tabs = isAdmin ? ALL_TABS : OWNER_TABS
+  const { isAdmin, isUser } = useAuth()
 
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <div className="topbar-brand"><span>🏠</span>Bedspace Manager</div>
-        <nav className="topbar-nav">
-          {tabs.map(({ to, label }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === '/'}
-              className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}
-            >
-              {label}
-            </NavLink>
-          ))}
-        </nav>
-        <div className="topbar-user">
-          <span className={'role-badge ' + (isAdmin ? 'admin' : 'owner')}>{isAdmin ? 'Admin' : 'Owner'}</span>
-          <span className="topbar-email" title={user?.email}>{user?.email}</span>
-          <button className="btn-signout" onClick={signOut}>Sign out</button>
-        </div>
-      </header>
+      <Sidebar />
+      {/* Offset for mobile top bar */}
+      <main className="main-content pt-0 lg:pt-0">
+        <div className="pt-13 lg:pt-0">
+          <Routes>
+            {/* All roles */}
+            <Route path="/"        element={<Dashboard />} />
+            <Route path="/reports" element={<Reports />}   />
+            <Route path="/beds"    element={<BedMap />}    />
 
-      <Routes>
-        <Route path="/"         element={<Dashboard />} />
-        <Route path="/reports"  element={<Reports />}   />
-        {isAdmin && <>
-          <Route path="/beds"      element={<BedMap />}    />
-          <Route path="/tenants"   element={<Tenants />}   />
-          <Route path="/utilities" element={<Utilities />} />
-          <Route path="/billing"   element={<Billing />}   />
-          <Route path="/print/rent-water"  element={<PrintRentWater />} />
-          <Route path="/print/electricity" element={<PrintElectricity />} />
-          <Route path="/activity"  element={<Activity />}  />
-        </>}
-        {/* Anything an owner isn't allowed to reach falls back to Dashboard */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+            {/* user + admin */}
+            {(isAdmin || isUser) && <>
+              <Route path="/tenants"     element={<Tenants />}     />
+              <Route path="/collections" element={<Collections />} />
+              <Route path="/maintenance" element={<Maintenance />} />
+              <Route path="/utilities"   element={<Utilities />}   />
+              <Route path="/billing"     element={<Billing />}     />
+              <Route path="/activity"    element={<Activity />}    />
+              <Route path="/property"   element={<Property />}    />
+            </>}
+
+            {/* admin only */}
+            {isAdmin && <>
+              <Route path="/print/rent-water"  element={<PrintRentWater />}   />
+              <Route path="/print/electricity" element={<PrintElectricity />} />
+              <Route path="/approvals"         element={<Approvals />}        />
+              <Route path="/users"             element={<Users />}            />
+            </>}
+
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </div>
+      </main>
     </div>
   )
 }
@@ -103,7 +81,12 @@ function Layout() {
 function Gate() {
   const { session, loading } = useAuth()
   if (isMissingConfig) return <SetupScreen />
-  if (loading) return <div className="loading-screen"><div className="spinner" /></div>
+  if (loading) return (
+    <div className="loading-screen">
+      <div className="spinner" />
+      <span className="text-navy-500 font-semibold text-sm">Loading…</span>
+    </div>
+  )
   if (!session) return <Login />
   return (
     <BrowserRouter>

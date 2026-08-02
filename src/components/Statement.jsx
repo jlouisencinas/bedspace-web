@@ -25,7 +25,7 @@ export default function Statement({
           src="/bedspace-logo.png" alt="bedSPACE" className="stmt-logo"
           onError={(e) => { e.currentTarget.style.display = 'none'; e.currentTarget.nextSibling.style.display = 'inline'; }}
         />
-        <span className="brand" style={{ display: 'none' }}>bed<span style={{ color: '#1B3A8C' }}>SPACE</span></span>
+        <span className="brand" style={{ display: 'none' }}>bed<span style={{ color: '#f4a522' }}>SPACE</span></span>
       </div>
       <div className="addr">{company.address}</div>
       <div className="soa-title">STATEMENT OF ACCOUNT</div>
@@ -84,7 +84,7 @@ export default function Statement({
         </>
       )}
       {asOfNote && <div className="asof-note">{asOfNote}</div>}
-      {splitNote && <div className="asof-note" style={{ color: '#1B3A8C', fontWeight: 700 }}>{splitNote}</div>}
+      {splitNote && <div className="asof-note" style={{ color: '#f4a522', fontWeight: 700 }}>{splitNote}</div>}
 
       <div className="latefee">
         Please pay on or before the due date. Otherwise, a 2% late fee will be added to your next bill.

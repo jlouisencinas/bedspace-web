@@ -6,6 +6,7 @@ import {
 import { computePnL } from '../lib/pnl'
 import { buildAndSaveSnapshot } from '../lib/snapshot'
 import { useToast } from '../components/Toast'
+import { Save, Trash2, Lock, Droplets, Zap, X } from 'lucide-react'
 
 const peso = n => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const r4   = n => Number(n || 0).toLocaleString('en-PH', { maximumFractionDigits: 4 })
@@ -181,9 +182,9 @@ export default function Utilities() {
   if (loading && !cutoffs.length) return <Spin />
   if (!cutoffs.length) return (
     <div className="page"><div className="page-title">Utilities</div>
-      <div className="card"><div className="empty"><div className="empty-icon">⚡</div>
+      <div className="card"><div className="empty"><Zap size={32} className="mx-auto mb-3 text-slate-300" />
         <p>No cutoffs yet.</p>
-        <button className="btn primary" style={{ marginTop: 14 }} onClick={() => setShowOpen(true)}>+ Open New Cutoff</button>
+        <button className="btn primary mt-4" onClick={() => setShowOpen(true)}>+ Open New Cutoff</button>
       </div></div>
       {showOpen && <OpenCutoffModal cutoffs={cutoffs} onClose={() => setShowOpen(false)}
         onDone={async id => {
@@ -201,78 +202,90 @@ export default function Utilities() {
   const accent = utility === 'WATER' ? '#2563EB' : '#D97706'
 
   return (
-    <div className="page" style={{ maxWidth: 1180 }}>
-      <div className="page-title">Utilities <small>Readings, rates &amp; P&amp;L</small></div>
+    <div className="page">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Utilities <small>Readings, rates &amp; P&amp;L</small></h1>
+          {win && <p className="page-sub">{win}{readOnly && <span className="badge oor ml-2 inline-flex items-center gap-1"><Lock size={10} />read-only</span>}</p>}
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {!readOnly && <button className="btn primary" disabled={saving} onClick={handleSave}>{saving ? 'Saving…' : <><Save size={14} /> Save All</>}</button>}
+          {cutoffs.length > 1 && <button className="btn danger" onClick={handleDeleteCutoff}><Trash2 size={14} /> Delete</button>}
+          <button className="btn secondary" onClick={() => setShowOpen(true)}>+ Open Cutoff</button>
+        </div>
+      </div>
 
       {/* Controls */}
       <div className="toolbar">
         <select value={cutoffId || ''} onChange={e => setCutoffId(Number(e.target.value))}>
           {cutoffs.map(c => <option key={c.id} value={c.id}>{c.name}{c.is_active ? ' (active)' : ''}</option>)}
         </select>
-        <div style={{ display: 'flex', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
+        <div className="flex gap-1 p-1 bg-slate-100 rounded-lg">
           {['WATER', 'ELECTRIC'].map(u => (
-            <button key={u} onClick={() => setUtility(u)} style={{
-              padding: '8px 18px', border: 'none', fontSize: 13, fontWeight: 700,
-              background: utility === u ? (u === 'WATER' ? '#2563EB' : '#D97706') : '#fff',
-              color: utility === u ? '#fff' : '#64748B',
-            }}>{u === 'WATER' ? '💧 Water' : '⚡ Electric'}</button>
+            <button key={u} onClick={() => setUtility(u)}
+              className={`px-4 py-1.5 rounded-md text-[12px] font-semibold transition-all inline-flex items-center gap-1 ${
+                utility === u
+                  ? u === 'WATER' ? 'bg-blue-600 text-white shadow-sm' : 'bg-amber-500 text-white shadow-sm'
+                  : 'text-slate-500 hover:text-slate-700'
+              }`}>
+              {u === 'WATER' ? <><Droplets size={13} /> Water</> : <><Zap size={13} /> Electric</>}
+            </button>
           ))}
         </div>
-        <span className="pager-info">{win}</span>
-        {readOnly && <span className="badge oor" style={{ alignSelf: 'center' }}>🔒 read-only</span>}
-        <button className="btn secondary" style={{ marginLeft: 'auto' }} onClick={() => setShowOpen(true)}>+ Open New Cutoff</button>
-        {cutoffs.length > 1 && <button className="btn danger" onClick={handleDeleteCutoff} title="Undo / delete this cutoff">🗑 Delete cutoff</button>}
-        {!readOnly && <button className="btn primary" disabled={saving} onClick={handleSave}>{saving ? 'Saving…' : '💾 Save All'}</button>}
       </div>
 
       {/* Provider line & rate */}
-      <div className="card" style={{ padding: 16, marginBottom: 14 }}>
-        <div style={{ fontSize: 11, fontWeight: 800, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 10 }}>
+      <div className="card p-4 mb-4">
+        <div className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest mb-3">
           {utility === 'WATER' ? 'Maynilad' : 'MERALCO'} Main Line &amp; Rate
         </div>
-        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          {[['Prev', `${uKey}_main_prev`], ['Current', `${uKey}_main_curr`], ['Consumption', `${uKey}_main_consumption`], ['Bill Amount (₱)', `${uKey}_main_amount`]].map(([lbl, k]) => (
-            <div className="fg" key={k} style={{ maxWidth: 130 }}>
+        <div className="flex gap-4 flex-wrap items-end">
+          {[['Prev Reading', `${uKey}_main_prev`], ['Actual Reading', `${uKey}_main_curr`], ['Consumption', `${uKey}_main_consumption`], ['Bill Amount (₱)', `${uKey}_main_amount`]].map(([lbl, k]) => (
+            <div className="fg max-w-[130px]" key={k}>
               <label>{lbl}</label>
               <input type="number" step="0.01" value={cfg[k] ?? ''} disabled={readOnly}
                 onChange={e => setF(k, e.target.value)} />
             </div>
           ))}
-          <div style={{ padding: '0 6px 6px' }}>
-            <div style={{ fontSize: 10, color: '#94A3B8', fontWeight: 700, textTransform: 'uppercase' }}>Standard rate</div>
-            <div style={{ fontSize: 18, fontWeight: 800, color: '#0F172A' }}>₱{r4(stdRate)}<span style={{ fontSize: 11, color: '#94A3B8' }}>/{unit}</span></div>
+          <div className="pb-1.5 px-1">
+            <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wide mb-0.5">Standard rate</div>
+            <div className="text-[18px] font-extrabold text-slate-900">
+              ₱{r4(stdRate)}<span className="text-[11px] text-slate-400">/{unit}</span>
+            </div>
           </div>
-          <div className="fg" style={{ maxWidth: 90 }}>
+          <div className="fg max-w-[90px]">
             <label>Markup %</label>
             <input type="number" step="0.1" value={cfg[`${uKey}_markup_pct`] ?? ''} disabled={readOnly || override}
               onChange={e => setF(`${uKey}_markup_pct`, e.target.value)} />
           </div>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#475569', paddingBottom: 8 }}>
+          <label className="flex items-center gap-1.5 text-[12px] text-slate-600 pb-2 cursor-pointer">
             <input type="checkbox" checked={!!override} disabled={readOnly}
-              onChange={e => setF(`${uKey}_rate_override`, e.target.checked)} /> manual
+              onChange={e => setF(`${uKey}_rate_override`, e.target.checked)} className="w-4 h-4 accent-navy-700" /> manual
           </label>
-          <div className="fg" style={{ maxWidth: 130 }}>
-            <label style={{ color: accent }}>Bedspace rate</label>
+          <div className="fg max-w-[130px]">
+            <label className={utility === 'WATER' ? 'text-blue-600' : 'text-amber-600'}>Bedspace rate</label>
             <input type="number" step="0.0001" value={override ? (cfg[`${uKey}_bedspace_rate`] ?? '') : Number(bedRate.toFixed(4))}
               disabled={readOnly || !override}
               onChange={e => setF(`${uKey}_bedspace_rate`, e.target.value)} />
           </div>
         </div>
-        <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 8 }}>
+        <p className="text-[11px] text-slate-400 mt-2 leading-relaxed">
           Standard = Bill ÷ Consumption · Bedspace = Standard × (1 + Markup%){override ? ' — manual override on' : ''}. The main line is the direct provider meter (≠ sum of room sub-meters).
-        </div>
+        </p>
       </div>
 
       {/* Utility P&L */}
       {pnl && <PnLCard pnl={pnl[utility]} utility={utility} />}
 
       {/* Common areas */}
-      <div className="card" style={{ padding: 16, marginBottom: 14 }}>
-        <div style={{ fontSize: 11, fontWeight: 800, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 10 }}>Common Areas — {utility === 'WATER' ? 'Water' : 'Electric'}</div>
+      <div className="card p-4 mb-4">
+        <div className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest mb-3">
+          Common Areas — {utility === 'WATER' ? 'Water' : 'Electric'}
+        </div>
         <div className="table-wrap">
           <table><thead><tr>
-            <th>Area</th><th>Rate</th><th>Prev</th><th>Current</th>
-            <th style={{ textAlign: 'right' }}>Consumption</th><th style={{ textAlign: 'right' }}>Amount</th>
+            <th>Area</th><th>Rate</th><th>Prev Reading</th><th>Actual Reading</th>
+            <th className="text-right">Consumption</th><th className="text-right">Amount</th>
           </tr></thead><tbody>
             {AREAS.map(([name, rt]) => {
               const key = `${name}|${utility}`; const a = areas[key] || {}
@@ -282,44 +295,51 @@ export default function Utilities() {
               return (
                 <tr key={name}>
                   <td><strong>{name}</strong></td>
-                  <td><span className="badge" style={{ background: rt === 'BEDSPACE' ? '#EFF6FF' : '#F1F5F9', color: rt === 'BEDSPACE' ? accent : '#64748B' }}>{rt === 'BEDSPACE' ? 'Bedspace' : 'Standard'}</span></td>
-                  <td><input type="number" step="0.01" value={a.previous_reading ?? 0} disabled={readOnly} onChange={e => setA('previous_reading', e.target.value)} style={inp} /></td>
-                  <td><input type="number" step="0.01" value={a.current_reading ?? 0} disabled={readOnly} onChange={e => setA('current_reading', e.target.value)} style={inp} /></td>
-                  <td style={{ textAlign: 'right' }}>{cons}</td>
-                  <td className="td-rate" style={{ textAlign: 'right' }}>{peso(cons * rate)}</td>
+                  <td>
+                    <span className={`badge ${rt === 'BEDSPACE' ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
+                      {rt === 'BEDSPACE' ? 'Bedspace' : 'Standard'}
+                    </span>
+                  </td>
+                  <td><input type="number" step="0.01" value={a.previous_reading ?? 0} disabled={readOnly} onChange={e => setA('previous_reading', e.target.value)} className="w-24 px-2 py-1 border border-slate-200 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" /></td>
+                  <td><input type="number" step="0.01" value={a.current_reading ?? 0} disabled={readOnly} onChange={e => setA('current_reading', e.target.value)} className="w-24 px-2 py-1 border border-slate-200 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" /></td>
+                  <td className="text-right">{cons}</td>
+                  <td className="td-rate text-right">{peso(cons * rate)}</td>
                 </tr>
               )
             })}
           </tbody></table>
         </div>
-        <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 6 }}>Lobby / 2nd Floor / Roof Deck = standard (overhead). Commercial = bedspace (separate billing, pending).</div>
+        <p className="text-[11px] text-slate-400 mt-2">Lobby / 2nd Floor / Roof Deck = standard (overhead). Commercial = bedspace (separate billing, pending).</p>
       </div>
 
       {/* Room readings */}
       {loading ? <Spin h={160} /> : (
         <div className="table-wrap">
           <table><thead><tr>
-            <th>Room</th><th>Type</th><th>Previous</th><th>Current</th><th>Consumption</th>
-            <th style={{ textAlign: 'right' }}>Rate</th><th style={{ textAlign: 'right' }}>Amount</th>
+            <th>Room</th><th>Type</th><th>Prev Reading</th><th>Actual Reading</th><th>Consumption</th>
+            <th className="text-right">Rate</th><th className="text-right">Amount</th>
           </tr></thead><tbody>
             {rows.map(r => (
               <tr key={r.room_id}>
-                <td><strong>{r.room_no}</strong></td>
-                <td style={{ fontSize: 11, color: '#64748B' }}>{r.room_type}</td>
+                <td className="font-bold text-slate-900">{r.room_no}</td>
+                <td className="text-[11px] text-slate-400">{r.room_type}</td>
                 <td>{Math.round(r.prev)}</td>
-                <td>{readOnly ? <span style={{ fontWeight: 600 }}>{r.curr === '' ? '—' : r.curr}</span>
-                  : <input type="number" step="0.01" value={r.curr} onChange={e => setEdits(ed => ({ ...ed, [r.room_id]: e.target.value }))} style={inp} />}</td>
-                <td style={{ fontWeight: 600, color: r.cons < 0 ? '#DC2626' : '#0F172A' }}>{r.cons == null ? '—' : r.cons}</td>
-                <td style={{ fontSize: 12, color: '#64748B', textAlign: 'right' }}>{r4(bedRate)}</td>
-                <td className="td-rate" style={{ textAlign: 'right' }}>{r.amount == null ? '—' : peso(r.amount)}</td>
+                <td>{readOnly
+                  ? <span className="font-semibold">{r.curr === '' ? '—' : r.curr}</span>
+                  : <input type="number" step="0.01" value={r.curr} onChange={e => setEdits(ed => ({ ...ed, [r.room_id]: e.target.value }))}
+                      className="w-24 px-2 py-1 border border-slate-200 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" />}
+                </td>
+                <td className={`font-semibold ${r.cons < 0 ? 'text-red-600' : 'text-slate-900'}`}>{r.cons == null ? '—' : r.cons}</td>
+                <td className="text-[12px] text-slate-400 text-right">{r4(bedRate)}</td>
+                <td className="td-rate text-right">{r.amount == null ? '—' : peso(r.amount)}</td>
               </tr>
             ))}
           </tbody><tfoot>
-            <tr style={{ background: '#F8FAFC', borderTop: '2px solid #1B3A8C' }}>
-              <td colSpan={4} style={{ fontWeight: 800, color: '#475569', textTransform: 'uppercase', fontSize: 11 }}>Room Totals</td>
-              <td style={{ fontWeight: 800 }}>{totals.cons.toLocaleString('en-PH')}</td>
+            <tr className="bg-slate-50 border-t-2 border-navy-700">
+              <td colSpan={4} className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wide">Room Totals</td>
+              <td className="font-extrabold">{totals.cons.toLocaleString('en-PH')}</td>
               <td></td>
-              <td style={{ fontWeight: 800, color: '#1B3A8C', textAlign: 'right' }}>{peso(totals.amount)}</td>
+              <td className="font-extrabold text-navy-500 text-right">{peso(totals.amount)}</td>
             </tr>
           </tfoot></table>
         </div>
@@ -337,36 +357,37 @@ export default function Utilities() {
   )
 }
 
-const inp = { width: 90, padding: '5px 8px', border: '1px solid var(--border)', borderRadius: 6, fontSize: 13 }
 function Spin({ h }) { return <div className="loading-screen" style={h ? { height: h } : {}}><div className="spinner" /></div> }
 
 // ── P&L card ──────────────────────────────────────────────────────────────────
 function PnLCard({ pnl, utility }) {
   const losing = pnl.variance < 0
-  const color = losing ? '#DC2626' : '#16a34a'
-  const row = (label, val, c) => (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13 }}>
-      <span style={{ color: '#475569' }}>{label}</span><span style={{ fontWeight: 700, color: c || '#0F172A' }}>{val}</span>
+  const Row = ({ label, val, cls }) => (
+    <div className="flex justify-between py-1 text-[13px]">
+      <span className="text-slate-500">{label}</span>
+      <span className={`font-semibold ${cls || 'text-slate-900'}`}>{val}</span>
     </div>
   )
   return (
-    <div className="card" style={{ padding: 16, marginBottom: 14, borderTop: `3px solid ${color}` }}>
-      <div style={{ fontSize: 11, fontWeight: 800, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 8 }}>
-        {utility === 'WATER' ? '💧 Water' : '⚡ Electric'} P&amp;L
+    <div className={`card p-4 mb-4 border-t-[3px] ${losing ? 'border-t-red-600' : 'border-t-emerald-600'}`}>
+      <div className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1">
+        {utility === 'WATER' ? <><Droplets size={12} /> Water</> : <><Zap size={12} /> Electric</>} P&amp;L
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 28px' }}>
+      <div className="grid grid-cols-2 gap-x-7">
         <div>
-          {row('Provider cost', peso(pnl.cost), '#DC2626')}
-          {row('Room collections', peso(pnl.roomCollections), '#16a34a')}
+          <Row label="Provider cost" val={peso(pnl.cost)} cls="text-red-600" />
+          <Row label="Room collections" val={peso(pnl.roomCollections)} cls="text-emerald-600" />
         </div>
         <div>
-          {row('Overhead (standard)', peso(pnl.overhead))}
-          {row('Commercial (pending)', peso(pnl.commercial), '#94A3B8')}
+          <Row label="Overhead (standard)" val={peso(pnl.overhead)} />
+          <Row label="Commercial (pending)" val={peso(pnl.commercial)} cls="text-slate-300" />
         </div>
       </div>
-      <div style={{ borderTop: '1px solid var(--border)', marginTop: 8, paddingTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontWeight: 800, textTransform: 'uppercase', fontSize: 12, color: '#475569' }}>Variance</span>
-        <span style={{ fontWeight: 800, fontSize: 18, color }}>{losing ? '−' : '+'}{peso(Math.abs(pnl.variance))} {losing ? '🔴 losing' : '🟢 earning'}</span>
+      <div className="border-t border-slate-100 mt-3 pt-3 flex justify-between items-center">
+        <span className="text-[12px] font-extrabold text-slate-500 uppercase tracking-wide">Variance</span>
+        <span className={`text-[18px] font-extrabold ${losing ? 'text-red-600' : 'text-emerald-600'}`}>
+          {losing ? '−' : '+'}{peso(Math.abs(pnl.variance))} {losing ? 'losing' : 'earning'}
+        </span>
       </div>
     </div>
   )
@@ -400,27 +421,37 @@ function OpenCutoffModal({ cutoffs, onClose, onDone, show }) {
       onDone(id)
     } catch (e) { show(e.message, 'error'); setBusy(false) }
   }
-  const ro = { fontSize: 9, color: '#94A3B8', fontWeight: 600 }
   return (
-    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+    <div className="overlay" onClick={e => e.stopPropagation()}>
       <div className="modal modal-sm">
-        <div className="modal-head"><h3>⚡ Open New Cutoff</h3><button className="btn-close" onClick={onClose}>✕</button></div>
+        <div className="modal-head">
+          <h3><span className="inline-flex items-center gap-1.5"><Zap size={16} /> Open New Cutoff</span></h3>
+          <button className="btn-close" onClick={onClose}><X size={16} /></button>
+        </div>
         <form onSubmit={submit}>
           <div className="modal-body">
             <div className="form-grid">
               <div className="fg full"><label>Period Name *</label><input type="text" value={f.name} onChange={e => set('name', e.target.value)} required /></div>
-              <div className="form-section">💧 Water window</div>
+              <div className="form-section flex items-center gap-1"><Droplets size={12} /> Water window</div>
               <div className="fg"><label>Start *</label><input type="date" value={f.water_start} onChange={e => onW(e.target.value)} /></div>
-              <div className="fg"><label>End <span style={ro}>(auto +1mo)</span></label><input type="date" value={f.water_end} disabled style={{ background: '#F8FAFC' }} /></div>
-              <div className="form-section">⚡ Electric window</div>
+              <div className="fg">
+                <label>End <span className="text-[9px] text-slate-400 font-semibold">(auto +1mo)</span></label>
+                <input type="date" value={f.water_end} disabled className="bg-slate-50" />
+              </div>
+              <div className="form-section flex items-center gap-1"><Zap size={12} /> Electric window</div>
               <div className="fg"><label>Start *</label><input type="date" value={f.electric_start} onChange={e => onE(e.target.value)} /></div>
-              <div className="fg"><label>End <span style={ro}>(auto +1mo)</span></label><input type="date" value={f.electric_end} disabled style={{ background: '#F8FAFC' }} /></div>
+              <div className="fg">
+                <label>End <span className="text-[9px] text-slate-400 font-semibold">(auto +1mo)</span></label>
+                <input type="date" value={f.electric_end} disabled className="bg-slate-50" />
+              </div>
             </div>
-            <p style={{ fontSize: 11, color: '#94A3B8', marginTop: 12 }}>Previous readings carry forward. Enter the provider main line + markup after opening to set rates.</p>
+            <p className="text-[11px] text-slate-400 mt-3 leading-relaxed">
+              Previous readings carry forward. Enter the provider main line + markup after opening to set rates.
+            </p>
           </div>
           <div className="modal-foot">
             <button type="button" className="btn secondary" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn primary" disabled={busy}>{busy ? 'Opening…' : '✓ Open Cutoff'}</button>
+            <button type="submit" className="btn primary" disabled={busy}>{busy ? 'Opening…' : 'Open Cutoff'}</button>
           </div>
         </form>
       </div>

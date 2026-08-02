@@ -92,7 +92,7 @@ export default function PrintElectricity() {
       charges,
       total: t.elec + (t.addonElectric || 0),
       details: t.special ? null : {
-        header: ['', 'Previous Reading', 'Current Reading', 'Actual Room Consumption (kWh)', 'Personal Consumption'],
+        header: ['', 'Prev Reading', 'Actual Reading', 'Actual Room Consumption (kWh)', 'Personal Consumption'],
         rows: [['Electric', reading(room.elec_prev), reading(room.elec_curr),
                 kwh((Number(room.elec_curr) || 0) - (Number(room.elec_prev) || 0)), kwh(t.elecCons)]],
       },

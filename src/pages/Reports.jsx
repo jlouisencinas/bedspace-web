@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { Camera, BarChart2, X } from 'lucide-react'
 import { fetchMonthlyReports, fetchCutoffs, saveManualReport, deleteMonthlyReport } from '../lib/supabase'
 import { buildAndSaveSnapshot } from '../lib/snapshot'
 import { useToast } from '../components/Toast'
@@ -73,32 +74,38 @@ export default function Reports() {
   const present = monthReports.filter(Boolean)
 
   const qTotal = (field) => present.reduce((s, r) => s + Number(r[field] || 0), 0)
-  const varColor = (v) => v < 0 ? '#DC2626' : '#16a34a'
+  const varColor = (v) => v < 0 ? 'text-red-600' : 'text-emerald-600'
 
   return (
-    <div className="page" style={{ maxWidth: 1000 }}>
-      <div className="page-title">Reports <small>Monthly snapshots → quarterly owner view</small></div>
+    <div className="page">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Reports <small>Monthly snapshots → quarterly owner view</small></h1>
+          <p className="page-sub">{reports.length} month(s) saved</p>
+        </div>
+        {isAdmin && (
+          <div className="flex gap-2">
+            <button className="btn secondary" onClick={() => setEditRow(null)}>+ Manual month</button>
+            <button className="btn primary" disabled={busy} onClick={snapshotNow}>
+              {busy ? 'Saving…' : <><Camera size={14} /> Snapshot now</>}
+            </button>
+          </div>
+        )}
+      </div>
 
       <div className="toolbar">
         <select value={quarter || ''} onChange={e => setQuarter(e.target.value)}>
           {quarters.length === 0 && <option value="">No snapshots yet</option>}
           {quarters.map(q => { const [y, n] = q.split('-Q'); return <option key={q} value={q}>{`Q${n} ${y}`}</option> })}
         </select>
-        <span className="pager-info">{reports.length} month(s) saved</span>
-        {isAdmin && <>
-          <button className="btn secondary" style={{ marginLeft: 'auto' }} onClick={() => setEditRow(null)}>+ Manual month</button>
-          <button className="btn primary" disabled={busy} onClick={snapshotNow}>
-            {busy ? 'Saving…' : '📸 Snapshot current month'}
-          </button>
-        </>}
       </div>
 
       {reports.length === 0 ? (
-        <div className="card"><div className="empty"><div className="empty-icon">📊</div>
-          <p>No snapshots yet. Click "Snapshot current month", or they're saved automatically when you open a new cutoff.</p>
+        <div className="card"><div className="empty"><BarChart2 size={32} className="mx-auto mb-3 text-slate-300" />
+          <p>No snapshots yet. Click "Snapshot now", or they're saved automatically when you open a new cutoff.</p>
         </div></div>
       ) : (
-        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        <div className="card overflow-hidden">
           <div className="card-header">{quarter ? `Q${qq} ${qy}` : ''} — Property, Collections &amp; P&amp;L</div>
           <div className="table-wrap" style={{ border: 'none', boxShadow: 'none', borderRadius: 0 }}>
             <table>
@@ -106,29 +113,29 @@ export default function Reports() {
                 <tr>
                   <th>Metric</th>
                   {monthsIdx.map((mi, i) => (
-                    <th key={mi} style={{ textAlign: 'right' }}>
+                    <th key={mi} className="text-right">
                       {MO[mi - 1]}{monthReports[i] ? '' : ' ·'}
                     </th>
                   ))}
-                  <th style={{ textAlign: 'right', background: '#EEF2F7' }}>Quarter Total</th>
+                  <th className="text-right bg-slate-100/60">Quarter Total</th>
                 </tr>
               </thead>
               <tbody>
                 {ROWS.map((row, idx) => row.section ? (
-                  <tr key={idx} style={{ background: '#F8FAFC' }}>
-                    <td colSpan={5} style={{ fontWeight: 800, fontSize: 11, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.5px' }}>{row.section}</td>
+                  <tr key={idx} className="bg-slate-50">
+                    <td colSpan={5} className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider">
+                      {row.section}
+                    </td>
                   </tr>
                 ) : (
                   <tr key={idx}>
-                    <td style={{ fontWeight: row.bold ? 800 : 500 }}>{row.label}</td>
+                    <td className={row.bold ? 'font-extrabold' : 'font-medium'}>{row.label}</td>
                     {monthReports.map((r, i) => (
-                      <td key={i} style={{ textAlign: 'right', fontWeight: row.bold ? 800 : 400,
-                        color: r && row.signed ? varColor(Number(r[row.sum])) : '#0f172a' }}>
+                      <td key={i} className={`text-right ${row.bold ? 'font-extrabold' : ''} ${r && row.signed ? varColor(Number(r[row.sum])) : 'text-slate-900'}`}>
                         {r ? row.get(r) : '—'}
                       </td>
                     ))}
-                    <td style={{ textAlign: 'right', background: '#EEF2F7', fontWeight: 800,
-                      color: row.signed ? varColor(qTotal(row.sum)) : '#1B3A8C' }}>
+                    <td className={`text-right bg-slate-50 font-extrabold ${row.signed ? varColor(qTotal(row.sum)) : 'text-navy-500'}`}>
                       {row.sum ? peso(qTotal(row.sum)) : '—'}
                     </td>
                   </tr>
@@ -141,14 +148,14 @@ export default function Reports() {
 
       {/* Manage snapshots (edit / delete / backfill) — admin only */}
       {isAdmin && reports.length > 0 && (
-        <div className="card" style={{ marginTop: 16, padding: '12px 16px' }}>
-          <div className="card-header" style={{ padding: 0, border: 'none', marginBottom: 8 }}>All saved months</div>
+        <div className="card mt-4 p-4">
+          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">All saved months</div>
           {[...reports].sort((a, b) => a.period_date.localeCompare(b.period_date)).map(r => (
-            <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #F1F5F9', fontSize: 13 }}>
-              <div style={{ flex: 1 }}>
-                <strong>{r.period_name || r.period_date?.slice(0, 7)}</strong>
-                {r.manual && <span className="badge oor" style={{ marginLeft: 6 }}>manual</span>}
-                <span style={{ color: '#94A3B8', marginLeft: 8 }}>Total {peso(r.col_total)} · Variance {peso(r.total_variance)}</span>
+            <div key={r.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0 text-[13px]">
+              <div className="flex-1">
+                <strong className="text-slate-900">{r.period_name || r.period_date?.slice(0, 7)}</strong>
+                {r.manual && <span className="badge oor ml-1.5">manual</span>}
+                <span className="text-slate-400 ml-2">Total {peso(r.col_total)} · Variance {peso(r.total_variance)}</span>
               </div>
               <button className="btn-xs blue" onClick={() => setEditRow(r)}>Edit</button>
               <button className="btn-xs red" onClick={async () => {
@@ -160,7 +167,7 @@ export default function Reports() {
         </div>
       )}
 
-      <p style={{ fontSize: 11, color: '#94A3B8', marginTop: 10 }}>
+      <p className="text-[11px] text-slate-400 mt-4 leading-relaxed">
         Snapshots auto-save when you open the next cutoff (re-closing overrides). Use <strong>+ Manual month</strong> to backfill earlier months or <strong>Edit</strong> to override any figure. Quarter columns show the three actual months; money rows total the quarter.
       </p>
 
@@ -223,10 +230,10 @@ function ManualReportModal({ initial, onClose, onDone, show }) {
   )
 
   return (
-    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+    <div className="overlay" onClick={e => e.stopPropagation()}>
       <div className="modal">
         <div className="modal-head"><h3>{f.id ? 'Edit' : 'Manual'} Monthly Snapshot</h3>
-          <button className="btn-close" onClick={onClose}>✕</button></div>
+          <button className="btn-close" onClick={onClose}><X size={16} /></button></div>
         <div className="modal-body">
           <div className="form-grid">
             <div className="fg"><label>Period Name *</label>
@@ -246,9 +253,9 @@ function ManualReportModal({ initial, onClose, onDone, show }) {
             {field('Water variance', 'water_variance')}
             {field('Electric variance', 'electric_variance')}
           </div>
-          <div style={{ marginTop: 10, fontSize: 13, color: '#475569', display: 'flex', gap: 20 }}>
-            <span>Total Collections: <strong style={{ color: '#1B3A8C' }}>{peso(colTotal)}</strong></span>
-            <span>Total Variance: <strong style={{ color: totVar < 0 ? '#DC2626' : '#16a34a' }}>{peso(totVar)}</strong></span>
+          <div className="mt-3 flex gap-5 text-[13px] text-slate-600 bg-slate-50 rounded-lg px-3 py-2">
+            <span>Total Collections: <strong className="text-navy-500">{peso(colTotal)}</strong></span>
+            <span>Total Variance: <strong className={totVar < 0 ? 'text-red-600' : 'text-emerald-600'}>{peso(totVar)}</strong></span>
           </div>
         </div>
         <div className="modal-foot">

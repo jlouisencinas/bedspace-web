@@ -1,0 +1,500 @@
+{
+  "info": {
+    "name": "Bedspace Manager — Supabase API",
+    "description": "REST API collection for the Bedspace Manager app (React + Supabase).\n\n## Setup\n1. Set the `baseUrl` collection variable to your Supabase project URL (e.g. https://abcxyz.supabase.co)\n2. Set the `anonKey` collection variable to your Supabase anon public key\n3. Run the **Sign In** request first — it auto-sets the `accessToken` variable used by all other requests\n\n## Auth header\nAll requests (except Sign In) use: `Authorization: Bearer {{accessToken}}`\n\n## Role-based access\n- viewer  → read-only (GET requests only)\n- user    → day-to-day ops; protected-field writes create an approval_request\n- admin   → full access including approve/reject",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl",     "value": "https://YOUR-REF.supabase.co", "description": "Supabase project URL" },
+    { "key": "anonKey",     "value": "YOUR-ANON-KEY",                "description": "Supabase anon public key (Project Settings → API)" },
+    { "key": "accessToken", "value": "",                              "description": "Set automatically by the Sign In request" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Sign In",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.access_token) {",
+                  "  pm.collectionVariables.set('accessToken', json.access_token);",
+                  "  console.log('Access token saved.');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "apikey",       "value": "{{anonKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"your-password\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/v1/token?grant_type=password",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "v1", "token"],
+              "query": [{ "key": "grant_type", "value": "password" }]
+            },
+            "description": "Authenticates a user and saves the access token as a collection variable. Run this first."
+          }
+        },
+        {
+          "name": "Sign Out",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/v1/logout",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "v1", "logout"]
+            }
+          }
+        },
+        {
+          "name": "Get My Profile (role check)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" },
+              { "key": "Accept",        "value": "application/json" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/profiles?select=id,email,role&id=eq.{{userId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "profiles"],
+              "query": [
+                { "key": "select", "value": "id,email,role" },
+                { "key": "id",     "value": "eq.{{userId}}", "description": "Replace with your user UUID from Sign In response" }
+              ]
+            },
+            "description": "Returns the calling user's profile row including their role (admin / user / viewer)."
+          }
+        },
+        {
+          "name": "Update User Role (admin only — SQL Editor)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" },
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Prefer",        "value": "return=representation" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"user\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/profiles?id=eq.TARGET-USER-UUID",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "profiles"],
+              "query": [{ "key": "id", "value": "eq.TARGET-USER-UUID" }]
+            },
+            "description": "Promote or demote a user. Role must be one of: admin, user, viewer.\nNote: RLS only allows admin to update others' profiles. Run from SQL Editor for initial setup."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Profiles",
+      "item": [
+        {
+          "name": "List All Profiles",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/profiles?select=id,email,role,created_at&order=created_at.desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "profiles"],
+              "query": [
+                { "key": "select", "value": "id,email,role,created_at" },
+                { "key": "order",  "value": "created_at.desc" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Filter by Role",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/profiles?select=id,email,role&role=eq.viewer",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "profiles"],
+              "query": [
+                { "key": "select", "value": "id,email,role" },
+                { "key": "role",   "value": "eq.viewer", "description": "Change to eq.user or eq.admin" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Approval Requests",
+      "item": [
+        {
+          "name": "Get Pending Requests (admin inbox)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/approval_requests?select=*,requester:requester_id(email),decision_maker:decision_maker_id(email)&status=eq.PENDING&order=created_at.desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "approval_requests"],
+              "query": [
+                { "key": "select", "value": "*,requester:requester_id(email),decision_maker:decision_maker_id(email)" },
+                { "key": "status", "value": "eq.PENDING" },
+                { "key": "order",  "value": "created_at.desc" }
+              ]
+            },
+            "description": "Returns all PENDING override requests. Admin only (checked in app layer)."
+          }
+        },
+        {
+          "name": "Get All Requests (history)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/approval_requests?select=*,requester:requester_id(email),decision_maker:decision_maker_id(email)&order=created_at.desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "approval_requests"],
+              "query": [
+                { "key": "select", "value": "*,requester:requester_id(email),decision_maker:decision_maker_id(email)" },
+                { "key": "order",  "value": "created_at.desc" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Requests for a Specific Entity",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/approval_requests?select=*&entity_type=eq.TENANT_STAY&entity_id=eq.ENTITY-UUID-HERE&order=created_at.desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "approval_requests"],
+              "query": [
+                { "key": "select",      "value": "*" },
+                { "key": "entity_type", "value": "eq.TENANT_STAY" },
+                { "key": "entity_id",   "value": "eq.ENTITY-UUID-HERE" },
+                { "key": "order",       "value": "created_at.desc" }
+              ]
+            },
+            "description": "Useful for showing pending changes on a tenant or bed record."
+          }
+        },
+        {
+          "name": "Create Approval Request (non-admin user)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" },
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Prefer",        "value": "return=representation" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requester_id\": \"USER-UUID-HERE\",\n  \"entity_type\": \"TENANT_STAY\",\n  \"entity_id\": \"TENANT-UUID-HERE\",\n  \"field_name\": \"move_out_date\",\n  \"old_value\": { \"move_out_date\": \"2026-07-31\" },\n  \"new_value\": { \"move_out_date\": \"2026-08-15\" },\n  \"reason\": \"Tenant requested extension due to relocation delay.\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/approval_requests",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "approval_requests"]
+            },
+            "description": "Called by the app when a non-admin attempts to change a protected field. RLS ensures requester_id must match the auth.uid()."
+          }
+        },
+        {
+          "name": "Approve Request (admin only)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" },
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Prefer",        "value": "return=representation" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"APPROVED\",\n  \"decision_maker_id\": \"ADMIN-UUID-HERE\",\n  \"decision_notes\": \"Approved — tenant confirmed via message.\",\n  \"decided_at\": \"2026-07-17T10:00:00Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/approval_requests?id=eq.REQUEST-UUID-HERE&status=eq.PENDING",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "approval_requests"],
+              "query": [
+                { "key": "id",     "value": "eq.REQUEST-UUID-HERE" },
+                { "key": "status", "value": "eq.PENDING", "description": "Guard: only PENDING requests can be decided" }
+              ]
+            },
+            "description": "After approving, the app must also PATCH the target entity with new_value from the response."
+          }
+        },
+        {
+          "name": "Reject Request (admin only)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" },
+              { "key": "Content-Type",  "value": "application/json" },
+              { "key": "Prefer",        "value": "return=representation" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"REJECTED\",\n  \"decision_maker_id\": \"ADMIN-UUID-HERE\",\n  \"decision_notes\": \"Could not verify the reason provided.\",\n  \"decided_at\": \"2026-07-17T10:00:00Z\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/approval_requests?id=eq.REQUEST-UUID-HERE&status=eq.PENDING",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "approval_requests"],
+              "query": [
+                { "key": "id",     "value": "eq.REQUEST-UUID-HERE" },
+                { "key": "status", "value": "eq.PENDING" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Count Pending (badge)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" },
+              { "key": "Prefer",        "value": "count=exact" },
+              { "key": "Range-Unit",    "value": "items" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/approval_requests?select=id&status=eq.PENDING",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "approval_requests"],
+              "query": [
+                { "key": "select", "value": "id" },
+                { "key": "status", "value": "eq.PENDING" }
+              ]
+            },
+            "description": "Returns count in the Content-Range response header (e.g. 0-0/3 → 3 pending). Used for the nav badge."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Rooms & Beds",
+      "item": [
+        {
+          "name": "Get All Beds with Tenant",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/beds_with_tenant?select=*&order=room_no,bed_letter",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "beds_with_tenant"],
+              "query": [
+                { "key": "select", "value": "*" },
+                { "key": "order",  "value": "room_no,bed_letter" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Bed Status",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"VACANT\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/beds?id=eq.BED-UUID-HERE",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "beds"],
+              "query": [{ "key": "id", "value": "eq.BED-UUID-HERE" }]
+            },
+            "description": "Valid statuses: VACANT, LEASED, RESERVED, OUT_OF_ORDER"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Tenants",
+      "item": [
+        {
+          "name": "List Tenants",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/tenants?select=*,beds(bed_letter,bed_location,room_id,rooms(room_no,room_type))&order=created_at.desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "tenants"],
+              "query": [
+                { "key": "select", "value": "*,beds(bed_letter,bed_location,room_id,rooms(room_no,room_type))" },
+                { "key": "order",  "value": "created_at.desc" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Single Tenant",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/tenants?select=*,beds(bed_letter,bed_location,rooms(room_no,room_type))&id=eq.TENANT-UUID-HERE",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "tenants"],
+              "query": [
+                { "key": "select", "value": "*,beds(bed_letter,bed_location,rooms(room_no,room_type))" },
+                { "key": "id",     "value": "eq.TENANT-UUID-HERE" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Utilities",
+      "item": [
+        {
+          "name": "List Cutoffs",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/cutoffs?select=*&order=water_start.desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "cutoffs"],
+              "query": [
+                { "key": "select", "value": "*" },
+                { "key": "order",  "value": "water_start.desc" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Utility Bill View",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/v_utility_bill?cutoff_id=eq.CUTOFF-UUID-HERE&order=room_no",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "v_utility_bill"],
+              "query": [
+                { "key": "cutoff_id", "value": "eq.CUTOFF-UUID-HERE" },
+                { "key": "order",     "value": "room_no" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reports",
+      "item": [
+        {
+          "name": "Monthly Reports",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/monthly_reports?select=*&order=year.desc,month.desc",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "monthly_reports"],
+              "query": [
+                { "key": "select", "value": "*" },
+                { "key": "order",  "value": "year.desc,month.desc" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Activity Log",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "apikey",        "value": "{{anonKey}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/rest/v1/activity_log?select=*&order=created_at.desc&limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["rest", "v1", "activity_log"],
+              "query": [
+                { "key": "select", "value": "*" },
+                { "key": "order",  "value": "created_at.desc" },
+                { "key": "limit",  "value": "50" }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

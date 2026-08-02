@@ -92,7 +92,7 @@ export default function PrintRentWater() {
       charges,
       total: t.rent + t.water + (t.addonRentWater || 0),
       details: t.special ? null : {
-        header: ['', 'Previous Reading', 'Current Reading', 'Actual Room Consumption (cu. m)', 'Personal Consumption'],
+        header: ['', 'Prev Reading', 'Actual Reading', 'Actual Room Consumption (cu. m)', 'Personal Consumption'],
         rows: [['Water', reading(room.water_prev), reading(room.water_curr),
                 cu((Number(room.water_curr) || 0) - (Number(room.water_prev) || 0)), cu(t.waterCons)]],
       },
