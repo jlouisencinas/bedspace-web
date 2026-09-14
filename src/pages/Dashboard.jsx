@@ -1,18 +1,37 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import {
   fetchBeds, fetchActivityLog, fetchCutoffs, fetchUtilityBill,
   fetchInterimReadings, fetchTenants, fetchAreaReadings,
+  fetchMonthlyReports, fetchActivityLogByType, fetchSplits, fetchAddons,
+  fetchPaymentsForCutoff,
 } from '../lib/supabase'
 import { computePnL } from '../lib/pnl'
+import { computeBilling } from '../lib/billing'
+import { getCachedBilling, cacheBilling } from '../lib/billingCache'
+import { buildPaymentMonitoring, summarizeCollections } from '../lib/collectionsSummary'
+import { useAuth } from '../lib/auth'
+import RoomMaintenancePanel  from '../components/RoomMaintenancePanel'
+import OccupancyYtdChart     from '../components/OccupancyYtdChart'
 import {
-  BedDouble, Users, DollarSign, Clock,
+  BedDouble, Users, PhilippinePeso, Clock,
   CheckCircle2, AlertTriangle, Zap, FileText, Droplets, History,
+  TrendingUp, Wallet, LogIn, LogOut as LogOutIcon,
+  CalendarClock, BarChart3, PieChart,
 } from 'lucide-react'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 const MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+const SOURCES = ['REFERRAL','FACEBOOK','TIKTOK','INSTAGRAM','WALK_IN']
+const SOURCE_LABELS = {
+  REFERRAL:  'Referral',
+  FACEBOOK:  'Facebook',
+  TIKTOK:    'TikTok',
+  INSTAGRAM: 'Instagram',
+  WALK_IN:   'Walk-In',
+}
+
 function fmtDate(v) {
   if (!v) return '—'
   const s = String(v).slice(0,10); const [y,m,d] = s.split('-')
@@ -20,9 +39,26 @@ function fmtDate(v) {
   return `${MO[+m-1]} ${+d}, ${y}`
 }
 function fmt(n) { return new Intl.NumberFormat('en-PH').format(n) }
+function fmtPeso(n) { return '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
 function daysUntil(dateStr) {
   if (!dateStr) return null
   return Math.ceil((new Date(dateStr) - new Date()) / 86400000)
+}
+function startOfMonthISO() {
+  const d = new Date()
+  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString()
+}
+function monthBounds() {
+  const d = new Date()
+  const start = new Date(d.getFullYear(), d.getMonth(), 1)
+  const end   = new Date(d.getFullYear(), d.getMonth() + 1, 0)
+  end.setHours(23, 59, 59, 999)
+  return { start, end }
+}
+function inRange(dateStr, start, end) {
+  if (!dateStr) return false
+  const d = new Date(dateStr)
+  return d >= start && d <= end
 }
 
 // ── sub-components ─────────────────────────────────────────────────────────────
@@ -64,32 +100,67 @@ function PnLMini({ label, v }) {
 // ── main ──────────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
+  const { isAdmin, isUser } = useAuth()
+  const canAct = isAdmin || isUser
+
   const [beds,    setBeds]    = useState([])
   const [logs,    setLogs]    = useState([])
+  const [tenants, setTenants] = useState([])
+  const [monthlyReports, setMonthlyReports] = useState([])
+  const [moveOutChanges, setMoveOutChanges] = useState([])
   const [pnl,     setPnl]     = useState(null)
   const [pnlCut,  setPnlCut]  = useState(null)
+  const [activeCutoff,     setActiveCutoff]     = useState(null)
+  const [billingPerTenant, setBillingPerTenant] = useState([])
+  const [cutoffPayments,   setCutoffPayments]   = useState([])
   const [loading, setLoading] = useState(true)
 
   async function load() {
     setLoading(true)
-    const [b, l] = await Promise.all([fetchBeds(), fetchActivityLog()])
-    setBeds(b); setLogs(l)
+    const [b, l, allTenants, reports, moChanges] = await Promise.all([
+      fetchBeds(),
+      fetchActivityLog(),
+      fetchTenants(),
+      fetchMonthlyReports(),
+      fetchActivityLogByType('Move-out Date Changed', startOfMonthISO()),
+    ])
+    setBeds(b); setLogs(l); setTenants(allTenants)
+    setMonthlyReports(reports); setMoveOutChanges(moChanges)
     setLoading(false)
     try {
       const cutoffs = await fetchCutoffs()
       const active = cutoffs.find(c => c.is_active) || cutoffs[0]
+      setActiveCutoff(active || null)
       if (active) {
-        const [bill, interims, tenants, areas] = await Promise.all([
-          fetchUtilityBill(active.id), fetchInterimReadings(active.id), fetchTenants(), fetchAreaReadings(active.id),
+        const [bill, interims, areas, splits, addons, cutoffPays] = await Promise.all([
+          fetchUtilityBill(active.id), fetchInterimReadings(active.id), fetchAreaReadings(active.id),
+          fetchSplits(active.id), fetchAddons(active.id), fetchPaymentsForCutoff(active.id),
         ])
         const areaArr = areas.map(a => ({ ...a, consumption: (Number(a.current_reading)||0) - (Number(a.previous_reading)||0) }))
-        setPnl(computePnL(active, bill, interims, tenants, areaArr))
+        setPnl(computePnL(active, bill, interims, allTenants, areaArr))
         setPnlCut(active.name)
+        setCutoffPayments(cutoffPays)
+        if (bill.length) {
+          const cached = getCachedBilling(active.id)
+          if (cached) {
+            setBillingPerTenant(cached)
+          } else {
+            const { perTenant } = computeBilling(active, bill, interims, allTenants, splits, addons, areaArr)
+            cacheBilling(active.id, perTenant)
+            setBillingPerTenant(perTenant)
+          }
+        }
       }
     } catch { /* best-effort */ }
   }
 
   useEffect(() => { load() }, [])
+
+  const collectionsSummary = useMemo(() => {
+    if (!activeCutoff || billingPerTenant.length === 0) return null
+    const rows = buildPaymentMonitoring(activeCutoff, tenants, billingPerTenant, cutoffPayments)
+    return summarizeCollections(rows)
+  }, [activeCutoff, tenants, billingPerTenant, cutoffPayments])
 
   if (loading) return (
     <div className="loading-screen">
@@ -139,12 +210,48 @@ export default function Dashboard() {
 
   const recent = logs.slice(0, 8)
 
+  // ── New monthly metrics (§9/§10) ──────────────────────────────────────────
+  const { start: moStart, end: moEnd } = monthBounds()
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+
+  const movingOutThisMonth = beds.filter(b =>
+    b.status === 'LEASED' && inRange(b.move_out_date, moStart, moEnd)
+  ).length
+
+  const moveInsThisMonth = tenants.filter(t => inRange(t.move_in_date, moStart, moEnd)).length
+
+  const mtdProjectedMoveOuts = beds.filter(b =>
+    b.status === 'LEASED' && b.move_out_date && new Date(b.move_out_date) >= today && new Date(b.move_out_date) <= moEnd
+  ).length
+
+  // Only later-pushing edits count as "extensions" (§9 default assumption).
+  const leaseExtensions = moveOutChanges.filter(e => {
+    const meta = e.metadata || {}
+    return meta.new_move_out_date && meta.old_move_out_date && meta.new_move_out_date > meta.old_move_out_date
+  }).length
+
+  // Move-in source breakdown (all tenants, not just currently active — source
+  // is assigned at move-in and doesn't change).
+  const sourceCounts = SOURCES.map(s => ({
+    source: s,
+    label:  SOURCE_LABELS[s],
+    count:  tenants.filter(t => t.source === s).length,
+  }))
+  const maxSourceCount = Math.max(1, ...sourceCounts.map(s => s.count))
+
+  // Occupancy YTD — gaps for months with no snapshot, not zero-value bars.
+  const currentYear = new Date().getFullYear()
+  const occYtdData = monthlyReports
+    .filter(r => r.period_date && new Date(r.period_date).getFullYear() === currentYear && r.occupancy_pct != null)
+    .sort((a, b) => a.period_date.localeCompare(b.period_date))
+    .map(r => ({ month: MO[new Date(r.period_date).getMonth()], occupancy_pct: Number(r.occupancy_pct) }))
+
   return (
     <div className="page">
       {/* ── Header ── */}
       <div className="mb-6">
         <h1 className="page-title">Dashboard</h1>
-        <p className="page-sub">Property overview and recent activity</p>
+        <p className="page-sub">Your Property at a Glance</p>
       </div>
 
       {/* ── KPI Cards ── */}
@@ -152,7 +259,15 @@ export default function Dashboard() {
         <KpiCard label="Occupied Beds"   value={leased}              sub={`of ${sellable} sellable`}      icon={BedDouble}   color="blue"  />
         <KpiCard label="Vacant"          value={vacant}              sub="available now"                  icon={CheckCircle2} color="green" />
         <KpiCard label="Reserved"        value={reserved}            sub="pending move-in"                icon={Clock}       color="amber" />
-        <KpiCard label="Monthly Revenue" value={`₱${fmt(revenue)}`} sub={`${occPct}% occupancy`}         icon={DollarSign}  color="navy"  />
+        <KpiCard label="Monthly Revenue" value={`₱${fmt(revenue)}`} sub={`${occPct}% occupancy`}         icon={PhilippinePeso}  color="navy"  />
+      </div>
+
+      {/* ── Monthly metrics (§9/§10) ── */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+        <KpiCard label="Moving Out This Month"    value={movingOutThisMonth}    sub="active tenants"          icon={LogOutIcon}    color="amber" />
+        <KpiCard label="Move-ins This Month"      value={moveInsThisMonth}      sub="all move-ins"            icon={LogIn}         color="blue"  />
+        <KpiCard label="Lease Extensions"         value={leaseExtensions}       sub="this month"              icon={CalendarClock} color="green" />
+        <KpiCard label="MTD Projected Move-outs"  value={mtdProjectedMoveOuts}  sub="remainder of month"      icon={AlertTriangle} color="navy"  />
       </div>
 
       {/* ── Occupancy Bar ── */}
@@ -184,6 +299,33 @@ export default function Dashboard() {
               {label} ({n})
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* ── Occupancy YTD + Move-in Source ── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+        <div className="bg-white rounded-xl border border-slate-200 shadow-card p-5">
+          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+            <BarChart3 size={12} /> Occupancy Rate YTD
+          </div>
+          <OccupancyYtdChart data={occYtdData} />
+        </div>
+
+        <div className="bg-white rounded-xl border border-slate-200 shadow-card p-5">
+          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+            <PieChart size={12} /> Move-in Source Breakdown
+          </div>
+          <div className="space-y-3">
+            {sourceCounts.map(s => (
+              <div key={s.source} className="flex items-center gap-3">
+                <div className="w-20 text-[12px] font-medium text-slate-700 truncate">{s.label}</div>
+                <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-navy-500 rounded-full transition-all duration-500" style={{ width: `${(s.count / maxSourceCount) * 100}%` }} />
+                </div>
+                <div className="text-[12px] font-semibold text-slate-500 w-8 text-right">{s.count}</div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -254,6 +396,53 @@ export default function Dashboard() {
             </div>
           </div>
         </Link>
+      )}
+
+      {/* ── Projected vs. Actual Collections ── */}
+      <Link
+        to="/payment-monitoring"
+        className="block bg-white rounded-xl border border-slate-200 shadow-card p-5 mb-5 hover:shadow-card-lg transition-shadow border-t-[3px] border-t-navy-500"
+      >
+        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-2">
+          <TrendingUp size={12} /> Projected vs. Actual Collections {activeCutoff ? `· ${activeCutoff.name}` : ''}
+        </div>
+        {!activeCutoff ? (
+          <div className="empty py-4">
+            <Wallet size={28} className="mx-auto mb-2 text-slate-300" />
+            <p>No active cutoff. Open one in Utilities first.</p>
+          </div>
+        ) : !collectionsSummary ? (
+          <p className="text-[13px] text-slate-400">No billing data yet for this cutoff.</p>
+        ) : (
+          <div className="flex justify-between items-center flex-wrap gap-4">
+            <div className="flex gap-8">
+              <div>
+                <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Billed</div>
+                <div className="text-[15px] font-bold text-slate-900">{fmtPeso(collectionsSummary.totalBilled)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Paid</div>
+                <div className="text-[15px] font-bold text-emerald-600">{fmtPeso(collectionsSummary.totalPaid)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Outstanding</div>
+                <div className="text-[15px] font-bold text-red-600">{fmtPeso(collectionsSummary.totalOutstanding)}</div>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Collected</div>
+              <div className="text-[22px] font-bold mt-0.5 text-navy-600">{collectionsSummary.pctCollected}%</div>
+              <div className="text-[11px] text-slate-400">{collectionsSummary.unpaidCount}/{collectionsSummary.tenantCount} unpaid</div>
+            </div>
+          </div>
+        )}
+      </Link>
+
+      {/* ── Room Maintenance ── */}
+      {canAct && (
+        <div className="mb-5">
+          <RoomMaintenancePanel />
+        </div>
       )}
 
       {/* ── Two-column: Upcoming + Recent ── */}

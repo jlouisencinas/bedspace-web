@@ -19,10 +19,13 @@ const TYPE_CONFIG = {
   'Move In':                    { bg: 'bg-emerald-50',  text: 'text-emerald-700',  dot: 'bg-emerald-500'  },
   'Move Out':                   { bg: 'bg-red-50',      text: 'text-red-700',      dot: 'bg-red-400'      },
   'Room Transfer':              { bg: 'bg-blue-50',     text: 'text-blue-700',     dot: 'bg-blue-500'     },
+  'Tenant Profile Updated':     { bg: 'bg-sky-50',      text: 'text-sky-700',      dot: 'bg-sky-400'      },
+  'Move-out Date Changed':      { bg: 'bg-amber-50',    text: 'text-amber-700',    dot: 'bg-amber-400'    },
   // Payments
   'Payment - Rent + Water':     { bg: 'bg-navy-50',     text: 'text-navy-700',     dot: 'bg-navy-500'     },
   'Payment - Electricity':      { bg: 'bg-blue-50',     text: 'text-blue-700',     dot: 'bg-blue-400'     },
   'Payment - Other':            { bg: 'bg-slate-100',   text: 'text-slate-600',    dot: 'bg-slate-400'    },
+  'Payment Voided':             { bg: 'bg-rose-50',     text: 'text-rose-700',     dot: 'bg-rose-400'     },
   // Approvals
   'Approval Requested':         { bg: 'bg-amber-50',    text: 'text-amber-700',    dot: 'bg-amber-500'    },
   'Approval Approved':          { bg: 'bg-blue-50',     text: 'text-blue-700',     dot: 'bg-blue-500'     },
@@ -45,6 +48,7 @@ const TYPE_CONFIG = {
   'Room Config Updated':        { bg: 'bg-blue-50',     text: 'text-blue-700',     dot: 'bg-blue-400'     },
   'Bed Rate Updated':           { bg: 'bg-indigo-50',   text: 'text-indigo-700',   dot: 'bg-indigo-400'   },
   'Bed Removed':                { bg: 'bg-rose-50',     text: 'text-rose-700',     dot: 'bg-rose-400'     },
+  'Room Reconfigured':          { bg: 'bg-purple-50',   text: 'text-purple-700',   dot: 'bg-purple-400'   },
   'Add-on Type Created':        { bg: 'bg-teal-50',     text: 'text-teal-700',     dot: 'bg-teal-400'     },
   'Add-on Type Updated':        { bg: 'bg-teal-50',     text: 'text-teal-600',     dot: 'bg-teal-300'     },
   'Add-on Type Deleted':        { bg: 'bg-rose-50',     text: 'text-rose-600',     dot: 'bg-rose-300'     },
@@ -53,13 +57,13 @@ const TYPE_CONFIG = {
 }
 
 const APPROVAL_TYPES = new Set(['Approval Requested', 'Approval Approved', 'Approval Rejected'])
-const PAYMENT_TYPES  = new Set(['Payment - Rent + Water', 'Payment - Electricity', 'Payment - Other'])
+const PAYMENT_TYPES  = new Set(['Payment - Rent + Water', 'Payment - Electricity', 'Payment - Other', 'Payment Voided'])
 const BILLING_TYPES  = new Set([
   'Cutoff Opened', 'Cutoff Updated', 'Cutoff Deleted',
   'Meter Readings Saved', 'Interim Reading Added', 'Interim Reading Deleted',
   'Add-on Saved', 'Add-on Updated', 'Add-on Deleted', 'Room Split Updated',
   'Bed Status Changed', 'Ticket Raised', 'Ticket Resolved',
-  'Room Config Updated', 'Bed Rate Updated', 'Bed Removed',
+  'Room Config Updated', 'Bed Rate Updated', 'Bed Removed', 'Room Reconfigured',
   'Add-on Type Created', 'Add-on Type Updated', 'Add-on Type Deleted',
 ])
 
@@ -142,11 +146,14 @@ export default function Activity() {
             <option value="Move In">Move In</option>
             <option value="Move Out">Move Out</option>
             <option value="Room Transfer">Room Transfer</option>
+            <option value="Tenant Profile Updated">Tenant Profile Updated</option>
+            <option value="Move-out Date Changed">Move-out Date Changed</option>
           </optgroup>
           <optgroup label="Payments">
             <option value="Payment - Rent + Water">Payment - Rent + Water</option>
             <option value="Payment - Electricity">Payment - Electricity</option>
             <option value="Payment - Other">Payment - Other</option>
+            <option value="Payment Voided">Payment Voided</option>
           </optgroup>
           <optgroup label="Approvals">
             <option value="Approval Requested">Approval Requested</option>
@@ -173,6 +180,7 @@ export default function Activity() {
             <option value="Room Config Updated">Room Config Updated</option>
             <option value="Bed Rate Updated">Bed Rate Updated</option>
             <option value="Bed Removed">Bed Removed</option>
+            <option value="Room Reconfigured">Room Reconfigured</option>
             <option value="Add-on Type Created">Add-on Type Created</option>
             <option value="Add-on Type Updated">Add-on Type Updated</option>
             <option value="Add-on Type Deleted">Add-on Type Deleted</option>

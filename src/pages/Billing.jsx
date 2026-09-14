@@ -200,7 +200,7 @@ export default function Billing() {
                       {t.transferred && <span className="badge leased ml-1.5" title="Mid-period room transfer — readings show old room (period start → transfer date); amounts include both rooms">XFER</span>}
                       {t.wholeRoom   && <span className="badge ml-1.5" style={{background:'#f0f9ff',color:'#0369a1',border:'1px solid #bae6fd'}} title="Single tenant renting the entire room — all bed rates combined, full room utilities">ROOM</span>}
                     </td>
-                    <td>{t.room_no}</td>
+                    <td>{t.transferred && t.fromRoomNo ? `${t.fromRoomNo}→${t.room_no}` : t.room_no}</td>
                     <td><strong>{t.bed}</strong></td>
                     {billCat === 'RENT_WATER' ? (
                       <>

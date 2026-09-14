@@ -182,6 +182,21 @@ export async function rejectRequest(id, decisionNotes = null) {
 }
 
 /**
+ * Pending requests targeting one entity (any field_name), newest first.
+ */
+export async function fetchPendingForEntity(entityType, entityId) {
+  const { data, error } = await supabase
+    .from('approval_requests')
+    .select('id, field_name, requester_email, requester_id, created_at')
+    .eq('status', 'PENDING')
+    .eq('entity_type', entityType)
+    .eq('entity_id', entityId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
+/**
  * Count pending requests — used for the nav badge.
  */
 export async function fetchPendingCount() {

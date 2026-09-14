@@ -275,6 +275,7 @@
   .bed-dot.vacant   { @apply bg-emerald-500; }
   .bed-dot.reserved { @apply bg-navy-500; }
   .bed-dot.oor      { @apply bg-slate-300; }
+  .bed-dot.removed  { @apply bg-slate-200 text-slate-400; }
   .bed-info     { @apply flex-1 min-w-0; }
   .bed-location { @apply text-[9px] font-bold uppercase tracking-wider text-slate-400; }
   .bed-name     { @apply text-[12px] font-semibold text-slate-900 truncate leading-tight mt-0.5; }

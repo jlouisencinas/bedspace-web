@@ -361,7 +361,7 @@ function Spin({ h }) { return <div className="loading-screen" style={h ? { heigh
 
 // ── P&L card ──────────────────────────────────────────────────────────────────
 function PnLCard({ pnl, utility }) {
-  const losing = pnl.variance < 0
+  const isShortfall = pnl.variance < 0
   const Row = ({ label, val, cls }) => (
     <div className="flex justify-between py-1 text-[13px]">
       <span className="text-slate-500">{label}</span>
@@ -369,7 +369,7 @@ function PnLCard({ pnl, utility }) {
     </div>
   )
   return (
-    <div className={`card p-4 mb-4 border-t-[3px] ${losing ? 'border-t-red-600' : 'border-t-emerald-600'}`}>
+    <div className={`card p-4 mb-4 border-t-[3px] ${isShortfall ? 'border-t-red-600' : 'border-t-emerald-600'}`}>
       <div className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1">
         {utility === 'WATER' ? <><Droplets size={12} /> Water</> : <><Zap size={12} /> Electric</>} P&amp;L
       </div>
@@ -385,8 +385,8 @@ function PnLCard({ pnl, utility }) {
       </div>
       <div className="border-t border-slate-100 mt-3 pt-3 flex justify-between items-center">
         <span className="text-[12px] font-extrabold text-slate-500 uppercase tracking-wide">Variance</span>
-        <span className={`text-[18px] font-extrabold ${losing ? 'text-red-600' : 'text-emerald-600'}`}>
-          {losing ? '−' : '+'}{peso(Math.abs(pnl.variance))} {losing ? 'losing' : 'earning'}
+        <span className={`text-[18px] font-extrabold ${isShortfall ? 'text-red-600' : 'text-emerald-600'}`}>
+          {isShortfall ? '−' : '+'}{peso(Math.abs(pnl.variance))} {isShortfall ? 'Shortfall' : 'Surplus'}
         </span>
       </div>
     </div>

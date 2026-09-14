@@ -70,8 +70,8 @@ export default function TransferModal({ tenant, vacantBeds, onClose, onDone }) {
 
   function validate() {
     if (!toBedId) return 'Please select a destination bed.'
-    if (transferDate < today()) return 'Transfer date cannot be in the past.'
     if (!transferDate) return 'Transfer date is required.'
+    if (!isAdmin && transferDate < today()) return 'Transfer date cannot be in the past.'
     if (!newRate || Number(newRate) <= 0) return 'Please enter a valid rate.'
     if (!waterReading || Number(waterReading) < 0) return 'Water meter reading is required.'
     if (minWater !== null && Number(waterReading) < minWater)
@@ -210,7 +210,7 @@ export default function TransferModal({ tenant, vacantBeds, onClose, onDone }) {
                 <input
                   type="date"
                   value={transferDate}
-                  min={today()}
+                  min={isAdmin ? undefined : today()}
                   onChange={e => { setTransferDate(e.target.value); setError('') }}
                   required
                 />

@@ -8,6 +8,7 @@ import Login          from './pages/Login'
 import Dashboard      from './pages/Dashboard'
 import BedMap         from './pages/BedMap'
 import Tenants        from './pages/Tenants'
+import EditTenantProfile from './pages/EditTenantProfile'
 import Collections    from './pages/Collections'
 import Utilities      from './pages/Utilities'
 import Billing        from './pages/Billing'
@@ -19,6 +20,7 @@ import Approvals      from './pages/Approvals'
 import Users          from './pages/Users'
 import Maintenance    from './pages/Maintenance'
 import Property      from './pages/Property'
+import PaymentMonitoring from './pages/PaymentMonitoring'
 
 function SetupScreen() {
   return (
@@ -54,7 +56,9 @@ function Layout() {
             {/* user + admin */}
             {(isAdmin || isUser) && <>
               <Route path="/tenants"     element={<Tenants />}     />
+              <Route path="/edit-tenant" element={<EditTenantProfile />} />
               <Route path="/collections" element={<Collections />} />
+              <Route path="/payment-monitoring" element={<PaymentMonitoring />} />
               <Route path="/maintenance" element={<Maintenance />} />
               <Route path="/utilities"   element={<Utilities />}   />
               <Route path="/billing"     element={<Billing />}     />

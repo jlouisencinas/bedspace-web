@@ -1,8 +1,10 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { fetchTickets, fetchTenants, addTicket, resolveTicket, supabase } from '../lib/supabase'
+import { fetchTickets, fetchTenants, fetchRooms } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
-import { Wrench, Plus, CheckCircle, Search, Hammer, X } from 'lucide-react'
+import NewTicketModal     from '../components/NewTicketModal'
+import ResolveTicketModal from '../components/ResolveTicketModal'
+import { Wrench, Plus, CheckCircle, Search, Hammer } from 'lucide-react'
 
 function fmtDateTime(d) {
   if (!d) return '—'
@@ -10,167 +12,6 @@ function fmtDateTime(d) {
     month: 'short', day: 'numeric', year: 'numeric',
     hour: 'numeric', minute: '2-digit',
   })
-}
-
-// ── New Ticket Modal ───────────────────────────────────────────────────────────
-
-function NewTicketModal({ rooms, tenants, onClose, onSaved }) {
-  const [form, setForm] = useState({ room_id: '', tenant_id: '', concern: '', remarks: '' })
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
-
-  // Tenants that live in the selected room
-  const roomTenants = useMemo(() => {
-    if (!form.room_id) return tenants
-    return tenants.filter(t => String(t.beds?.room_id) === String(form.room_id))
-  }, [tenants, form.room_id])
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    if (!form.room_id) { setError('Please select a room.'); return }
-    if (!form.concern.trim()) { setError('Concern is required.'); return }
-    setBusy(true); setError('')
-    try {
-      await addTicket({
-        roomId:    Number(form.room_id),
-        tenantId:  form.tenant_id ? Number(form.tenant_id) : null,
-        concern:   form.concern.trim(),
-        remarks:   form.remarks.trim() || null,
-      })
-      onSaved()
-    } catch(err) {
-      setError(err.message)
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="overlay" onClick={e => e.stopPropagation()}>
-      <div className="modal modal-sm">
-        <div className="modal-head">
-          <h3>New Maintenance Ticket</h3>
-          <button className="btn-close" onClick={onClose}><X size={16} /></button>
-        </div>
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            <div className="form-grid">
-              <div className="fg full">
-                <label>Room <span className="text-red-600">*</span></label>
-                <select
-                  value={form.room_id}
-                  onChange={e => { set('room_id', e.target.value); set('tenant_id', '') }}
-                  required
-                >
-                  <option value="">— Select room —</option>
-                  {rooms.map(r => (
-                    <option key={r.id} value={r.id}>Room {r.room_no} · {r.room_type}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="fg full">
-                <label>Raised by Tenant (optional)</label>
-                <select
-                  value={form.tenant_id}
-                  onChange={e => set('tenant_id', e.target.value)}
-                >
-                  <option value="">— Staff-raised / anonymous —</option>
-                  {roomTenants.map(t => (
-                    <option key={t.id} value={t.id}>{t.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="fg full">
-                <label>Concern <span className="text-red-600">*</span></label>
-                <input
-                  type="text"
-                  value={form.concern}
-                  onChange={e => { setError(''); set('concern', e.target.value) }}
-                  placeholder="e.g. aircon leak, clogged drain"
-                  required
-                />
-              </div>
-              <div className="fg full">
-                <label>Remarks (optional)</label>
-                <textarea rows={2} value={form.remarks} onChange={e => set('remarks', e.target.value)} placeholder="Additional details…" />
-              </div>
-            </div>
-            {error && (
-              <div className="mt-3 p-3 bg-red-50 text-red-700 text-[13px] rounded-xl border border-red-100">{error}</div>
-            )}
-          </div>
-          <div className="modal-foot">
-            <button type="button" className="btn secondary" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn primary" disabled={busy}>
-              {busy ? 'Saving…' : '+ Raise Ticket'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  )
-}
-
-// ── Resolve Modal ─────────────────────────────────────────────────────────────
-
-function ResolveModal({ ticket, onClose, onSaved }) {
-  const [notes, setNotes] = useState('')
-  const [busy,  setBusy]  = useState(false)
-  const [error, setError] = useState('')
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setBusy(true); setError('')
-    try {
-      await resolveTicket(ticket.id, notes.trim() || null)
-      onSaved()
-    } catch(err) {
-      setError(err.message)
-      setBusy(false)
-    }
-  }
-
-  const room   = ticket.rooms?.room_no  ? `Room ${ticket.rooms.room_no}` : '—'
-  const tenant = ticket.tenants?.name   || 'Staff-raised'
-
-  return (
-    <div className="overlay" onClick={e => e.stopPropagation()}>
-      <div className="modal modal-sm">
-        <div className="modal-head">
-          <h3>Resolve Ticket</h3>
-          <button className="btn-close" onClick={onClose}><X size={16} /></button>
-        </div>
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body space-y-4">
-            <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-[13px]">
-              <div className="font-semibold text-slate-900 mb-1">{ticket.concern}</div>
-              <div className="text-slate-500">{room} · {tenant} · Raised {fmtDateTime(ticket.raised_at)}</div>
-              {ticket.remarks && <div className="mt-1.5 text-slate-600 italic">{ticket.remarks}</div>}
-            </div>
-            <div className="fg">
-              <label>Resolution notes (optional)</label>
-              <textarea
-                rows={3}
-                value={notes}
-                onChange={e => setNotes(e.target.value)}
-                placeholder="Describe what was done to resolve this issue…"
-              />
-            </div>
-            {error && (
-              <div className="p-3 bg-red-50 text-red-700 text-[13px] rounded-xl border border-red-100">{error}</div>
-            )}
-          </div>
-          <div className="modal-foot">
-            <button type="button" className="btn secondary" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn success" disabled={busy}>
-              {busy ? 'Saving…' : 'Mark Resolved'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  )
 }
 
 // ── Maintenance Page ──────────────────────────────────────────────────────────
@@ -195,11 +36,11 @@ export default function Maintenance() {
     try {
       const [t, roomRows, tenantRows] = await Promise.all([
         fetchTickets({ roomId: roomFilter || undefined, status: statusFilter || undefined }),
-        supabase.from('rooms').select('id, room_no, room_type').order('room_no'),
+        fetchRooms(),
         fetchTenants(),
       ])
       setTickets(t)
-      setRooms(roomRows.data || [])
+      setRooms(roomRows || [])
       setTenants(tenantRows.filter(t => t.is_active))
     } catch(e) { show(e.message, 'error') }
     setLoading(false)
@@ -350,7 +191,7 @@ export default function Maintenance() {
       )}
 
       {resolveT && (
-        <ResolveModal
+        <ResolveTicketModal
           ticket={resolveT}
           onClose={() => setResolveT(null)}
           onSaved={() => { setResolveT(null); show('Ticket resolved.', 'success'); load() }}

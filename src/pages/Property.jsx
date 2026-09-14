@@ -2,25 +2,23 @@ import { useState, useEffect } from 'react'
 import {
   Building2, Settings2, DollarSign, Tag, RefreshCw,
   ChevronDown, ChevronRight, Plus, Trash2, Edit2, Check, X,
-  RotateCcw, AlertTriangle, Clock, Info,
+  RotateCcw, AlertTriangle, Clock, Wrench,
 } from 'lucide-react'
 import {
   fetchPropertySummary, updateRoomConfig, updateBedRate, removeBed, restoreBed,
-  fetchAddonTypes, saveAddonType, deactivateAddonType,
-  fetchAllAddons, addTenantAddon, removeTenantAddon,
-  fetchTenants, fetchCutoffs, supabase,
+  fetchAddonTypes, saveAddonType, deactivateAddonType, supabase,
 } from '../lib/supabase'
 import { requestApproval } from '../lib/approvals'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
+import RoomReconfigureModal from '../components/RoomReconfigureModal'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n) { return n != null ? '₱' + Number(n).toLocaleString('en-PH') : '—' }
 
 const ROOM_TYPES = [
-  'Solo Room', 'Two Bed Sharing', 'Three Bed Sharing',
-  'Four Bed Sharing', 'Studio', 'Commercial',
+  'Solo Room', '2-Bed Sharing', '4-Bed Sharing', '6-Bed Sharing',
 ]
 const ROOM_STATUSES = ['ACTIVE', 'CONVERTED', 'MAINTENANCE', 'RESERVED']
 const ROOM_STATUS_LABELS = {
@@ -43,6 +41,34 @@ function StatusPill({ status }) {
 }
 
 const INPUT_SM = 'px-2 py-1 border border-slate-200 rounded-lg text-[12px] bg-white focus:outline-none focus:border-navy-500 transition-colors'
+
+// ── Confirm Modal ─────────────────────────────────────────────────────────────
+
+function ConfirmModal({ message, confirmLabel = 'Confirm', danger = false, onConfirm, onClose }) {
+  return (
+    <div className="overlay" onClick={e => e.stopPropagation()}>
+      <div className="modal modal-sm">
+        <div className="modal-head">
+          <h3>Confirm</h3>
+          <button className="btn-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="modal-body">
+          <p className="text-[13px] text-slate-600">{message}</p>
+        </div>
+        <div className="modal-foot">
+          <button type="button" className="btn secondary" onClick={onClose}>Cancel</button>
+          <button
+            type="button"
+            className={`btn ${danger ? 'danger' : 'primary'}`}
+            onClick={() => { onConfirm(); onClose() }}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // ── Summary Tab ───────────────────────────────────────────────────────────────
 
@@ -132,11 +158,11 @@ function SummaryTab({ summary }) {
 
 function RoomConfigTab({ summary, onDone }) {
   const { isAdmin } = useAuth()
-  const { showToast } = useToast()
-  const [editing,   setEditing]   = useState(null)
-  const [form,      setForm]      = useState({})
-  const [reason,    setReason]    = useState('')
-  const [saving,    setSaving]    = useState(false)
+  const { show: showToast, ToastEl } = useToast()
+  const [editing,    setEditing]    = useState(null)
+  const [form,       setForm]       = useState({})
+  const [reason,     setReason]     = useState('')
+  const [saving,     setSaving]     = useState(false)
   const [pendingIds, setPendingIds] = useState(new Set())
 
   if (!summary) return null
@@ -167,9 +193,9 @@ function RoomConfigTab({ summary, onDone }) {
       if (isAdmin) {
         const { data: { user } } = await supabase.auth.getUser()
         await updateRoomConfig(room.id, patch, user?.id)
-        showToast(`Room ${room.room_no} updated.`, 'success')
         cancelEdit()
         onDone()
+        showToast(`Room ${room.room_no} updated.`, 'success')
       } else {
         await requestApproval({
           entityType: 'ROOM', entityId: String(room.id),
@@ -318,6 +344,7 @@ function RoomConfigTab({ summary, onDone }) {
           </tbody>
         </table>
       </div>
+      {ToastEl}
     </div>
   )
 }
@@ -326,13 +353,15 @@ function RoomConfigTab({ summary, onDone }) {
 
 function BedRatesTab({ summary, onDone }) {
   const { isAdmin } = useAuth()
-  const { showToast } = useToast()
-  const [collapsed,  setCollapsed]  = useState({})
-  const [editingBed, setEditingBed] = useState(null)
-  const [newRate,    setNewRate]    = useState('')
-  const [reason,     setReason]     = useState('')
-  const [saving,     setSaving]     = useState(false)
+  const { show: showToast, ToastEl } = useToast()
+  const [collapsed,   setCollapsed]   = useState({})
+  const [editingBed,  setEditingBed]  = useState(null)
+  const [newRate,     setNewRate]     = useState('')
+  const [reason,      setReason]      = useState('')
+  const [saving,      setSaving]      = useState(false)
   const [pendingBeds, setPendingBeds] = useState({})
+  const [confirm,     setConfirm]     = useState(null)
+  const [reconfigRoom, setReconfigRoom] = useState(null)
 
   if (!summary) return null
 
@@ -354,8 +383,9 @@ function BedRatesTab({ summary, onDone }) {
       const meta = { room_no: room.room_no, bed_letter: bed.bed_letter }
       if (isAdmin) {
         await updateBedRate(bed.id, Number(newRate), meta, user?.id)
+        cancelEdit()
+        onDone()
         showToast(`Bed ${bed.bed_letter} rate updated.`, 'success')
-        cancelEdit(); onDone()
       } else {
         await requestApproval({
           entityType: 'BED', entityId: String(bed.id),
@@ -372,16 +402,14 @@ function BedRatesTab({ summary, onDone }) {
     setSaving(false)
   }
 
-  async function handleRemove(bed, room) {
-    if (bed.status === 'LEASED') { showToast('Cannot remove a leased bed.', 'error'); return }
-    if (!window.confirm(`Remove Bed ${bed.bed_letter} from Room ${room.room_no}?\nThis is reversible — you can restore it later.`)) return
+  async function doRemove(bed, room) {
     setSaving(true)
     try {
       const { data: { user } } = await supabase.auth.getUser()
       if (isAdmin) {
         await removeBed(bed.id, { room_no: room.room_no, bed_letter: bed.bed_letter }, user?.id)
-        showToast(`Bed ${bed.bed_letter} removed.`, 'success')
         onDone()
+        showToast(`Bed ${bed.bed_letter} removed.`, 'success')
       } else {
         await requestApproval({
           entityType: 'BED', entityId: String(bed.id),
@@ -397,16 +425,34 @@ function BedRatesTab({ summary, onDone }) {
     setSaving(false)
   }
 
-  async function handleRestore(bed, room) {
-    if (!window.confirm(`Restore Bed ${bed.bed_letter} in Room ${room.room_no}?`)) return
+  async function doRestore(bed, room) {
     setSaving(true)
     try {
       const { data: { user } } = await supabase.auth.getUser()
       await restoreBed(bed.id, { room_no: room.room_no, bed_letter: bed.bed_letter }, user?.id)
-      showToast(`Bed ${bed.bed_letter} restored.`, 'success')
       onDone()
+      showToast(`Bed ${bed.bed_letter} restored.`, 'success')
     } catch (e) { showToast(e.message, 'error') }
     setSaving(false)
+  }
+
+  function handleRemove(bed, room) {
+    if (bed.status === 'LEASED') { showToast('Cannot remove a leased bed.', 'error'); return }
+    setConfirm({
+      message: `Remove Bed ${bed.bed_letter} from Room ${room.room_no}? This is reversible — you can restore it later.`,
+      confirmLabel: 'Remove',
+      danger: true,
+      onConfirm: () => doRemove(bed, room),
+    })
+  }
+
+  function handleRestore(bed, room) {
+    setConfirm({
+      message: `Restore Bed ${bed.bed_letter} in Room ${room.room_no}?`,
+      confirmLabel: 'Restore',
+      danger: false,
+      onConfirm: () => doRestore(bed, room),
+    })
   }
 
   return (
@@ -418,11 +464,12 @@ function BedRatesTab({ summary, onDone }) {
 
         return (
           <div key={room.id} className="border border-slate-200 rounded-xl overflow-hidden">
-            <button
-              onClick={() => toggleRoom(room.id)}
-              className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 hover:bg-slate-100 transition-colors text-left"
-            >
-              <div className="flex items-center gap-3">
+            <div className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 hover:bg-slate-100 transition-colors">
+              <button
+                type="button"
+                onClick={() => toggleRoom(room.id)}
+                className="flex items-center gap-3 text-left flex-1 bg-transparent border-none"
+              >
                 {isOpen
                   ? <ChevronDown size={14} className="text-slate-400" />
                   : <ChevronRight size={14} className="text-slate-400" />}
@@ -431,9 +478,20 @@ function BedRatesTab({ summary, onDone }) {
                 {room.is_management && (
                   <span className="text-[10px] font-bold bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded">MGMT</span>
                 )}
+              </button>
+              <div className="flex items-center gap-3">
+                <span className="text-[12px] text-slate-400">{activeCnt} active bed{activeCnt !== 1 ? 's' : ''}</span>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => setReconfigRoom(room)}
+                    className="btn-xs blue flex items-center gap-1"
+                  >
+                    <Wrench size={10} /> Reconfigure
+                  </button>
+                )}
               </div>
-              <span className="text-[12px] text-slate-400">{activeCnt} active bed{activeCnt !== 1 ? 's' : ''}</span>
-            </button>
+            </div>
 
             {isOpen && (
               <table className="w-full text-[13px]">
@@ -454,7 +512,7 @@ function BedRatesTab({ summary, onDone }) {
                     const isEditing = editingBed === bed.id
                     const isPending = pendingBeds[bed.id]
                     const bedStatusCls =
-                      isRemoved           ? 'bg-red-50 text-red-500'       :
+                      isRemoved               ? 'bg-red-50 text-red-500'           :
                       bed.status === 'LEASED'       ? 'bg-emerald-50 text-emerald-700' :
                       bed.status === 'RESERVED'     ? 'bg-amber-50 text-amber-700'     :
                       bed.status === 'OUT OF ORDER' ? 'bg-orange-50 text-orange-700'   :
@@ -471,12 +529,15 @@ function BedRatesTab({ summary, onDone }) {
                         </td>
                         <td className="px-4 py-2.5 text-right">
                           {isEditing ? (
-                            <input
-                              type="number" min="0" step="0.01" autoFocus
-                              value={newRate}
-                              onChange={e => setNewRate(e.target.value)}
-                              className={`${INPUT_SM} w-28 text-right`}
-                            />
+                            <div className="relative inline-flex items-center float-right">
+                              <span className="absolute left-2 text-[12px] text-slate-400 pointer-events-none select-none">₱</span>
+                              <input
+                                type="number" min="0" step="0.01" autoFocus
+                                value={newRate}
+                                onChange={e => setNewRate(e.target.value)}
+                                className={`${INPUT_SM} w-28 pl-6`}
+                              />
+                            </div>
                           ) : (
                             <span className="font-semibold">{fmt(bed.default_rate)}</span>
                           )}
@@ -551,194 +612,39 @@ function BedRatesTab({ summary, onDone }) {
           </div>
         )
       })}
+
+      {confirm && (
+        <ConfirmModal
+          message={confirm.message}
+          confirmLabel={confirm.confirmLabel}
+          danger={confirm.danger}
+          onConfirm={confirm.onConfirm}
+          onClose={() => setConfirm(null)}
+        />
+      )}
+      {reconfigRoom && (
+        <RoomReconfigureModal
+          room={reconfigRoom}
+          onClose={() => setReconfigRoom(null)}
+          onDone={() => { setReconfigRoom(null); onDone() }}
+        />
+      )}
+      {ToastEl}
     </div>
   )
 }
 
-// ── Add-ons Tab ───────────────────────────────────────────────────────────────
-
-function AddAddonModal({ tenants, addonTypes, cutoffs, onClose, onSaved }) {
-  const { isAdmin } = useAuth()
-  const { showToast } = useToast()
-  const [tenantId,   setTenantId]   = useState('')
-  const [typeId,     setTypeId]     = useState('')
-  const [amount,     setAmount]     = useState('')
-  const [recurring,  setRecurring]  = useState(false)
-  const [cutoffId,   setCutoffId]   = useState('')
-  const [reason,     setReason]     = useState('')
-  const [saving,     setSaving]     = useState(false)
-  const [submitted,  setSubmitted]  = useState(false)
-  const [error,      setError]      = useState('')
-
-  const selectedType   = addonTypes.find(t => String(t.id) === String(typeId))
-  const activeCutoffs  = cutoffs.filter(c => c.is_active)
-  const activeTenants  = tenants.filter(t => !t.actual_move_out_date).sort((a, b) => a.name.localeCompare(b.name))
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setError('')
-    if (!tenantId)                     { setError('Select a tenant.');              return }
-    if (!typeId)                       { setError('Select an add-on type.');        return }
-    if (!amount || Number(amount) <= 0){ setError('Enter a valid amount.');         return }
-    if (!isAdmin && !reason.trim())    { setError('Reason is required.');           return }
-
-    const tenant = tenants.find(t => String(t.id) === String(tenantId))
-    const row = {
-      tenant_id: Number(tenantId),
-      label:     selectedType.label,
-      category:  selectedType.category,
-      bill_on:   selectedType.bill_on,
-      amount:    Number(amount),
-      recurring,
-      cutoff_id: recurring ? null : (cutoffId ? Number(cutoffId) : null),
-    }
-
-    setSaving(true)
-    try {
-      if (isAdmin) {
-        const { data: { user } } = await supabase.auth.getUser()
-        await addTenantAddon(row, user?.id)
-        showToast('Add-on saved.', 'success')
-        onSaved()
-      } else {
-        await requestApproval({
-          entityType: 'ADDON', entityId: String(tenantId),
-          fieldName: 'add_addon',
-          oldValue: null,
-          newValue: { _action: 'add_addon', _tenant_name: tenant?.name, ...row },
-          reason: reason.trim(),
-        })
-        setSubmitted(true)
-      }
-    } catch (err) { setError(err.message) }
-    setSaving(false)
-  }
-
-  if (submitted) {
-    return (
-      <div className="overlay" onClick={e => e.stopPropagation()}>
-        <div className="modal modal-sm">
-          <div className="modal-head">
-            <h3>Add-on Request Sent</h3>
-            <button className="btn-close" onClick={onClose}><X size={16} /></button>
-          </div>
-          <div className="modal-body text-center py-8">
-            <Clock size={36} className="mx-auto mb-3 text-amber-400" />
-            <p className="text-[13px] text-slate-500">Your add-on request has been submitted for admin approval.</p>
-          </div>
-          <div className="modal-foot"><button className="btn primary" onClick={onClose}>Close</button></div>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="overlay" onClick={e => e.stopPropagation()}>
-      <div className="modal" style={{ maxWidth: 460 }}>
-        <div className="modal-head">
-          <h3 className="flex items-center gap-2"><Plus size={15} className="text-slate-400" /> Add Add-on</h3>
-          <button className="btn-close" onClick={onClose}><X size={16} /></button>
-        </div>
-        <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            {addonTypes.length === 0 && (
-              <div className="mb-4 flex items-start gap-2 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2.5 text-[12px] text-amber-800">
-                <Info size={13} className="shrink-0 mt-0.5 text-amber-500" />
-                No add-on types defined yet. An admin needs to create types first.
-              </div>
-            )}
-            <div className="form-grid">
-              <div className="fg full">
-                <label>Tenant *</label>
-                <select value={tenantId} onChange={e => setTenantId(e.target.value)} required>
-                  <option value="">Select tenant…</option>
-                  {activeTenants.map(t => (
-                    <option key={t.id} value={t.id}>{t.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="fg full">
-                <label>Add-on Type *</label>
-                <select value={typeId} onChange={e => setTypeId(e.target.value)} required disabled={addonTypes.length === 0}>
-                  <option value="">Select type…</option>
-                  {addonTypes.map(t => (
-                    <option key={t.id} value={t.id}>{t.label} ({t.category === 'ELECTRIC' ? 'Electric' : 'Rent+Water'})</option>
-                  ))}
-                </select>
-              </div>
-              <div className="fg">
-                <label>Amount (₱) *</label>
-                <input
-                  type="number" min="0.01" step="0.01"
-                  value={amount}
-                  onChange={e => setAmount(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="fg">
-                <label>Frequency</label>
-                <label className="flex items-center gap-2 cursor-pointer mt-1">
-                  <input
-                    type="checkbox" checked={recurring}
-                    onChange={e => { setRecurring(e.target.checked); setCutoffId('') }}
-                    className="rounded"
-                  />
-                  <span className="text-[13px] text-slate-700">Recurring every period</span>
-                </label>
-              </div>
-              {!recurring && (
-                <div className="fg full">
-                  <label>Apply to Period</label>
-                  <select value={cutoffId} onChange={e => setCutoffId(e.target.value)}>
-                    <option value="">Current active period</option>
-                    {activeCutoffs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </div>
-              )}
-              {selectedType && (
-                <div className="fg full">
-                  <div className="bg-slate-50 border border-slate-100 rounded-xl px-3 py-2 text-[12px] text-slate-600 flex items-center gap-2">
-                    <Info size={12} className="text-slate-400 shrink-0" />
-                    Billed under: <strong>{selectedType.bill_on === 'ELECTRIC' ? 'Electricity statement' : 'Rent + Water statement'}</strong>
-                  </div>
-                </div>
-              )}
-              {!isAdmin && (
-                <div className="fg full">
-                  <label>Reason *</label>
-                  <textarea
-                    rows={2} value={reason}
-                    onChange={e => setReason(e.target.value)}
-                    placeholder="Explain why this add-on is needed…"
-                    required
-                  />
-                </div>
-              )}
-            </div>
-            {error && (
-              <div className="mt-3 px-3 py-2 bg-red-50 border border-red-100 rounded-xl text-[12px] text-red-700 flex items-center gap-2">
-                <AlertTriangle size={12} className="shrink-0" /> {error}
-              </div>
-            )}
-          </div>
-          <div className="modal-foot">
-            <button type="button" className="btn secondary" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn primary" disabled={saving || addonTypes.length === 0}>
-              {saving ? 'Saving…' : isAdmin ? 'Add Add-on' : 'Submit for Approval'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  )
-}
+// ── Add-on Type Modal ─────────────────────────────────────────────────────────
 
 function AddonTypeModal({ existing, onClose, onSaved }) {
-  const { showToast } = useToast()
-  const [label,    setLabel]    = useState(existing?.label    || '')
-  const [category, setCategory] = useState(existing?.category || 'RENT_WATER')
-  const [billOn,   setBillOn]   = useState(existing?.bill_on  || 'RENT_WATER')
-  const [saving,   setSaving]   = useState(false)
+  const { show: showToast, ToastEl } = useToast()
+  const [label,   setLabel]   = useState(existing?.label          || '')
+  const [category, setCategory] = useState(existing?.category    || 'RENT_WATER')
+  const [billOn,  setBillOn]  = useState(existing?.bill_on        || 'RENT_WATER')
+  const [amount,  setAmount]  = useState(
+    existing?.default_amount != null ? String(existing.default_amount) : ''
+  )
+  const [saving,  setSaving]  = useState(false)
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -747,10 +653,16 @@ function AddonTypeModal({ existing, onClose, onSaved }) {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       await saveAddonType(
-        { id: existing?.id, label: label.trim(), category, bill_on: billOn },
+        {
+          id:             existing?.id,
+          label:          label.trim(),
+          category,
+          bill_on:        billOn,
+          default_amount: amount !== '' ? Number(amount) : null,
+        },
         user?.id
       )
-      showToast(existing ? 'Add-on type updated.' : 'Add-on type created.', 'success')
+      showToast(existing ? 'Add-on updated.' : 'Add-on created.', 'success')
       onSaved()
     } catch (e) { showToast(e.message, 'error') }
     setSaving(false)
@@ -760,7 +672,7 @@ function AddonTypeModal({ existing, onClose, onSaved }) {
     <div className="overlay" onClick={e => e.stopPropagation()}>
       <div className="modal modal-sm">
         <div className="modal-head">
-          <h3>{existing ? 'Edit Add-on Type' : 'New Add-on Type'}</h3>
+          <h3>{existing ? 'Edit Add-on' : 'New Add-on'}</h3>
           <button className="btn-close" onClick={onClose}><X size={16} /></button>
         </div>
         <form onSubmit={handleSubmit}>
@@ -776,7 +688,7 @@ function AddonTypeModal({ existing, onClose, onSaved }) {
                 />
               </div>
               <div className="fg">
-                <label>Category</label>
+                <label>Type</label>
                 <select value={category} onChange={e => { setCategory(e.target.value); setBillOn(e.target.value) }}>
                   <option value="RENT_WATER">Rent + Water</option>
                   <option value="ELECTRIC">Electricity</option>
@@ -789,6 +701,15 @@ function AddonTypeModal({ existing, onClose, onSaved }) {
                   <option value="ELECTRIC">Electricity statement</option>
                 </select>
               </div>
+              <div className="fg">
+                <label>Default Amount (₱)</label>
+                <input
+                  type="number" min="0" step="0.01"
+                  value={amount}
+                  onChange={e => setAmount(e.target.value)}
+                  placeholder="e.g. 500"
+                />
+              </div>
             </div>
           </div>
           <div className="modal-foot">
@@ -799,45 +720,30 @@ function AddonTypeModal({ existing, onClose, onSaved }) {
           </div>
         </form>
       </div>
+      {ToastEl}
     </div>
   )
 }
 
-function AddonsTab({ addons, addonTypes, tenants, cutoffs, onDone }) {
+// ── Add-ons Tab ───────────────────────────────────────────────────────────────
+
+function AddonsTab({ addonTypes, onDone }) {
   const { isAdmin } = useAuth()
-  const { showToast } = useToast()
-  const [showAdd,     setShowAdd]     = useState(false)
-  const [typeModal,   setTypeModal]   = useState(null) // null | 'new' | existing type object
-  const [deleting,    setDeleting]    = useState(null)
+  const { show: showToast, ToastEl } = useToast()
+  const [typeModal,    setTypeModal]    = useState(null) // null | 'new' | existing type object
+  const [confirm,      setConfirm]      = useState(null)
   const [deactivating, setDeactivating] = useState(null)
 
-  async function handleDeleteAddon(addon) {
-    if (!window.confirm(`Delete "${addon.label}" add-on?`)) return
-    setDeleting(addon.id)
-    try {
-      if (isAdmin) {
-        const { data: { user } } = await supabase.auth.getUser()
-        await removeTenantAddon(addon.id, user?.id)
-        showToast('Add-on deleted.', 'success')
-        onDone()
-      } else {
-        const t = addon.tenants
-        await requestApproval({
-          entityType: 'ADDON', entityId: String(addon.id),
-          fieldName: 'delete_addon',
-          oldValue: { label: addon.label, amount: addon.amount, tenant_id: addon.tenant_id },
-          newValue: { _action: 'delete_addon', _addon_id: addon.id, _tenant_name: t?.name },
-          reason: `Delete add-on "${addon.label}" for ${t?.name || 'tenant'}`,
-        })
-        showToast('Delete request submitted for approval.', 'info')
-        onDone()
-      }
-    } catch (e) { showToast(e.message, 'error') }
-    setDeleting(null)
+  function handleDeactivateType(type) {
+    setConfirm({
+      message: `Deactivate add-on "${type.label}"? Existing add-ons using this type are unaffected.`,
+      confirmLabel: 'Deactivate',
+      danger: true,
+      onConfirm: () => doDeactivate(type),
+    })
   }
 
-  async function handleDeactivateType(type) {
-    if (!window.confirm(`Deactivate add-on type "${type.label}"?\nExisting add-ons using this type are unaffected.`)) return
+  async function doDeactivate(type) {
     setDeactivating(type.id)
     try {
       const { data: { user } } = await supabase.auth.getUser()
@@ -849,134 +755,70 @@ function AddonsTab({ addons, addonTypes, tenants, cutoffs, onDone }) {
   }
 
   return (
-    <div className="space-y-6">
-      {/* ── Add-on Type Catalog (admin only) ── */}
-      {isAdmin && (
+    <div>
+      <div className="flex items-center justify-between mb-3">
         <div>
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-[13px] font-semibold text-slate-700">Add-on Type Catalog</h3>
-            <button onClick={() => setTypeModal('new')} className="btn-xs green flex items-center gap-1">
-              <Plus size={11} /> New Type
-            </button>
-          </div>
-          <div className="border border-slate-200 rounded-xl overflow-hidden">
-            <table className="w-full text-[12px]">
-              <thead>
-                <tr className="text-[10px] text-slate-400 uppercase tracking-widest bg-slate-50">
-                  <th className="px-4 py-2 text-left font-semibold">Label</th>
-                  <th className="px-4 py-2 text-left font-semibold">Category</th>
-                  <th className="px-4 py-2 text-left font-semibold">Billed Under</th>
-                  <th className="px-4 py-2 w-[80px]"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {addonTypes.length === 0 ? (
-                  <tr><td colSpan={4} className="px-4 py-3 text-center text-slate-300">No types yet</td></tr>
-                ) : addonTypes.map(t => (
-                  <tr key={t.id} className="border-t border-slate-50">
-                    <td className="px-4 py-2.5 font-medium text-slate-800">{t.label}</td>
-                    <td className="px-4 py-2.5">
-                      <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-                        t.category === 'ELECTRIC' ? 'bg-blue-50 text-blue-700' : 'bg-teal-50 text-teal-700'
-                      }`}>{t.category === 'ELECTRIC' ? 'Electric' : 'Rent+Water'}</span>
-                    </td>
-                    <td className="px-4 py-2.5 text-slate-500">{t.bill_on === 'ELECTRIC' ? 'Electricity stmt' : 'Rent+Water stmt'}</td>
-                    <td className="px-4 py-2.5">
-                      <div className="flex gap-1 justify-end">
-                        <button onClick={() => setTypeModal(t)} className="btn-xs gray"><Edit2 size={10} /></button>
-                        <button
-                          onClick={() => handleDeactivateType(t)}
-                          disabled={deactivating === t.id}
-                          className="btn-xs red"
-                        ><Trash2 size={10} /></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <h3 className="text-[13px] font-semibold text-slate-700">Add-on Catalog</h3>
+          <p className="text-[12px] text-slate-400 mt-0.5">
+            Define available add-ons. These will be selectable in Billing when assigning charges to tenants.
+          </p>
         </div>
-      )}
-
-      {/* ── Tenant Add-ons ── */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-[13px] font-semibold text-slate-700">Tenant Add-ons</h3>
-          <button onClick={() => setShowAdd(true)} className="btn primary flex items-center gap-1.5 text-[12px] py-1.5 px-3">
+        {isAdmin && (
+          <button onClick={() => setTypeModal('new')} className="btn primary flex items-center gap-1.5 text-[12px] py-1.5 px-3">
             <Plus size={13} /> New Add-on
           </button>
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Tenant</th>
-                <th>Room</th>
-                <th>Label</th>
-                <th>Category</th>
-                <th className="text-right">Amount</th>
-                <th>Frequency</th>
-                <th>Period</th>
-                <th className="w-[60px]"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {addons.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="text-center py-10 text-slate-300 text-[13px]">
-                    No add-ons recorded
-                  </td>
-                </tr>
-              ) : addons.map(a => {
-                const t = a.tenants
-                const bed  = t?.beds
-                const room = bed?.rooms
-                return (
-                  <tr key={a.id}>
-                    <td className="td-name">{t?.name || '—'}</td>
-                    <td className="text-[12px] text-slate-500 whitespace-nowrap">
-                      {room ? `Rm ${room.room_no}` : '—'}{bed ? ` · ${bed.bed_letter}` : ''}
-                    </td>
-                    <td className="text-[12px] font-medium">{a.label}</td>
-                    <td>
-                      <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-                        a.category === 'ELECTRIC' ? 'bg-blue-50 text-blue-700' : 'bg-teal-50 text-teal-700'
-                      }`}>{a.category === 'ELECTRIC' ? 'Electric' : 'Rent+Water'}</span>
-                    </td>
-                    <td className="text-right text-[12px] font-semibold">₱{Number(a.amount).toLocaleString('en-PH')}</td>
-                    <td>
-                      <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-                        a.recurring ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'
-                      }`}>{a.recurring ? 'Recurring' : 'One-time'}</span>
-                    </td>
-                    <td className="text-[11px] text-slate-400">
-                      {a.cutoff_id ? `Period #${a.cutoff_id}` : (a.recurring ? 'All periods' : '—')}
-                    </td>
-                    <td>
-                      <button
-                        onClick={() => handleDeleteAddon(a)}
-                        disabled={deleting === a.id}
-                        className="btn-xs red"
-                      ><Trash2 size={11} /></button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+        )}
       </div>
 
-      {showAdd && (
-        <AddAddonModal
-          tenants={tenants}
-          addonTypes={addonTypes}
-          cutoffs={cutoffs}
-          onClose={() => setShowAdd(false)}
-          onSaved={() => { setShowAdd(false); onDone() }}
-        />
-      )}
+      <div className="border border-slate-200 rounded-xl overflow-hidden">
+        <table className="w-full text-[12px]">
+          <thead>
+            <tr className="text-[10px] text-slate-400 uppercase tracking-widest bg-slate-50">
+              <th className="px-4 py-2 text-left font-semibold">Label</th>
+              <th className="px-4 py-2 text-left font-semibold">Type</th>
+              <th className="px-4 py-2 text-left font-semibold">Billed Under</th>
+              <th className="px-4 py-2 text-right font-semibold">Default Amount</th>
+              {isAdmin && <th className="px-4 py-2 w-[80px]"></th>}
+            </tr>
+          </thead>
+          <tbody>
+            {addonTypes.length === 0 ? (
+              <tr>
+                <td colSpan={isAdmin ? 5 : 4} className="px-4 py-8 text-center text-slate-300 text-[13px]">
+                  No add-ons defined yet.{isAdmin ? ' Click "New Add-on" to get started.' : ''}
+                </td>
+              </tr>
+            ) : addonTypes.map(t => (
+              <tr key={t.id} className="border-t border-slate-50">
+                <td className="px-4 py-2.5 font-medium text-slate-800">{t.label}</td>
+                <td className="px-4 py-2.5">
+                  <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                    t.category === 'ELECTRIC' ? 'bg-blue-50 text-blue-700' : 'bg-teal-50 text-teal-700'
+                  }`}>{t.category === 'ELECTRIC' ? 'Electric' : 'Rent+Water'}</span>
+                </td>
+                <td className="px-4 py-2.5 text-slate-500">
+                  {t.bill_on === 'ELECTRIC' ? 'Electricity stmt' : 'Rent+Water stmt'}
+                </td>
+                <td className="px-4 py-2.5 text-right font-semibold text-slate-700">
+                  {t.default_amount != null ? fmt(t.default_amount) : <span className="text-slate-300 font-normal">—</span>}
+                </td>
+                {isAdmin && (
+                  <td className="px-4 py-2.5">
+                    <div className="flex gap-1 justify-end">
+                      <button onClick={() => setTypeModal(t)} className="btn-xs gray"><Edit2 size={10} /></button>
+                      <button
+                        onClick={() => handleDeactivateType(t)}
+                        disabled={deactivating === t.id}
+                        className="btn-xs red"
+                      ><Trash2 size={10} /></button>
+                    </div>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       {typeModal && (
         <AddonTypeModal
@@ -985,6 +827,16 @@ function AddonsTab({ addons, addonTypes, tenants, cutoffs, onDone }) {
           onSaved={() => { setTypeModal(null); onDone() }}
         />
       )}
+      {confirm && (
+        <ConfirmModal
+          message={confirm.message}
+          confirmLabel={confirm.confirmLabel}
+          danger={confirm.danger}
+          onConfirm={confirm.onConfirm}
+          onClose={() => setConfirm(null)}
+        />
+      )}
+      {ToastEl}
     </div>
   )
 }
@@ -1001,24 +853,18 @@ const TABS = [
 export default function Property() {
   const [tab,        setTab]       = useState('summary')
   const [summary,    setSummary]   = useState(null)
-  const [addons,     setAddons]    = useState([])
   const [addonTypes, setAddonTypes] = useState([])
-  const [tenants,    setTenants]   = useState([])
-  const [cutoffs,    setCutoffs]   = useState([])
   const [loading,    setLoading]   = useState(true)
   const [error,      setError]     = useState('')
 
   async function load() {
     setLoading(true); setError('')
     try {
-      const [s, a, at, t, c] = await Promise.all([
+      const [s, at] = await Promise.all([
         fetchPropertySummary(),
-        fetchAllAddons(),
         fetchAddonTypes(),
-        fetchTenants(),
-        fetchCutoffs(),
       ])
-      setSummary(s); setAddons(a); setAddonTypes(at); setTenants(t); setCutoffs(c)
+      setSummary(s); setAddonTypes(at)
     } catch (e) { setError(e.message) }
     setLoading(false)
   }
@@ -1037,7 +883,7 @@ export default function Property() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Property Management</h1>
-          <p className="page-sub">Rooms, bed rates, and tenant add-ons</p>
+          <p className="page-sub">Rooms, bed rates, and add-on catalog</p>
         </div>
         <button onClick={load} className="btn secondary flex items-center gap-1.5">
           <RefreshCw size={13} /> Refresh
@@ -1050,7 +896,6 @@ export default function Property() {
         </div>
       )}
 
-      {/* Tabs */}
       <div className="flex gap-0.5 mb-5 border-b border-slate-200">
         {TABS.map(({ id, label, Icon }) => (
           <button
@@ -1071,13 +916,7 @@ export default function Property() {
       {tab === 'summary' && <SummaryTab summary={summary} />}
       {tab === 'config'  && <RoomConfigTab summary={summary} onDone={load} />}
       {tab === 'rates'   && <BedRatesTab   summary={summary} onDone={load} />}
-      {tab === 'addons'  && (
-        <AddonsTab
-          addons={addons} addonTypes={addonTypes}
-          tenants={tenants} cutoffs={cutoffs}
-          onDone={load}
-        />
-      )}
+      {tab === 'addons'  && <AddonsTab addonTypes={addonTypes} onDone={load} />}
     </div>
   )
 }

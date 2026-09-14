@@ -5,10 +5,11 @@ export function useToast() {
   const [toasts, setToasts] = useState([])
   const counter = useRef(0)
 
-  const show = useCallback((msg, type = 'success') => {
+  const show = useCallback((msg, type = 'success', opts = {}) => {
+    const { action = null, duration = 3500 } = opts
     const id = ++counter.current
-    setToasts(t => [...t, { id, msg, type }])
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3500)
+    setToasts(t => [...t, { id, msg, type, action }])
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), duration)
   }, [])
 
   const dismiss = useCallback((id) => {
@@ -46,6 +47,14 @@ function ToastItem({ toast, onDismiss }) {
     >
       <Icon size={16} className={isSuccess ? 'text-emerald-400 shrink-0' : 'text-red-400 shrink-0'} />
       <span className="flex-1">{toast.msg}</span>
+      {toast.action && (
+        <button
+          onClick={() => { toast.action.onClick(); onDismiss() }}
+          className="shrink-0 text-[12px] font-semibold text-emerald-400 hover:text-emerald-300 underline transition-colors"
+        >
+          {toast.action.label}
+        </button>
+      )}
       <button
         onClick={onDismiss}
         className="p-0.5 rounded hover:bg-white/10 text-white/50 hover:text-white/80 transition-colors"

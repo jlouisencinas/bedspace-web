@@ -3,7 +3,12 @@ import { LogIn, X, FileUp, CheckCircle, Wifi } from 'lucide-react'
 import MultiEntryInput from './MultiEntryInput'
 import { isDriveConfigured, isDriveConnected, preloadDrive, connectDrive } from '../lib/googleDrive'
 
-const SOURCE_OPTIONS = [
+export const GENDER_OPTIONS = [
+  { value: 'F', label: 'Female' },
+  { value: 'M', label: 'Male' },
+]
+
+export const SOURCE_OPTIONS = [
   { value: 'REFERRAL',  label: 'Referral' },
   { value: 'FACEBOOK',  label: 'Facebook' },
   { value: 'TIKTOK',    label: 'TikTok' },
@@ -146,8 +151,9 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
                 <label>Gender *</label>
                 <select value={form.gender} onChange={e => set('gender', e.target.value)} required>
                   <option value="" disabled>Select…</option>
-                  <option value="F">Female</option>
-                  <option value="M">Male</option>
+                  {GENDER_OPTIONS.map(o => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
                 </select>
               </div>
               <div className="fg">

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { fetchApprovals, approveRequest, rejectRequest } from '../lib/approvals'
-import { supabase, processTransfer } from '../lib/supabase'
+import { supabase, processTransfer, logTenantMoveOutDateChange } from '../lib/supabase'
+import { applyTenantProfileChange, PROFILE_FIELD_LABELS } from '../lib/tenantProfile'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
 import { CheckCircle, XCircle, Clock, X, ClipboardList } from 'lucide-react'
@@ -34,8 +35,35 @@ function entityDesc(r) {
   return `${typeLabel[r.entity_type] || r.entity_type} #${r.entity_id}`
 }
 
+function entryValues(list) {
+  return list?.length ? list.map(e => e.value).join(', ') : 'none'
+}
+
+function profileSummary(v) {
+  return [
+    ...Object.entries(v.fields || {}).map(([k, x]) => `${PROFILE_FIELD_LABELS[k] || k}: ${x ?? '—'}`),
+    'move_out_date' in v && `Move-out: ${fmtDate(v.move_out_date)}`,
+    v.contacts && `Contacts: ${entryValues(v.contacts)}`,
+    v.emails   && `Emails: ${entryValues(v.emails)}`,
+  ].filter(Boolean).join(' · ') || '—'
+}
+
+async function fetchTenantForApply(entityId) {
+  const tenantId = parseInt(entityId, 10)
+  if (!tenantId || isNaN(tenantId)) throw new Error(`Invalid tenant ID: "${entityId}"`)
+  const { data, error } = await supabase
+    .from('tenants')
+    .select(`*, beds!bed_id(bed_letter, rooms(room_no))`)
+    .eq('id', tenantId)
+    .single()
+  if (error) throw error
+  if (!data) throw new Error('Tenant not found.')
+  return { ...data, room_no: data.beds?.rooms?.room_no ?? null, bed_letter: data.beds?.bed_letter ?? null }
+}
+
 function proposedLabel(r) {
   const nv = r.new_value || {}
+  if (r.field_name === 'tenant_profile') return profileSummary(nv)
   if (r.field_name === 'move_out') {
     return [
       nv.move_out_date        && `Move-out: ${fmtDate(nv.move_out_date)}`,
@@ -88,6 +116,7 @@ function proposedLabel(r) {
 
 function currentLabel(r) {
   const ov = r.old_value || {}
+  if (r.field_name === 'tenant_profile') return profileSummary(ov)
   if (r.field_name === 'move_out') return 'Active tenant'
   if (r.field_name === 'tenant_details') {
     return [
@@ -111,6 +140,7 @@ const FIELD_LABELS = {
   move_out:       'Process Move-out',
   move_out_date:  'Move-out Date',
   tenant_details: 'Update Details',
+  tenant_profile: 'Edit Tenant Profile',
   transfer:       'Room Transfer',
   rate:           'Rate',
   amount:         'Amount',
@@ -137,6 +167,70 @@ function StatusBadge({ status }) {
   )
 }
 
+// ── Tenant profile change detail ─────────────────────────────────────────────
+
+function EntryList({ list }) {
+  if (!list?.length) return <div className="text-slate-400 italic">None</div>
+  return list.map((e, i) => (
+    <div key={e.id ?? `new-${i}`}>
+      {e.value}
+      {e.label && <span className="text-[11px] text-slate-400"> {e.label}</span>}
+      {e.isPrimary && <span className="text-[10px] font-bold text-navy-600"> (Primary)</span>}
+    </div>
+  ))
+}
+
+function EntryListChange({ title, before, after }) {
+  return (
+    <div>
+      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">{title}</div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-red-50 border border-red-100 rounded-xl p-3">
+          <div className="text-[10px] font-bold text-red-600 uppercase tracking-wider mb-1.5">Current</div>
+          <div className="text-slate-700"><EntryList list={before} /></div>
+        </div>
+        <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
+          <div className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider mb-1.5">Proposed</div>
+          <div className="text-slate-700 font-medium"><EntryList list={after} /></div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ProfileChangeDetail({ request }) {
+  const ov = request.old_value || {}
+  const nv = request.new_value || {}
+  const fieldKeys = Object.keys(nv.fields || {})
+  const hasMoveOut = 'move_out_date' in nv
+  return (
+    <div className="space-y-3 text-[13px]">
+      {(fieldKeys.length > 0 || hasMoveOut) && (
+        <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 space-y-2">
+          {fieldKeys.map(k => (
+            <div key={k}>
+              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-0.5">{PROFILE_FIELD_LABELS[k] || k}</div>
+              <span className="text-red-600">{ov.fields?.[k] ?? '—'}</span>
+              <span className="mx-2 text-slate-300">→</span>
+              <span className="text-emerald-700 font-medium">{nv.fields[k] ?? '—'}</span>
+            </div>
+          ))}
+          {hasMoveOut && (
+            <div>
+              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-0.5">Planned Move-out Date</div>
+              <span className="text-red-600">{fmtDate(ov.move_out_date)}</span>
+              <span className="mx-2 text-slate-300">→</span>
+              <span className="text-emerald-700 font-medium">{fmtDate(nv.move_out_date)}</span>
+            </div>
+          )}
+        </div>
+      )}
+      {nv.contacts && <EntryListChange title="Contact Numbers" before={ov.contacts} after={nv.contacts} />}
+      {nv.emails   && <EntryListChange title="Email Addresses" before={ov.emails}   after={nv.emails} />}
+    </div>
+  )
+}
+
 // ── DecideModal ───────────────────────────────────────────────────────────────
 
 function DecideModal({ request, onClose, onDone }) {
@@ -148,14 +242,50 @@ function DecideModal({ request, onClose, onDone }) {
   async function decide(d) {
     setDecision(d); setBusy(true); setError('')
     try {
-      if (d === 'APPROVED') {
+      let warning = null
+      if (d === 'APPROVED' && request.field_name === 'tenant_profile') {
+        // Apply before marking approved so a failed apply leaves the request PENDING.
+        warning = await applyTenantProfileRequest()
+        try {
+          await approveRequest(request.id, notes || null)
+        } catch (err) {
+          throw new Error(`Changes were applied, but marking the request approved failed: ${err.message}`)
+        }
+      } else if (d === 'APPROVED') {
         const approved = await approveRequest(request.id, notes || null)
         await applyApprovedChange(approved)
       } else {
         await rejectRequest(request.id, notes || null)
       }
-      onDone(d)
+      onDone(d, warning)
     } catch (err) { setError(err.message); setBusy(false); setDecision(null) }
+  }
+
+  async function applyTenantProfileRequest() {
+    const { data: cur, error: sErr } = await supabase
+      .from('approval_requests').select('status').eq('id', request.id).single()
+    if (sErr) throw sErr
+    if (cur.status !== 'PENDING') throw new Error('This request has already been decided.')
+
+    const nv = request.new_value || {}
+    const tenant = await fetchTenantForApply(request.entity_id)
+    const { wrote, saveError, logError } = await applyTenantProfileChange(
+      { ...tenant, room_no: tenant.room_no ?? nv._room_no ?? null, bed_letter: tenant.bed_letter ?? nv._bed_letter ?? null },
+      {
+        fields:      nv.fields || {},
+        moveOutDate: 'move_out_date' in nv ? nv.move_out_date : undefined,
+        contacts:    nv.contacts ?? null,
+        emails:      nv.emails ?? null,
+      },
+    )
+    if (saveError) {
+      let msg = wrote
+        ? `Apply failed partway (some changes were saved; request left pending): ${saveError}`
+        : `Apply failed (request left pending): ${saveError}`
+      if (logError) msg += ` Activity log also failed: ${logError}`
+      throw new Error(msg)
+    }
+    return logError ? `Request approved and applied, but activity log failed: ${logError}` : null
   }
 
   async function applyApprovedChange(approved) {
@@ -219,6 +349,20 @@ function DecideModal({ request, onClose, onDone }) {
       return
     }
 
+    if (approved.entity_type === 'TENANT' && approved.field_name === 'move_out_date') {
+      const tenant = await fetchTenantForApply(approved.entity_id)
+      const newDate = nv?.move_out_date || null
+      const { error } = await supabase.from('tenants').update({ move_out_date: newDate }).eq('id', tenant.id)
+      if (error) throw error
+      if (newDate !== (tenant.move_out_date?.slice(0, 10) || null)) {
+        await logTenantMoveOutDateChange(
+          { ...tenant, room_no: tenant.room_no ?? nv._room_no ?? null, bed_letter: tenant.bed_letter ?? nv._bed_letter ?? null },
+          newDate,
+        )
+      }
+      return
+    }
+
     const tableMap = { TENANT: 'tenants', TENANT_STAY: 'tenants', BED: 'beds', ROOM: 'rooms', PAYMENT: 'payments' }
     const tableName = tableMap[approved.entity_type]
     if (!tableName) return
@@ -260,16 +404,20 @@ function DecideModal({ request, onClose, onDone }) {
           </div>
 
           {/* Current → Proposed */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="bg-red-50 border border-red-100 rounded-xl p-3 text-[13px]">
-              <div className="text-[10px] font-bold text-red-600 uppercase tracking-wider mb-1.5">Current</div>
-              <div className="text-slate-700">{currentLabel(request)}</div>
+          {request.field_name === 'tenant_profile' ? (
+            <ProfileChangeDetail request={request} />
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-red-50 border border-red-100 rounded-xl p-3 text-[13px]">
+                <div className="text-[10px] font-bold text-red-600 uppercase tracking-wider mb-1.5">Current</div>
+                <div className="text-slate-700">{currentLabel(request)}</div>
+              </div>
+              <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-[13px]">
+                <div className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider mb-1.5">Proposed</div>
+                <div className="text-slate-700 font-medium">{proposedLabel(request)}</div>
+              </div>
             </div>
-            <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-[13px]">
-              <div className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider mb-1.5">Proposed</div>
-              <div className="text-slate-700 font-medium">{proposedLabel(request)}</div>
-            </div>
-          </div>
+          )}
 
           {/* Reason */}
           {request.reason && (
@@ -331,9 +479,10 @@ export default function Approvals() {
 
   useEffect(() => { load() }, [load])
 
-  async function onDone(decision) {
+  async function onDone(decision, warning = null) {
     setSelected(null)
-    show(decision === 'APPROVED' ? 'Request approved and applied.' : 'Request rejected.', 'success')
+    if (warning) show(warning, 'error')
+    else show(decision === 'APPROVED' ? 'Request approved and applied.' : 'Request rejected.', 'success')
     await load()
   }
 

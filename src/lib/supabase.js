@@ -203,6 +203,115 @@ export async function recordPayment(tenantId, paymentData) {
   })
 }
 
+// Collections §12 multi-select batch save. Mirrors recordPayment()'s pay_type
+// derivation / activity_log labeling, but as ONE multi-row payments insert +
+// ONE multi-row activity_log insert instead of N sequential single-row calls.
+// Every write here throws on error (no logActivity()-style swallowing) since
+// this is money-adjacent.
+export async function recordPaymentsBatch(entries) {
+  if (!entries || entries.length === 0) return []
+
+  const payTypeFor = category =>
+    category === 'ELECTRICITY' ? '10th'
+    : category === 'RENT_WATER'  ? 'EOM'
+    : 'Other'
+
+  const rows = entries.map(e => ({
+    tenant_id:    e.tenantId,
+    payment_date: e.paymentDate,
+    amount:       Number(e.amount),
+    category:     e.category,
+    cutoff_id:    e.cutoffId ?? null,
+    pay_type:     e.payType || payTypeFor(e.category),
+    notes:        e.notes || null,
+  }))
+
+  const { data: inserted, error: pErr } = await supabase
+    .from('payments')
+    .insert(rows)
+    .select()
+  if (pErr) throw pErr
+
+  // Dedup tenant+pay_type -> latest payment_date (Promise.all, not a sequential loop).
+  const colMap = { '10th': 'last_pay_10th', 'EOM': 'last_pay_eom' }
+  const latestByKey = new Map()
+  entries.forEach(e => {
+    const payType = e.payType || payTypeFor(e.category)
+    const col = colMap[payType]
+    if (!col) return
+    const key = `${e.tenantId}:${col}`
+    const prev = latestByKey.get(key)
+    if (!prev || e.paymentDate > prev) latestByKey.set(key, e.paymentDate)
+  })
+  await Promise.all(
+    Array.from(latestByKey.entries()).map(async ([key, date]) => {
+      const [tenantId, col] = key.split(':')
+      const { error } = await supabase.from('tenants').update({ [col]: date }).eq('id', tenantId)
+      if (error) throw error
+    })
+  )
+
+  const activityRows = entries.map((e, i) => {
+    const catLabel = e.category === 'ELECTRICITY' ? 'Electricity'
+                   : e.category === 'RENT_WATER'  ? 'Rent + Water'
+                   : 'Other'
+    const noteParts = [e._cutoffName, e.notes].filter(Boolean)
+    return {
+      activity_type: `Payment - ${catLabel}`,
+      tenant_id:     e.tenantId,
+      tenant_name:   e._tenantName || null,
+      room_no:       e._roomNo     || null,
+      bed_letter:    e._bedLetter  || null,
+      amount_paid:   Number(e.amount),
+      entity_type:   'PAYMENT',
+      entity_id:     inserted[i]?.id ?? null,
+      notes:         noteParts.join(' · ') || null,
+    }
+  })
+  const { error: aErr } = await supabase.from('activity_log').insert(activityRows)
+  if (aErr) throw aErr
+
+  return inserted
+}
+
+// Undo for recordPaymentsBatch() — a compensating INSERT, never an UPDATE/DELETE
+// (payments has no update/delete policy for any role, by design). Scoped to the
+// exact rows passed in — never queries for "other payments to void."
+export async function voidPayments(paymentRows) {
+  if (!paymentRows || paymentRows.length === 0) return []
+
+  const today = new Date().toISOString().slice(0, 10)
+  const voidRows = paymentRows.map(p => ({
+    tenant_id:        p.tenant_id,
+    payment_date:     today,
+    amount:           -Number(p.amount),
+    category:         p.category,
+    cutoff_id:        p.cutoff_id,
+    pay_type:         'VOID',
+    notes:            `Undo of payment #${p.id}`,
+    voids_payment_id: p.id,
+  }))
+
+  const { data: inserted, error: pErr } = await supabase
+    .from('payments')
+    .insert(voidRows)
+    .select()
+  if (pErr) throw pErr
+
+  const activityRows = paymentRows.map(p => ({
+    activity_type: 'Payment Voided',
+    tenant_id:     p.tenant_id,
+    amount_paid:   -Number(p.amount),
+    entity_type:   'PAYMENT',
+    entity_id:     p.id,
+    notes:         `Undo of payment #${p.id}`,
+  }))
+  const { error: aErr } = await supabase.from('activity_log').insert(activityRows)
+  if (aErr) throw aErr
+
+  return inserted
+}
+
 export async function fetchPayments(tenantId) {
   const { data, error } = await supabase
     .from('payments')
@@ -254,6 +363,21 @@ export async function fetchActivityLog() {
   return data
 }
 
+// Server-filtered by activity_type — fetchActivityLog() is capped at 200 rows
+// across ALL types, which would undercount a specific type once other activity
+// crowds it out.
+export async function fetchActivityLogByType(activityType, sinceISO) {
+  let q = supabase
+    .from('activity_log')
+    .select('*')
+    .eq('activity_type', activityType)
+    .order('recorded_at', { ascending: false })
+  if (sinceISO) q = q.gte('recorded_at', sinceISO)
+  const { data, error } = await q
+  if (error) throw error
+  return data
+}
+
 export async function fetchTenantHistory(tenantId) {
   const { data, error } = await supabase
     .from('activity_log')
@@ -280,6 +404,85 @@ export async function logBedStatusChange(bed, newStatus, reservedName = null) {
       reserved_name: reservedName || null,
     },
   })
+}
+
+export async function logTenantMoveOutDateChange(tenant, newMoveOutDate) {
+  await logActivity({
+    activity_type: 'Move-out Date Changed',
+    tenant_id:     tenant.id,
+    tenant_name:   tenant.name,
+    room_no:       tenant.room_no,
+    bed_letter:    tenant.bed_letter,
+    entity_type:   'TENANT',
+    entity_id:     tenant.id,
+    notes:         `Room ${tenant.room_no} Bed ${tenant.bed_letter}: move-out date ${tenant.move_out_date?.slice(0, 10) || '—'} → ${newMoveOutDate || '—'}`,
+    metadata: {
+      old_move_out_date: tenant.move_out_date?.slice(0, 10) || null,
+      new_move_out_date: newMoveOutDate || null,
+    },
+  })
+}
+
+export const PROFILE_FIELD_LABELS = {
+  name:                   'Name',
+  gender:                 'Gender',
+  source:                 'Source',
+  permanent_address:      'Permanent Address',
+  occupation:             'Occupation',
+  employer:               'Employer',
+  employer_address:       'Employer Address',
+  employer_contact_no:    'Employer Contact No',
+  location_of_work:       'Location of Work',
+  work_schedule:          'Work Schedule',
+  emergency_contact_name: 'Emergency Contact Name',
+  emergency_contact_no:   'Emergency Contact No',
+}
+
+function entryNoteParts(d) {
+  if (!d) return []
+  const parts = [
+    ...d.added.map(v => `+${v}`),
+    ...d.removed.map(v => `−${v}`),
+    ...d.updated.map(u => `${u.old} → ${u.new}`),
+  ]
+  if (d.primary) parts.push(`primary ${d.primary.old ?? '—'} → ${d.primary.new}`)
+  return parts
+}
+
+// Throws, unlike logActivity(): this is the only audit record of which profile
+// fields an applied change (admin save or approved request) touched, so a failed
+// insert must surface to the caller.
+export async function logTenantProfileEdit(tenant, { fields = {}, contacts = null, emails = null }) {
+  const parts = Object.entries(fields).map(([k, c]) =>
+    `${PROFILE_FIELD_LABELS[k] || k}: ${c.old ?? '—'} → ${c.new ?? '—'}`)
+  const cp = entryNoteParts(contacts)
+  if (cp.length) parts.push(`Contacts: ${cp.join(', ')}`)
+  const ep = entryNoteParts(emails)
+  if (ep.length) parts.push(`Emails: ${ep.join(', ')}`)
+
+  const { error } = await supabase.from('activity_log').insert({
+    activity_type: 'Tenant Profile Updated',
+    tenant_id:     tenant.id,
+    tenant_name:   tenant.name,
+    room_no:       tenant.room_no,
+    bed_letter:    tenant.bed_letter,
+    entity_type:   'TENANT',
+    entity_id:     tenant.id,
+    notes:         `Room ${tenant.room_no} Bed ${tenant.bed_letter}: ${parts.join('; ')}`,
+    metadata:      { changes: fields, contacts, emails },
+  })
+  if (error) throw error
+}
+
+// ── Rooms ─────────────────────────────────────────────────────────────────────
+
+export async function fetchRooms() {
+  const { data, error } = await supabase
+    .from('rooms')
+    .select('id, room_no, room_type')
+    .order('room_no')
+  if (error) throw error
+  return data
 }
 
 // ── Maintenance Tickets ───────────────────────────────────────────────────────
@@ -852,8 +1055,14 @@ export async function deleteTenantContact(id) {
 }
 
 export async function setPrimaryContact(tenantId, contactId) {
-  await supabase.from('tenant_contacts').update({ is_primary: false }).eq('tenant_id', tenantId)
+  const { error: clearErr } = await supabase.from('tenant_contacts').update({ is_primary: false }).eq('tenant_id', tenantId)
+  if (clearErr) throw clearErr
   const { error } = await supabase.from('tenant_contacts').update({ is_primary: true }).eq('id', contactId)
+  if (error) throw error
+}
+
+export async function updateTenantContact(id, { value, label }) {
+  const { error } = await supabase.from('tenant_contacts').update({ value, label: label || null }).eq('id', id)
   if (error) throw error
 }
 
@@ -889,8 +1098,14 @@ export async function deleteTenantEmail(id) {
 }
 
 export async function setPrimaryEmail(tenantId, emailId) {
-  await supabase.from('tenant_emails').update({ is_primary: false }).eq('tenant_id', tenantId)
+  const { error: clearErr } = await supabase.from('tenant_emails').update({ is_primary: false }).eq('tenant_id', tenantId)
+  if (clearErr) throw clearErr
   const { error } = await supabase.from('tenant_emails').update({ is_primary: true }).eq('id', emailId)
+  if (error) throw error
+}
+
+export async function updateTenantEmail(id, { value, label }) {
+  const { error } = await supabase.from('tenant_emails').update({ value, label: label || null }).eq('id', id)
   if (error) throw error
 }
 
@@ -1007,6 +1222,43 @@ export async function restoreBed(bedId, meta, actorId) {
     room_no: meta?.room_no, bed_letter: meta?.bed_letter,
     actor_id: actorId,
     notes: `Bed ${meta?.bed_letter || bedId} in Room ${meta?.room_no || '?'} restored to VACANT.`,
+  })
+}
+
+// meta: { room_no, summary } — summary is the plain-English description shown
+// in the modal's confirmation step, reused verbatim for room_logs/activity_log
+// so the audit trail matches exactly what the admin confirmed.
+export async function reconfigureRoom(roomId, { roomType, addBeds, removeBedIds, rateUpdates }, meta, actorId) {
+  const { error } = await supabase.rpc('reconfigure_room', {
+    p_room_id: roomId,
+    p_room_type: roomType ?? null,
+    p_add_beds: addBeds?.length ? addBeds : null,
+    p_remove_bed_ids: removeBedIds?.length ? removeBedIds : null,
+    p_rate_updates: rateUpdates?.length ? rateUpdates : null,
+  })
+  if (error) throw error
+
+  const summary = meta?.summary || `Room ${meta?.room_no || roomId} reconfigured.`
+
+  await supabase.from('room_logs').insert({
+    room_id:     roomId,
+    event_type:  'CONFIG_CHANGE',
+    description: summary,
+  })
+
+  await logActivity({
+    activity_type: 'Room Reconfigured',
+    entity_type: 'ROOM', entity_id: roomId,
+    room_no: meta?.room_no,
+    actor_id: actorId,
+    notes: summary,
+    metadata: {
+      room_no:      meta?.room_no,
+      room_type:    roomType ?? null,
+      beds_added:   addBeds?.length || 0,
+      beds_removed: removeBedIds?.length || 0,
+      rate_updates: rateUpdates?.length || 0,
+    },
   })
 }
 

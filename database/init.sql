@@ -109,24 +109,27 @@ end $$;
 
 -- Add-on type catalog
 create table if not exists addon_types (
-  id         serial primary key,
-  label      text not null unique,
-  category   text not null default 'RENT_WATER'
-             check (category in ('RENT_WATER','ELECTRIC')),
-  bill_on    text not null default 'RENT_WATER'
-             check (bill_on in ('RENT_WATER','ELECTRIC')),
-  is_active  boolean not null default true,
-  created_at timestamptz default now()
+  id             serial primary key,
+  label          text not null unique,
+  category       text not null default 'RENT_WATER'
+                 check (category in ('RENT_WATER','ELECTRIC')),
+  bill_on        text not null default 'RENT_WATER'
+                 check (bill_on in ('RENT_WATER','ELECTRIC')),
+  default_amount numeric(10,2),
+  is_active      boolean not null default true,
+  created_at     timestamptz default now()
 );
 
+alter table addon_types add column if not exists default_amount numeric(10,2);
+
 -- Seed default add-on types
-insert into addon_types (label, category, bill_on) values
-  ('Parking',          'RENT_WATER', 'RENT_WATER'),
-  ('Aircon Surcharge', 'ELECTRIC',   'ELECTRIC'),
-  ('Laundry',          'RENT_WATER', 'RENT_WATER'),
-  ('Extra Bed',        'RENT_WATER', 'RENT_WATER'),
-  ('Pet Fee',          'RENT_WATER', 'RENT_WATER'),
-  ('Key Deposit',      'RENT_WATER', 'RENT_WATER')
+insert into addon_types (label, category, bill_on, default_amount) values
+  ('Parking',          'RENT_WATER', 'RENT_WATER', 500),
+  ('Aircon Surcharge', 'ELECTRIC',   'ELECTRIC',   300),
+  ('Laundry',          'RENT_WATER', 'RENT_WATER', 150),
+  ('Extra Bed',        'RENT_WATER', 'RENT_WATER', 800),
+  ('Pet Fee',          'RENT_WATER', 'RENT_WATER', 200),
+  ('Key Deposit',      'RENT_WATER', 'RENT_WATER', 500)
 on conflict (label) do nothing;
 
 create table if not exists tenants (
@@ -232,6 +235,30 @@ create table if not exists cutoffs (
   is_active                 boolean default false,
   created_at                timestamptz default now()
 );
+
+-- Payments: category + cutoff scoping (already read/written by recordPayment()/
+-- fetchPaymentsForCutoff() in src/lib/supabase.js — bringing schema back in sync).
+-- Placed here (after cutoffs) since cutoff_id references cutoffs(id).
+alter table public.payments add column if not exists category text;
+alter table public.payments add column if not exists cutoff_id int references cutoffs(id) on delete set null;
+alter table public.payments drop constraint if exists payments_category_check;
+alter table public.payments add constraint payments_category_check
+  check (category is null or category in ('RENT_WATER','ELECTRICITY','OTHER'));
+
+create index if not exists idx_payments_cutoff on payments(cutoff_id);
+create index if not exists idx_payments_tenant on payments(tenant_id);
+
+-- Payments: undo/void support (Collections §12). Compensating-row model —
+-- payments has no UPDATE/DELETE policy for any role, by design, so "undo"
+-- cannot be an UPDATE. A void is a NEW payments row with a negated amount,
+-- linked back to the original via voids_payment_id. sum(payments.amount)
+-- per tenant/category/cutoff nets back to the pre-payment balance
+-- automatically — no change needed to buildPaymentMonitoring()/
+-- summarizeCollections() or any other SUM()-based reconciliation logic.
+alter table public.payments add column if not exists voids_payment_id int references payments(id);
+create index if not exists idx_payments_voids on payments(voids_payment_id);
+create unique index if not exists idx_payments_voids_unique
+  on payments(voids_payment_id) where voids_payment_id is not null;
 
 create table if not exists meter_readings (
   id               serial primary key,
@@ -696,6 +723,99 @@ begin
 end;
 $$ language plpgsql;
 
+-- reconfigure_room(): structural room reconfiguration — add/remove beds and
+-- adjust rates/room type as one operation. SECURITY INVOKER (default): nested
+-- beds/rooms writes run under the calling user's session, so they're still
+-- independently enforced by beds_insert/rooms_update RLS (admin-only) and
+-- trg_guard_beds (blocks non-admin from touching default_rate or REMOVED).
+create or replace function reconfigure_room(
+  p_room_id        int,
+  p_room_type      text,
+  p_add_beds       jsonb,
+  p_remove_bed_ids int[],
+  p_rate_updates   jsonb
+) returns void
+language plpgsql
+as $$
+declare
+  v_bed             record;
+  v_spec            jsonb;
+  v_existing_id     int;
+  v_existing_status text;
+  v_letter          text;
+  v_rate            numeric;
+begin
+  if not exists (select 1 from rooms where id = p_room_id) then
+    raise exception 'Room % not found.', p_room_id;
+  end if;
+
+  -- 1. Removals — hard-block LEASED beds (this is what satisfies the
+  --    "no orphaned active tenant" non-negotiable; a LEASED bed can
+  --    never structurally appear in a successful removal).
+  if p_remove_bed_ids is not null then
+    for v_bed in
+      select id, status, bed_letter from beds
+      where id = any(p_remove_bed_ids) and room_id = p_room_id
+    loop
+      if v_bed.status = 'LEASED' then
+        raise exception 'Cannot remove Bed % — it is currently LEASED. Move out or transfer the tenant first.', v_bed.bed_letter;
+      end if;
+    end loop;
+    update beds set status = 'REMOVED'
+      where id = any(p_remove_bed_ids) and room_id = p_room_id and status <> 'LEASED';
+  end if;
+
+  -- 2. Rate updates on beds being kept
+  if p_rate_updates is not null then
+    for v_spec in select * from jsonb_array_elements(p_rate_updates) loop
+      v_rate := (v_spec->>'default_rate')::numeric;
+      if v_rate is null or v_rate < 0 then
+        raise exception 'Invalid rate for bed %.', v_spec->>'bed_id';
+      end if;
+      update beds set default_rate = v_rate
+        where id = (v_spec->>'bed_id')::int and room_id = p_room_id and status <> 'REMOVED';
+    end loop;
+  end if;
+
+  -- 3. Additions — reuse a same-letter REMOVED row if one exists
+  --    (unique(room_id, bed_letter) doesn't exclude REMOVED rows, so a
+  --    brand-new insert with a reused letter would fail); otherwise
+  --    insert fresh, VACANT, no reserved_name.
+  if p_add_beds is not null then
+    for v_spec in select * from jsonb_array_elements(p_add_beds) loop
+      v_letter := upper(trim(v_spec->>'bed_letter'));
+      v_rate   := (v_spec->>'default_rate')::numeric;
+      if v_letter is null or v_letter = '' then
+        raise exception 'Bed letter is required for every added bed.';
+      end if;
+      if v_rate is null or v_rate < 0 then
+        raise exception 'Invalid rate for new Bed %.', v_letter;
+      end if;
+
+      select id, status into v_existing_id, v_existing_status
+        from beds where room_id = p_room_id and bed_letter = v_letter;
+
+      if v_existing_id is not null and v_existing_status <> 'REMOVED' then
+        raise exception 'Bed letter "%" is already active in this room. Choose a different letter.', v_letter;
+      elsif v_existing_id is not null then
+        update beds set status = 'VACANT', reserved_name = null,
+               bed_location = coalesce(v_spec->>'bed_location', bed_location),
+               default_rate = v_rate
+          where id = v_existing_id;
+      else
+        insert into beds (room_id, bed_letter, bed_location, default_rate, status)
+        values (p_room_id, v_letter, v_spec->>'bed_location', v_rate, 'VACANT');
+      end if;
+    end loop;
+  end if;
+
+  -- 4. Room type label (advisory only — confirmed via grep that no code
+  --    anywhere derives expected bed count from this string; it's pure
+  --    display text on BedMap/MoveInModal/TransferModal/Billing/etc.)
+  update rooms set room_type = p_room_type where id = p_room_id;
+end;
+$$;
+
 -- ════════════════════════════════════════════════════════════════
 -- 8. ROW LEVEL SECURITY
 -- ════════════════════════════════════════════════════════════════
@@ -723,8 +843,10 @@ drop policy if exists profiles_self_select on public.profiles;
 create policy profiles_self_select on public.profiles
   for select to authenticated using (id = auth.uid());
 
--- General tables: any authenticated session may read/write.
--- App-layer role checks (admin/user/viewer) are enforced in the UI.
+-- Remove the blanket policy from all 23 tables it was applied to.
+-- MUST run before creating the replacement policies below — RLS policies
+-- are OR'd together, so leaving app_authenticated_all in place would make
+-- every new restrictive policy a no-op.
 do $$
 declare t text;
 begin
@@ -733,20 +855,306 @@ begin
     'cutoffs','meter_readings','interim_readings','area_readings',
     'tenant_splits','addons','monthly_reports',
     'tenant_transfers','room_logs',
-    -- extended tables
     'documents','invoices','payment_allocations','settlements',
     'tenant_contacts','tenant_documents','tenant_emails',
     'tenant_stays','tickets','addon_types'
   ] loop
-    execute format('alter table public.%I enable row level security', t);
     execute format('drop policy if exists app_authenticated_all on public.%I', t);
-    execute format(
-      'create policy app_authenticated_all on public.%I '
-      'for all to authenticated using (true) with check (true)', t);
   end loop;
 end $$;
 
--- tenants: select/insert = any authenticated; update/delete = admin only.
+-- ── rooms ─────────────────────────────────────────────────────────────────
+alter table public.rooms enable row level security;
+drop policy if exists rooms_select on public.rooms;
+create policy rooms_select on public.rooms for select to authenticated using (true);
+drop policy if exists rooms_insert on public.rooms;
+create policy rooms_insert on public.rooms for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+drop policy if exists rooms_update on public.rooms;
+create policy rooms_update on public.rooms for update to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+drop policy if exists rooms_delete on public.rooms;
+create policy rooms_delete on public.rooms for delete to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+
+-- ── beds ──────────────────────────────────────────────────────────────────
+-- UPDATE granted to admin+user at row level for non-approval-gated status
+-- flips (move-in, VACANT/RESERVED/OUT OF ORDER). Bed rate and REMOVED
+-- transitions are approval-gated per requirements §7 — RLS can't express
+-- "this column but not that one" for the same row, so a trigger enforces
+-- the column-level split.
+alter table public.beds enable row level security;
+drop policy if exists beds_select on public.beds;
+create policy beds_select on public.beds for select to authenticated using (true);
+drop policy if exists beds_insert on public.beds;
+create policy beds_insert on public.beds for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+drop policy if exists beds_update on public.beds;
+create policy beds_update on public.beds for update to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists beds_delete on public.beds;
+create policy beds_delete on public.beds for delete to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+
+create or replace function public.guard_beds_protected_fields()
+returns trigger language plpgsql as $$
+declare v_role text;
+begin
+  select role into v_role from public.profiles where id = auth.uid();
+  if v_role = 'admin' then
+    return new;
+  end if;
+  if (to_jsonb(new) - 'status' - 'reserved_name')
+     is distinct from (to_jsonb(old) - 'status' - 'reserved_name') then
+    raise exception 'Only admin can change bed rate or other protected fields directly. Submit via the approval workflow.';
+  end if;
+  if new.status = 'REMOVED' or old.status = 'REMOVED' then
+    raise exception 'Bed removal/restoration requires admin approval.';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_guard_beds on public.beds;
+create trigger trg_guard_beds
+  before update on public.beds
+  for each row execute function public.guard_beds_protected_fields();
+
+-- ── payments ──────────────────────────────────────────────────────────────
+-- Non-negotiable: never delete/alter billing records. No UPDATE/DELETE
+-- policy for ANY role, including admin — intentional.
+alter table public.payments enable row level security;
+drop policy if exists payments_select on public.payments;
+create policy payments_select on public.payments for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists payments_insert on public.payments;
+create policy payments_insert on public.payments for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+-- ── activity_log ──────────────────────────────────────────────────────────
+alter table public.activity_log enable row level security;
+drop policy if exists activity_log_select on public.activity_log;
+create policy activity_log_select on public.activity_log for select to authenticated using (true);
+drop policy if exists activity_log_insert on public.activity_log;
+create policy activity_log_insert on public.activity_log for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+-- ── cutoffs ───────────────────────────────────────────────────────────────
+alter table public.cutoffs enable row level security;
+drop policy if exists cutoffs_select on public.cutoffs;
+create policy cutoffs_select on public.cutoffs for select to authenticated using (true);
+drop policy if exists cutoffs_insert on public.cutoffs;
+create policy cutoffs_insert on public.cutoffs for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists cutoffs_update on public.cutoffs;
+create policy cutoffs_update on public.cutoffs for update to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists cutoffs_delete on public.cutoffs;
+create policy cutoffs_delete on public.cutoffs for delete to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+-- ── meter_readings / interim_readings / area_readings / tenant_splits ──────
+-- DELETE granted to admin+user on all four (not just ones with a direct UI
+-- delete button) because each has cutoff_id ... on delete cascade, and
+-- Postgres RLS applies to cascade-deleted rows using the invoking role's
+-- policies — needed to keep deleteCutoff() (unrestricted for user) working.
+alter table public.meter_readings enable row level security;
+drop policy if exists meter_readings_select on public.meter_readings;
+create policy meter_readings_select on public.meter_readings for select to authenticated using (true);
+drop policy if exists meter_readings_insert on public.meter_readings;
+create policy meter_readings_insert on public.meter_readings for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists meter_readings_update on public.meter_readings;
+create policy meter_readings_update on public.meter_readings for update to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists meter_readings_delete on public.meter_readings;
+create policy meter_readings_delete on public.meter_readings for delete to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+alter table public.interim_readings enable row level security;
+drop policy if exists interim_readings_select on public.interim_readings;
+create policy interim_readings_select on public.interim_readings for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists interim_readings_insert on public.interim_readings;
+create policy interim_readings_insert on public.interim_readings for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists interim_readings_delete on public.interim_readings;
+create policy interim_readings_delete on public.interim_readings for delete to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+alter table public.area_readings enable row level security;
+drop policy if exists area_readings_select on public.area_readings;
+create policy area_readings_select on public.area_readings for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists area_readings_insert on public.area_readings;
+create policy area_readings_insert on public.area_readings for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists area_readings_update on public.area_readings;
+create policy area_readings_update on public.area_readings for update to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists area_readings_delete on public.area_readings;
+create policy area_readings_delete on public.area_readings for delete to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+alter table public.tenant_splits enable row level security;
+drop policy if exists tenant_splits_select on public.tenant_splits;
+create policy tenant_splits_select on public.tenant_splits for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists tenant_splits_insert on public.tenant_splits;
+create policy tenant_splits_insert on public.tenant_splits for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists tenant_splits_delete on public.tenant_splits;
+create policy tenant_splits_delete on public.tenant_splits for delete to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+-- ── addons ────────────────────────────────────────────────────────────────
+alter table public.addons enable row level security;
+drop policy if exists addons_select on public.addons;
+create policy addons_select on public.addons for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists addons_insert on public.addons;
+create policy addons_insert on public.addons for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists addons_update on public.addons;
+create policy addons_update on public.addons for update to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists addons_delete on public.addons;
+create policy addons_delete on public.addons for delete to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+-- ── monthly_reports ───────────────────────────────────────────────────────
+alter table public.monthly_reports enable row level security;
+drop policy if exists monthly_reports_select on public.monthly_reports;
+create policy monthly_reports_select on public.monthly_reports for select to authenticated using (true);
+drop policy if exists monthly_reports_insert on public.monthly_reports;
+create policy monthly_reports_insert on public.monthly_reports for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists monthly_reports_update on public.monthly_reports;
+create policy monthly_reports_update on public.monthly_reports for update to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists monthly_reports_delete on public.monthly_reports;
+create policy monthly_reports_delete on public.monthly_reports for delete to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+-- ── tenant_transfers ──────────────────────────────────────────────────────
+-- INSERT admin-only (processTransfer() only ever called from admin-gated
+-- UI paths). No UPDATE/DELETE anywhere in the app.
+alter table public.tenant_transfers enable row level security;
+drop policy if exists tenant_transfers_select on public.tenant_transfers;
+create policy tenant_transfers_select on public.tenant_transfers for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists tenant_transfers_insert on public.tenant_transfers;
+create policy tenant_transfers_insert on public.tenant_transfers for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+
+-- ── room_logs ─────────────────────────────────────────────────────────────
+alter table public.room_logs enable row level security;
+drop policy if exists room_logs_select on public.room_logs;
+create policy room_logs_select on public.room_logs for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists room_logs_insert on public.room_logs;
+create policy room_logs_insert on public.room_logs for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+-- ── tenant_documents ──────────────────────────────────────────────────────
+do $$
+declare t text;
+begin
+  foreach t in array array['tenant_documents'] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('drop policy if exists %I_select on public.%I', t, t);
+    execute format(
+      'create policy %I_select on public.%I for select to authenticated '
+      'using (exists (select 1 from public.profiles where id = auth.uid() and role in (''admin'',''user'')))', t, t);
+    execute format('drop policy if exists %I_insert on public.%I', t, t);
+    execute format(
+      'create policy %I_insert on public.%I for insert to authenticated '
+      'with check (exists (select 1 from public.profiles where id = auth.uid() and role in (''admin'',''user'')))', t, t);
+    execute format('drop policy if exists %I_update on public.%I', t, t);
+    execute format(
+      'create policy %I_update on public.%I for update to authenticated '
+      'using (exists (select 1 from public.profiles where id = auth.uid() and role in (''admin'',''user'')))', t, t);
+    execute format('drop policy if exists %I_delete on public.%I', t, t);
+    execute format(
+      'create policy %I_delete on public.%I for delete to authenticated '
+      'using (exists (select 1 from public.profiles where id = auth.uid() and role in (''admin'',''user'')))', t, t);
+  end loop;
+end $$;
+
+-- ── tenant_contacts / tenant_emails ──────────────────────────────────────
+-- select/insert = admin+user (move-in by a user inserts the new tenant's
+-- contacts/emails). update/delete = admin only: non-admin edits to existing
+-- entries go through the Edit Tenant Profile approval request and are applied
+-- by an admin session.
+do $$
+declare t text;
+begin
+  foreach t in array array['tenant_contacts','tenant_emails'] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('drop policy if exists %I_select on public.%I', t, t);
+    execute format(
+      'create policy %I_select on public.%I for select to authenticated '
+      'using (exists (select 1 from public.profiles where id = auth.uid() and role in (''admin'',''user'')))', t, t);
+    execute format('drop policy if exists %I_insert on public.%I', t, t);
+    execute format(
+      'create policy %I_insert on public.%I for insert to authenticated '
+      'with check (exists (select 1 from public.profiles where id = auth.uid() and role in (''admin'',''user'')))', t, t);
+    execute format('drop policy if exists %I_update on public.%I', t, t);
+    execute format(
+      'create policy %I_update on public.%I for update to authenticated '
+      'using (exists (select 1 from public.profiles where id = auth.uid() and role = ''admin''))', t, t);
+    execute format('drop policy if exists %I_delete on public.%I', t, t);
+    execute format(
+      'create policy %I_delete on public.%I for delete to authenticated '
+      'using (exists (select 1 from public.profiles where id = auth.uid() and role = ''admin''))', t, t);
+  end loop;
+end $$;
+
+-- ── addon_types ───────────────────────────────────────────────────────────
+alter table public.addon_types enable row level security;
+drop policy if exists addon_types_select on public.addon_types;
+create policy addon_types_select on public.addon_types for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists addon_types_insert on public.addon_types;
+create policy addon_types_insert on public.addon_types for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+drop policy if exists addon_types_update on public.addon_types;
+create policy addon_types_update on public.addon_types for update to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+
+-- ── documents / invoices / payment_allocations / settlements /
+--    tenant_stays / tickets ──────────────────────────────────────────────
+-- Zero live rows, zero code references today — locked to admin-only
+-- writes as a conservative default until each feature is designed.
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'documents','invoices','payment_allocations','settlements','tenant_stays','tickets'
+  ] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('drop policy if exists %I_select on public.%I', t, t);
+    execute format(
+      'create policy %I_select on public.%I for select to authenticated '
+      'using (exists (select 1 from public.profiles where id = auth.uid() and role in (''admin'',''user'')))', t, t);
+    execute format('drop policy if exists %I_insert on public.%I', t, t);
+    execute format(
+      'create policy %I_insert on public.%I for insert to authenticated '
+      'with check (exists (select 1 from public.profiles where id = auth.uid() and role = ''admin''))', t, t);
+    execute format('drop policy if exists %I_update on public.%I', t, t);
+    execute format(
+      'create policy %I_update on public.%I for update to authenticated '
+      'using (exists (select 1 from public.profiles where id = auth.uid() and role = ''admin''))', t, t);
+    execute format('drop policy if exists %I_delete on public.%I', t, t);
+    execute format(
+      'create policy %I_delete on public.%I for delete to authenticated '
+      'using (exists (select 1 from public.profiles where id = auth.uid() and role = ''admin''))', t, t);
+  end loop;
+end $$;
+
+-- tenants: select/insert = any authenticated; delete = admin only. update =
+-- admin+user at row level, with a trigger restricting non-admin updates to
+-- last_pay_10th/last_pay_eom (payment-date bookkeeping) only (see
+-- guard_tenants_protected_fields() below).
 alter table public.tenants enable row level security;
 
 drop policy if exists tenants_select on public.tenants;
@@ -761,8 +1169,34 @@ drop policy if exists tenants_update on public.tenants;
 create policy tenants_update on public.tenants
   for update to authenticated
   using (exists (
-    select 1 from public.profiles where id = auth.uid() and role = 'admin'
+    select 1 from public.profiles where id = auth.uid() and role in ('admin','user')
   ));
+
+-- Non-admin (user) UPDATE is limited to payment-date bookkeeping
+-- (last_pay_10th/last_pay_eom, written by recordPayment()). Every other
+-- column — including personal details edited on the Edit Tenant Profile page
+-- (requirements §3) — changes only by admin: non-admin edits are submitted
+-- as an approval request and applied by an admin session once approved.
+create or replace function public.guard_tenants_protected_fields()
+returns trigger language plpgsql as $$
+declare
+  v_role   text;
+  v_exempt text[] := array['last_pay_10th','last_pay_eom'];
+begin
+  select role into v_role from public.profiles where id = auth.uid();
+  if v_role = 'admin' then
+    return new;
+  end if;
+  if (to_jsonb(new) - v_exempt) is distinct from (to_jsonb(old) - v_exempt) then
+    raise exception 'Only admin can change tenant details directly. Submit the change for approval.';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_guard_tenants on public.tenants;
+create trigger trg_guard_tenants
+  before update on public.tenants
+  for each row execute function public.guard_tenants_protected_fields();
 
 drop policy if exists tenants_delete on public.tenants;
 create policy tenants_delete on public.tenants

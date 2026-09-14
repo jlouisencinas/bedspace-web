@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { fetchBeds, updateBedStatus, logBedStatusChange } from '../lib/supabase'
 import { useToast } from '../components/Toast'
+import { useAuth } from '../lib/auth'
 import { Search, SearchX, X } from 'lucide-react'
 
 function statusClass(s) {
@@ -9,6 +10,7 @@ function statusClass(s) {
     case 'LEASED':       return 'leased'
     case 'RESERVED':     return 'reserved'
     case 'OUT OF ORDER': return 'oor'
+    case 'REMOVED':      return 'removed'
     default:             return 'vacant'
   }
 }
@@ -146,6 +148,7 @@ export default function BedMap() {
   const [statFilter,  setStatFilter]  = useState('')
   const [statusModal, setStatusModal] = useState(null)
   const { show, ToastEl } = useToast()
+  const { isViewer } = useAuth()
 
   async function load() {
     setLoading(true)
@@ -171,6 +174,7 @@ export default function BedMap() {
     const q = search.toLowerCase()
     const map = {}
     beds.forEach(b => {
+      if (b.status === 'REMOVED') return
       if (typeFilter && b.room_type !== typeFilter) return
       if (statFilter && b.status !== statFilter)    return
       if (q && !b.room_no.includes(q)
@@ -190,7 +194,7 @@ export default function BedMap() {
     </div>
   )
 
-  const totalBeds = beds.length
+  const totalBeds = beds.filter(b => b.status !== 'REMOVED').length
   const leased    = beds.filter(b => b.status === 'LEASED').length
   const vacant    = beds.filter(b => b.status === 'VACANT').length
   const reserved  = beds.filter(b => b.status === 'RESERVED').length
@@ -289,7 +293,7 @@ export default function BedMap() {
                     const cls       = statusClass(b.status)
                     const rate      = b.rate || b.default_rate
                     const isLeased  = b.status === 'LEASED'
-                    const clickable = !isLeased
+                    const clickable = !isLeased && !isViewer
                     return (
                       <div
                         key={b.bed_id}
