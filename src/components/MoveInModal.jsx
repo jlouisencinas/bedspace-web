@@ -130,7 +130,7 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
                   <label>Selected Bed</label>
                   <input type="text" readOnly
                     value={`Room ${bed.room_no} · Bed ${bed.bed_letter}${bed.bed_location ? ' (' + bed.bed_location + ')' : ''} — ${bed.room_type || ''}`}
-                    className="bg-slate-50 text-slate-500 cursor-default"
+                    className="bg-surface-2 text-ink-muted cursor-default"
                   />
                 </div>
               )}
@@ -212,7 +212,7 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
                   type="text"
                   readOnly
                   value={calcDuration(form.move_in_date, form.move_out_date) || '—'}
-                  className="bg-slate-50 text-slate-500 cursor-default"
+                  className="bg-surface-2 text-ink-muted cursor-default"
                 />
               </div>
 
@@ -250,14 +250,14 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
               {isDriveConfigured() && (
                 <div className="fg full">
                   {driveConnected ? (
-                    <div className="flex items-center gap-2 text-[12px] text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
+                    <div className="flex items-center gap-2 text-[12px] text-success-text bg-success-bg border border-success-border rounded-lg px-3 py-2">
                       <CheckCircle size={13} className="shrink-0" />
                       Google Drive connected — files will be uploaded automatically on submit.
                     </div>
                   ) : (
-                    <div className="flex items-center gap-3 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                    <div className="flex items-center gap-3 bg-warning-bg border border-warning-border rounded-lg px-3 py-2">
                       <Wifi size={13} className="shrink-0 text-amber-500" />
-                      <span className="text-[12px] text-amber-800 flex-1">Connect Google Drive to upload files to the tenant folder.</span>
+                      <span className="text-[12px] text-warning-text flex-1">Connect Google Drive to upload files to the tenant folder.</span>
                       <button
                         type="button"
                         disabled={!drivePreloaded}
@@ -281,11 +281,11 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
                   <div className="flex items-center gap-1.5">
                     <label className={`flex-1 flex items-center gap-2 px-2.5 py-1.5 text-[13px] rounded-lg border cursor-pointer transition-colors min-w-0 ${
                       d.file
-                        ? 'border-emerald-300 bg-emerald-50 hover:bg-emerald-100'
-                        : 'border-slate-200 bg-white hover:bg-slate-50'
+                        ? 'border-emerald-300 bg-success-bg hover:bg-emerald-100'
+                        : 'border-line bg-surface hover:bg-surface-2'
                     }`}>
-                      <FileUp size={13} className={d.file ? 'text-emerald-500 shrink-0' : 'text-slate-400 shrink-0'} />
-                      <span className={`truncate ${d.file ? 'text-emerald-800 font-medium' : 'text-slate-400'}`}>
+                      <FileUp size={13} className={d.file ? 'text-emerald-500 shrink-0' : 'text-ink-faint shrink-0'} />
+                      <span className={`truncate ${d.file ? 'text-emerald-800 font-medium' : 'text-ink-faint'}`}>
                         {d.file ? d.file.name : 'Choose file…'}
                       </span>
                       <input
@@ -299,7 +299,7 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
                       <button
                         type="button"
                         onClick={() => setDocFile(i, null)}
-                        className="shrink-0 text-slate-400 hover:text-red-500 transition-colors"
+                        className="shrink-0 text-ink-faint hover:text-red-500 transition-colors"
                       >
                         <X size={14} />
                       </button>
@@ -328,7 +328,7 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
             </div>
 
             {formError && (
-              <div className="mt-3 px-3 py-2.5 bg-red-50 border border-red-100 rounded-xl text-[13px] text-red-700 flex items-start gap-2">
+              <div className="mt-3 px-3 py-2.5 bg-danger-bg border border-danger-border rounded-xl text-[13px] text-danger-text flex items-start gap-2">
                 <span className="shrink-0 mt-px">⚠</span>
                 {formError}
               </div>

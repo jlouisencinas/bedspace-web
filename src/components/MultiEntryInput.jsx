@@ -30,7 +30,7 @@ export default function MultiEntryInput({ entries, onChange, placeholder = 'Valu
             onClick={() => setPrimary(i)}
             title={e.isPrimary ? 'Primary (click to change)' : 'Set as primary'}
             className={`shrink-0 w-6 h-6 flex items-center justify-center rounded-full transition-colors ${
-              e.isPrimary ? 'bg-navy-500 text-white' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+              e.isPrimary ? 'bg-navy-500 text-white' : 'bg-surface-3 text-ink-faint hover:bg-surface-3'
             }`}
           >
             <Star size={10} fill={e.isPrimary ? 'currentColor' : 'none'} />
@@ -41,7 +41,7 @@ export default function MultiEntryInput({ entries, onChange, placeholder = 'Valu
             onChange={ev => setField(i, 'value', ev.target.value)}
             placeholder={placeholder}
             required={required && i === 0}
-            className="flex-1 px-2.5 py-1.5 text-[13px] rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
+            className="flex-1 px-2.5 py-1.5 text-[13px] rounded-lg border border-line bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
           />
           {showLabel && (
             <input
@@ -49,14 +49,14 @@ export default function MultiEntryInput({ entries, onChange, placeholder = 'Valu
               value={e.label}
               onChange={ev => setField(i, 'label', ev.target.value)}
               placeholder={labelPlaceholder}
-              className="w-28 px-2.5 py-1.5 text-[13px] rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
+              className="w-28 px-2.5 py-1.5 text-[13px] rounded-lg border border-line bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
             />
           )}
           <button
             type="button"
             onClick={() => removeRow(i)}
             disabled={entries.length === 1}
-            className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg text-ink-faint hover:text-red-500 hover:bg-danger-bg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Trash2 size={13} />
           </button>

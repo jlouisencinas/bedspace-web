@@ -45,7 +45,7 @@ export default function NewTicketModal({ rooms, tenants, onClose, onSaved }) {
           <div className="modal-body">
             <div className="form-grid">
               <div className="fg full">
-                <label>Room <span className="text-red-600">*</span></label>
+                <label>Room <span className="text-danger-text">*</span></label>
                 <select
                   value={form.room_id}
                   onChange={e => { set('room_id', e.target.value); set('tenant_id', '') }}
@@ -70,7 +70,7 @@ export default function NewTicketModal({ rooms, tenants, onClose, onSaved }) {
                 </select>
               </div>
               <div className="fg full">
-                <label>Concern <span className="text-red-600">*</span></label>
+                <label>Concern <span className="text-danger-text">*</span></label>
                 <input
                   type="text"
                   value={form.concern}
@@ -85,7 +85,7 @@ export default function NewTicketModal({ rooms, tenants, onClose, onSaved }) {
               </div>
             </div>
             {error && (
-              <div className="mt-3 p-3 bg-red-50 text-red-700 text-[13px] rounded-xl border border-red-100">{error}</div>
+              <div className="mt-3 p-3 bg-danger-bg text-danger-text text-[13px] rounded-xl border border-danger-border">{error}</div>
             )}
           </div>
           <div className="modal-foot">

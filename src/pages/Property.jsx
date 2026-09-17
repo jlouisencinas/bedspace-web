@@ -28,11 +28,11 @@ const ROOM_STATUS_LABELS = {
 
 function StatusPill({ status }) {
   const cls =
-    status === 'ACTIVE'      ? 'bg-emerald-50 text-emerald-700' :
-    status === 'MAINTENANCE' ? 'bg-amber-50 text-amber-700'     :
-    status === 'CONVERTED'   ? 'bg-blue-50 text-blue-700'       :
-    status === 'RESERVED'    ? 'bg-purple-50 text-purple-700'   :
-                               'bg-slate-100 text-slate-500'
+    status === 'ACTIVE'      ? 'bg-success-bg text-success-text' :
+    status === 'MAINTENANCE' ? 'bg-warning-bg text-warning-text'     :
+    status === 'CONVERTED'   ? 'bg-info-bg text-info-text'       :
+    status === 'RESERVED'    ? 'bg-badge-purple-bg text-badge-purple-text'   :
+                               'bg-surface-3 text-ink-muted'
   return (
     <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${cls}`}>
       {ROOM_STATUS_LABELS[status] || status}
@@ -40,7 +40,7 @@ function StatusPill({ status }) {
   )
 }
 
-const INPUT_SM = 'px-2 py-1 border border-slate-200 rounded-lg text-[12px] bg-white focus:outline-none focus:border-navy-500 transition-colors'
+const INPUT_SM = 'px-2 py-1 border border-line rounded-lg text-[12px] bg-surface focus:outline-none focus:border-navy-500 transition-colors'
 
 // ── Confirm Modal ─────────────────────────────────────────────────────────────
 
@@ -53,7 +53,7 @@ function ConfirmModal({ message, confirmLabel = 'Confirm', danger = false, onCon
           <button className="btn-close" onClick={onClose}><X size={16} /></button>
         </div>
         <div className="modal-body">
-          <p className="text-[13px] text-slate-600">{message}</p>
+          <p className="text-[13px] text-ink-secondary">{message}</p>
         </div>
         <div className="modal-foot">
           <button type="button" className="btn secondary" onClick={onClose}>Cancel</button>
@@ -104,49 +104,49 @@ function SummaryTab({ summary }) {
         </thead>
         <tbody>
           {summary.map(r => (
-            <tr key={r.id} className={r.is_management ? 'opacity-50 bg-slate-50' : ''}>
-              <td className="font-semibold text-slate-900 whitespace-nowrap">
+            <tr key={r.id} className={r.is_management ? 'opacity-50 bg-surface-2' : ''}>
+              <td className="font-semibold text-ink whitespace-nowrap">
                 {r.room_no}
                 {r.is_management && (
-                  <span className="ml-1.5 text-[10px] font-bold bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded normal-case tracking-normal">
+                  <span className="ml-1.5 text-[10px] font-bold bg-surface-3 text-ink-muted px-1.5 py-0.5 rounded normal-case tracking-normal">
                     MGMT
                   </span>
                 )}
               </td>
-              <td className="text-[12px] text-slate-500">{r.room_type || <span className="text-slate-300">—</span>}</td>
+              <td className="text-[12px] text-ink-muted">{r.room_type || <span className="text-ink-faint">—</span>}</td>
               <td><StatusPill status={r.room_status || 'ACTIVE'} /></td>
               <td className="text-right text-[12px]">{r.lower_rate != null ? fmt(r.lower_rate) : '—'}</td>
               <td className="text-right text-[12px]">{r.upper_rate != null ? fmt(r.upper_rate) : '—'}</td>
-              <td className="text-right text-[12px] text-slate-500">
-                {r.original_bed_count != null ? r.original_bed_count : <span className="text-slate-300">—</span>}
+              <td className="text-right text-[12px] text-ink-muted">
+                {r.original_bed_count != null ? r.original_bed_count : <span className="text-ink-faint">—</span>}
               </td>
               <td className="text-right text-[12px] font-medium">{r.is_management ? '—' : r.current_bed_count}</td>
               <td className="text-right text-[12px]">
                 {r.is_management ? '—' : (
-                  <span className={r.occupied_beds > 0 ? 'font-semibold text-emerald-700' : 'text-slate-400'}>
+                  <span className={r.occupied_beds > 0 ? 'font-semibold text-success-text' : 'text-ink-faint'}>
                     {r.occupied_beds}
                   </span>
                 )}
               </td>
               <td className="text-right text-[12px]">{r.is_management ? '—' : r.tenant_count}</td>
               <td className="text-right text-[12px] font-semibold">{r.is_management ? '—' : fmt(r.room_rate)}</td>
-              <td className="text-right text-[12px] font-semibold text-emerald-700">
-                {r.is_management ? '—' : (r.actual_collected > 0 ? fmt(r.actual_collected) : <span className="text-slate-300">—</span>)}
+              <td className="text-right text-[12px] font-semibold text-success-text">
+                {r.is_management ? '—' : (r.actual_collected > 0 ? fmt(r.actual_collected) : <span className="text-ink-faint">—</span>)}
               </td>
             </tr>
           ))}
         </tbody>
         <tfoot>
-          <tr className="bg-slate-50 font-semibold">
-            <td colSpan={5} className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider">
+          <tr className="bg-surface-2 font-semibold">
+            <td colSpan={5} className="text-[11px] text-ink-faint font-semibold uppercase tracking-wider">
               Totals (excl. management)
             </td>
-            <td className="text-right text-[12px] text-slate-400">—</td>
+            <td className="text-right text-[12px] text-ink-faint">—</td>
             <td className="text-right text-[12px]">{totals.current}</td>
-            <td className="text-right text-[12px] text-emerald-700">{totals.occupied}</td>
+            <td className="text-right text-[12px] text-success-text">{totals.occupied}</td>
             <td className="text-right text-[12px]">{totals.tenants}</td>
             <td className="text-right text-[12px]">{fmt(totals.rate)}</td>
-            <td className="text-right text-[12px] text-emerald-700">{fmt(totals.actual)}</td>
+            <td className="text-right text-[12px] text-success-text">{fmt(totals.actual)}</td>
           </tr>
         </tfoot>
       </table>
@@ -218,7 +218,7 @@ function RoomConfigTab({ summary, onDone }) {
   return (
     <div>
       {!isAdmin && (
-        <div className="mb-4 flex items-start gap-2 bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 text-[12px] text-amber-800">
+        <div className="mb-4 flex items-start gap-2 bg-warning-bg border border-warning-border rounded-xl px-4 py-3 text-[12px] text-warning-text">
           <AlertTriangle size={13} className="shrink-0 mt-0.5 text-amber-500" />
           As a user, your changes will be submitted for admin approval before taking effect.
         </div>
@@ -240,8 +240,8 @@ function RoomConfigTab({ summary, onDone }) {
               const isEditing = editing === room.id
               const isPending = pendingIds.has(room.id)
               return (
-                <tr key={room.id} className={room.is_management ? 'bg-slate-50' : ''}>
-                  <td className="font-semibold text-slate-900">{room.room_no}</td>
+                <tr key={room.id} className={room.is_management ? 'bg-surface-2' : ''}>
+                  <td className="font-semibold text-ink">{room.room_no}</td>
 
                   {isEditing ? (
                     <>
@@ -281,7 +281,7 @@ function RoomConfigTab({ summary, onDone }) {
                             onChange={e => setForm(f => ({ ...f, is_management: e.target.checked }))}
                             className="rounded"
                           />
-                          <span className="text-[12px] text-slate-600">Yes</span>
+                          <span className="text-[12px] text-ink-secondary">Yes</span>
                         </label>
                       </td>
                       <td>
@@ -311,19 +311,19 @@ function RoomConfigTab({ summary, onDone }) {
                     </>
                   ) : (
                     <>
-                      <td className="text-[12px]">{room.room_type || <span className="text-slate-300">—</span>}</td>
+                      <td className="text-[12px]">{room.room_type || <span className="text-ink-faint">—</span>}</td>
                       <td><StatusPill status={room.room_status || 'ACTIVE'} /></td>
-                      <td className="text-[12px] text-slate-600">
-                        {room.original_bed_count != null ? room.original_bed_count : <span className="text-slate-300">—</span>}
+                      <td className="text-[12px] text-ink-secondary">
+                        {room.original_bed_count != null ? room.original_bed_count : <span className="text-ink-faint">—</span>}
                       </td>
                       <td>
                         {room.is_management
-                          ? <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-200 text-slate-600">Yes</span>
-                          : <span className="text-slate-300 text-[12px]">—</span>}
+                          ? <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-surface-3 text-ink-secondary">Yes</span>
+                          : <span className="text-ink-faint text-[12px]">—</span>}
                       </td>
                       <td>
                         {isPending ? (
-                          <span className="flex items-center gap-1 text-[11px] text-amber-600 font-medium">
+                          <span className="flex items-center gap-1 text-[11px] text-warning-text font-medium">
                             <Clock size={11} /> Pending
                           </span>
                         ) : (
@@ -463,24 +463,24 @@ function BedRatesTab({ summary, onDone }) {
         const activeCnt = allBeds.filter(b => b.status !== 'REMOVED').length
 
         return (
-          <div key={room.id} className="border border-slate-200 rounded-xl overflow-hidden">
-            <div className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 hover:bg-slate-100 transition-colors">
+          <div key={room.id} className="border border-line rounded-xl overflow-hidden">
+            <div className="w-full flex items-center justify-between px-4 py-3 bg-surface-2 hover:bg-surface-3 transition-colors">
               <button
                 type="button"
                 onClick={() => toggleRoom(room.id)}
                 className="flex items-center gap-3 text-left flex-1 bg-transparent border-none"
               >
                 {isOpen
-                  ? <ChevronDown size={14} className="text-slate-400" />
-                  : <ChevronRight size={14} className="text-slate-400" />}
-                <span className="font-semibold text-slate-900 text-[13px]">Room {room.room_no}</span>
-                {room.room_type && <span className="text-[11px] text-slate-400">{room.room_type}</span>}
+                  ? <ChevronDown size={14} className="text-ink-faint" />
+                  : <ChevronRight size={14} className="text-ink-faint" />}
+                <span className="font-semibold text-ink text-[13px]">Room {room.room_no}</span>
+                {room.room_type && <span className="text-[11px] text-ink-faint">{room.room_type}</span>}
                 {room.is_management && (
-                  <span className="text-[10px] font-bold bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded">MGMT</span>
+                  <span className="text-[10px] font-bold bg-surface-3 text-ink-muted px-1.5 py-0.5 rounded">MGMT</span>
                 )}
               </button>
               <div className="flex items-center gap-3">
-                <span className="text-[12px] text-slate-400">{activeCnt} active bed{activeCnt !== 1 ? 's' : ''}</span>
+                <span className="text-[12px] text-ink-faint">{activeCnt} active bed{activeCnt !== 1 ? 's' : ''}</span>
                 {isAdmin && (
                   <button
                     type="button"
@@ -496,7 +496,7 @@ function BedRatesTab({ summary, onDone }) {
             {isOpen && (
               <table className="w-full text-[13px]">
                 <thead>
-                  <tr className="text-[10px] text-slate-400 uppercase tracking-widest bg-white border-t border-slate-100">
+                  <tr className="text-[10px] text-ink-faint uppercase tracking-widest bg-surface border-t border-line-subtle">
                     <th className="px-4 py-2 text-left font-semibold">Bed</th>
                     <th className="px-4 py-2 text-left font-semibold">Location</th>
                     <th className="px-4 py-2 text-left font-semibold">Status</th>
@@ -506,22 +506,22 @@ function BedRatesTab({ summary, onDone }) {
                 </thead>
                 <tbody>
                   {allBeds.length === 0 ? (
-                    <tr><td colSpan={5} className="px-4 py-3 text-[12px] text-slate-300 text-center">No beds configured</td></tr>
+                    <tr><td colSpan={5} className="px-4 py-3 text-[12px] text-ink-faint text-center">No beds configured</td></tr>
                   ) : allBeds.map(bed => {
                     const isRemoved = bed.status === 'REMOVED'
                     const isEditing = editingBed === bed.id
                     const isPending = pendingBeds[bed.id]
                     const bedStatusCls =
-                      isRemoved               ? 'bg-red-50 text-red-500'           :
-                      bed.status === 'LEASED'       ? 'bg-emerald-50 text-emerald-700' :
-                      bed.status === 'RESERVED'     ? 'bg-amber-50 text-amber-700'     :
-                      bed.status === 'OUT OF ORDER' ? 'bg-orange-50 text-orange-700'   :
-                                                      'bg-slate-100 text-slate-500'
+                      isRemoved               ? 'bg-danger-bg text-danger-text'           :
+                      bed.status === 'LEASED'       ? 'bg-success-bg text-success-text' :
+                      bed.status === 'RESERVED'     ? 'bg-warning-bg text-warning-text'     :
+                      bed.status === 'OUT OF ORDER' ? 'bg-badge-orange-bg text-badge-orange-text'   :
+                                                      'bg-surface-3 text-ink-muted'
 
                     return (
-                      <tr key={bed.id} className={`border-t border-slate-50 ${isRemoved ? 'opacity-40 bg-slate-50' : ''}`}>
+                      <tr key={bed.id} className={`border-t border-line-subtle ${isRemoved ? 'opacity-40 bg-surface-2' : ''}`}>
                         <td className="px-4 py-2.5 font-semibold">{bed.bed_letter}</td>
-                        <td className="px-4 py-2.5 text-slate-400 text-[12px]">{bed.bed_location || '—'}</td>
+                        <td className="px-4 py-2.5 text-ink-faint text-[12px]">{bed.bed_location || '—'}</td>
                         <td className="px-4 py-2.5">
                           <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${bedStatusCls}`}>
                             {isRemoved ? 'Removed' : bed.status}
@@ -530,7 +530,7 @@ function BedRatesTab({ summary, onDone }) {
                         <td className="px-4 py-2.5 text-right">
                           {isEditing ? (
                             <div className="relative inline-flex items-center float-right">
-                              <span className="absolute left-2 text-[12px] text-slate-400 pointer-events-none select-none">₱</span>
+                              <span className="absolute left-2 text-[12px] text-ink-faint pointer-events-none select-none">₱</span>
                               <input
                                 type="number" min="0" step="0.01" autoFocus
                                 value={newRate}
@@ -544,7 +544,7 @@ function BedRatesTab({ summary, onDone }) {
                         </td>
                         <td className="px-4 py-2.5">
                           {isPending ? (
-                            <div className="flex items-center gap-1 justify-end text-[11px] text-amber-600 font-medium">
+                            <div className="flex items-center gap-1 justify-end text-[11px] text-warning-text font-medium">
                               <Clock size={11} /> Pending
                             </div>
                           ) : isEditing ? (
@@ -758,8 +758,8 @@ function AddonsTab({ addonTypes, onDone }) {
     <div>
       <div className="flex items-center justify-between mb-3">
         <div>
-          <h3 className="text-[13px] font-semibold text-slate-700">Add-on Catalog</h3>
-          <p className="text-[12px] text-slate-400 mt-0.5">
+          <h3 className="text-[13px] font-semibold text-ink-secondary">Add-on Catalog</h3>
+          <p className="text-[12px] text-ink-faint mt-0.5">
             Define available add-ons. These will be selectable in Billing when assigning charges to tenants.
           </p>
         </div>
@@ -770,10 +770,10 @@ function AddonsTab({ addonTypes, onDone }) {
         )}
       </div>
 
-      <div className="border border-slate-200 rounded-xl overflow-hidden">
+      <div className="border border-line rounded-xl overflow-hidden">
         <table className="w-full text-[12px]">
           <thead>
-            <tr className="text-[10px] text-slate-400 uppercase tracking-widest bg-slate-50">
+            <tr className="text-[10px] text-ink-faint uppercase tracking-widest bg-surface-2">
               <th className="px-4 py-2 text-left font-semibold">Label</th>
               <th className="px-4 py-2 text-left font-semibold">Type</th>
               <th className="px-4 py-2 text-left font-semibold">Billed Under</th>
@@ -784,23 +784,23 @@ function AddonsTab({ addonTypes, onDone }) {
           <tbody>
             {addonTypes.length === 0 ? (
               <tr>
-                <td colSpan={isAdmin ? 5 : 4} className="px-4 py-8 text-center text-slate-300 text-[13px]">
+                <td colSpan={isAdmin ? 5 : 4} className="px-4 py-8 text-center text-ink-faint text-[13px]">
                   No add-ons defined yet.{isAdmin ? ' Click "New Add-on" to get started.' : ''}
                 </td>
               </tr>
             ) : addonTypes.map(t => (
-              <tr key={t.id} className="border-t border-slate-50">
-                <td className="px-4 py-2.5 font-medium text-slate-800">{t.label}</td>
+              <tr key={t.id} className="border-t border-line-subtle">
+                <td className="px-4 py-2.5 font-medium text-ink">{t.label}</td>
                 <td className="px-4 py-2.5">
                   <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-                    t.category === 'ELECTRIC' ? 'bg-blue-50 text-blue-700' : 'bg-teal-50 text-teal-700'
+                    t.category === 'ELECTRIC' ? 'bg-info-bg text-info-text' : 'bg-badge-teal-bg text-badge-teal-text'
                   }`}>{t.category === 'ELECTRIC' ? 'Electric' : 'Rent+Water'}</span>
                 </td>
-                <td className="px-4 py-2.5 text-slate-500">
+                <td className="px-4 py-2.5 text-ink-muted">
                   {t.bill_on === 'ELECTRIC' ? 'Electricity stmt' : 'Rent+Water stmt'}
                 </td>
-                <td className="px-4 py-2.5 text-right font-semibold text-slate-700">
-                  {t.default_amount != null ? fmt(t.default_amount) : <span className="text-slate-300 font-normal">—</span>}
+                <td className="px-4 py-2.5 text-right font-semibold text-ink-secondary">
+                  {t.default_amount != null ? fmt(t.default_amount) : <span className="text-ink-faint font-normal">—</span>}
                 </td>
                 {isAdmin && (
                   <td className="px-4 py-2.5">
@@ -891,20 +891,20 @@ export default function Property() {
       </div>
 
       {error && (
-        <div className="mb-4 flex items-center gap-2 px-4 py-3 bg-red-50 border border-red-100 rounded-xl text-[13px] text-red-700">
+        <div className="mb-4 flex items-center gap-2 px-4 py-3 bg-danger-bg border border-danger-border rounded-xl text-[13px] text-danger-text">
           <AlertTriangle size={14} className="shrink-0" /> {error}
         </div>
       )}
 
-      <div className="flex gap-0.5 mb-5 border-b border-slate-200">
+      <div className="flex gap-0.5 mb-5 border-b border-line">
         {TABS.map(({ id, label, Icon }) => (
           <button
             key={id}
             onClick={() => setTab(id)}
             className={`flex items-center gap-1.5 px-4 py-2.5 text-[13px] font-medium border-b-2 -mb-px transition-colors ${
               tab === id
-                ? 'border-navy-600 text-navy-900'
-                : 'border-transparent text-slate-400 hover:text-slate-600 hover:border-slate-300'
+                ? 'border-navy-600 text-ink'
+                : 'border-transparent text-ink-faint hover:text-ink-secondary hover:border-line'
             }`}
           >
             <Icon size={14} />

@@ -42,9 +42,9 @@ const DOC_TYPES = [
 ]
 
 const DOC_TYPE_COLORS = {
-  GOVT_ID:         'bg-blue-50 text-blue-700',
-  SIGNED_CONTRACT: 'bg-emerald-50 text-emerald-700',
-  OTHER:           'bg-slate-100 text-slate-600',
+  GOVT_ID:         'bg-info-bg text-info-text',
+  SIGNED_CONTRACT: 'bg-success-bg text-success-text',
+  OTHER:           'bg-surface-3 text-ink-secondary',
 }
 
 function fmt(n)      { return n ? '₱' + Number(n).toLocaleString('en-PH') : '—' }
@@ -160,8 +160,8 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
               {tenant.name.slice(0, 2).toUpperCase()}
             </div>
             <div>
-              <h3 className="text-[15px] font-semibold text-slate-900">{tenant.name}</h3>
-              <div className="text-[11px] text-slate-400 font-normal mt-0.5">
+              <h3 className="text-[15px] font-semibold text-ink">{tenant.name}</h3>
+              <div className="text-[11px] text-ink-faint font-normal mt-0.5">
                 Room {tenant.room_no} · Bed {tenant.bed_letter}
                 {tenant.bed_location && ` (${tenant.bed_location})`}
                 {' · '}{fmt(tenant.rate)}/mo
@@ -172,7 +172,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
         </div>
 
         {/* Tab bar */}
-        <div className="flex gap-0 px-4" style={{ borderBottom: '1px solid #E8E2D9' }}>
+        <div className="flex gap-0 px-4" style={{ borderBottom: '1px solid var(--border)' }}>
           {PROFILE_TABS.map(t => (
             <button
               key={t.id}
@@ -180,14 +180,14 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
               className={`px-3 py-2 text-[12px] font-medium border-b-2 -mb-px transition-colors ${
                 profileTab === t.id
                   ? 'border-navy-500 text-navy-700 font-semibold'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
+                  : 'border-transparent text-ink-muted hover:text-ink-secondary'
               }`}
             >
               {t.label}
-              {t.id === 'payments'  && detailPays.length    > 0 && <span className="ml-1 text-[10px] text-slate-400">{detailPays.length}</span>}
-              {t.id === 'tickets'   && detailTickets.length  > 0 && <span className="ml-1 text-[10px] text-slate-400">{detailTickets.length}</span>}
-              {t.id === 'documents' && detailDocs.length     > 0 && <span className="ml-1 text-[10px] text-slate-400">{detailDocs.length}</span>}
-              {t.id === 'history'   && detailHistory.length  > 0 && <span className="ml-1 text-[10px] text-slate-400">{detailHistory.length}</span>}
+              {t.id === 'payments'  && detailPays.length    > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailPays.length}</span>}
+              {t.id === 'tickets'   && detailTickets.length  > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailTickets.length}</span>}
+              {t.id === 'documents' && detailDocs.length     > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailDocs.length}</span>}
+              {t.id === 'history'   && detailHistory.length  > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailHistory.length}</span>}
             </button>
           ))}
         </div>
@@ -225,20 +225,20 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
               ))}
               {/* Quick contact summary if available */}
               {(detailContacts.length > 0 || detailEmails.length > 0) && (
-                <div className="mt-3 pt-3" style={{ borderTop: '1px solid #E8E2D9' }}>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Contact</div>
+                <div className="mt-3 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+                  <div className="text-[10px] font-bold text-ink-faint uppercase tracking-widest mb-2">Contact</div>
                   {detailContacts.filter(c => c.is_primary).map(c => (
-                    <div key={c.id} className="flex items-center gap-2 text-[13px] text-slate-700 mb-1">
-                      <Phone size={12} className="text-slate-400 shrink-0" />
+                    <div key={c.id} className="flex items-center gap-2 text-[13px] text-ink-secondary mb-1">
+                      <Phone size={12} className="text-ink-faint shrink-0" />
                       {c.value}
-                      {c.label && <span className="text-[11px] text-slate-400">{c.label}</span>}
+                      {c.label && <span className="text-[11px] text-ink-faint">{c.label}</span>}
                     </div>
                   ))}
                   {detailEmails.filter(e => e.is_primary).map(e => (
-                    <div key={e.id} className="flex items-center gap-2 text-[13px] text-slate-700 mb-1">
-                      <Mail size={12} className="text-slate-400 shrink-0" />
+                    <div key={e.id} className="flex items-center gap-2 text-[13px] text-ink-secondary mb-1">
+                      <Mail size={12} className="text-ink-faint shrink-0" />
                       {e.value}
-                      {e.label && <span className="text-[11px] text-slate-400">{e.label}</span>}
+                      {e.label && <span className="text-[11px] text-ink-faint">{e.label}</span>}
                     </div>
                   ))}
                 </div>
@@ -251,19 +251,19 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
             <div className="space-y-5">
               {/* Phone numbers */}
               <div>
-                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                <div className="text-[10px] font-bold text-ink-faint uppercase tracking-widest mb-3 flex items-center gap-1.5">
                   <Phone size={11} /> Phone Numbers
                 </div>
                 {detailContacts.length === 0 ? (
-                  <p className="text-[13px] text-slate-400 italic">No contacts on file.</p>
+                  <p className="text-[13px] text-ink-faint italic">No contacts on file.</p>
                 ) : (
                   <div className="space-y-1">
                     {detailContacts.map(c => (
                       <div key={c.id} className="flex items-center gap-2 py-1.5">
-                        <Phone size={12} className="text-slate-400 shrink-0" />
-                        <span className="text-[13px] text-slate-900 flex-1">{c.value}</span>
+                        <Phone size={12} className="text-ink-faint shrink-0" />
+                        <span className="text-[13px] text-ink flex-1">{c.value}</span>
                         {c.label && (
-                          <span className="text-[11px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">{c.label}</span>
+                          <span className="text-[11px] text-ink-muted bg-surface-3 px-1.5 py-0.5 rounded">{c.label}</span>
                         )}
                         {c.is_primary && (
                           <span className="text-[10px] font-bold text-navy-600 bg-navy-50 border border-navy-100 px-1.5 py-0.5 rounded">Primary</span>
@@ -276,19 +276,19 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
 
               {/* Emails */}
               <div>
-                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                <div className="text-[10px] font-bold text-ink-faint uppercase tracking-widest mb-3 flex items-center gap-1.5">
                   <Mail size={11} /> Email Addresses
                 </div>
                 {detailEmails.length === 0 ? (
-                  <p className="text-[13px] text-slate-400 italic">No emails on file.</p>
+                  <p className="text-[13px] text-ink-faint italic">No emails on file.</p>
                 ) : (
                   <div className="space-y-1">
                     {detailEmails.map(e => (
                       <div key={e.id} className="flex items-center gap-2 py-1.5">
-                        <Mail size={12} className="text-slate-400 shrink-0" />
-                        <span className="text-[13px] text-slate-900 flex-1">{e.value}</span>
+                        <Mail size={12} className="text-ink-faint shrink-0" />
+                        <span className="text-[13px] text-ink flex-1">{e.value}</span>
                         {e.label && (
-                          <span className="text-[11px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">{e.label}</span>
+                          <span className="text-[11px] text-ink-muted bg-surface-3 px-1.5 py-0.5 rounded">{e.label}</span>
                         )}
                         {e.is_primary && (
                           <span className="text-[10px] font-bold text-navy-600 bg-navy-50 border border-navy-100 px-1.5 py-0.5 rounded">Primary</span>
@@ -299,7 +299,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                 )}
               </div>
 
-              <p className="text-[11px] text-slate-400 pt-3" style={{ borderTop: '1px solid #F0ECE4' }}>
+              <p className="text-[11px] text-ink-faint pt-3" style={{ borderTop: '1px solid var(--border-lite)' }}>
                 Edit contacts in Edit Tenant Profile.
               </p>
             </div>
@@ -310,16 +310,16 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
             <div>
               {/* Upload row */}
               {!isDriveConfigured() ? (
-                <div className="text-[12px] text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2.5 flex items-start gap-2 mb-4">
+                <div className="text-[12px] text-warning-text bg-warning-bg border border-warning-border rounded-lg px-3 py-2.5 flex items-start gap-2 mb-4">
                   <AlertTriangle size={13} className="text-amber-500 shrink-0 mt-px" />
                   Google Drive not configured. Add <code className="font-mono">VITE_GOOGLE_API_KEY</code>,{' '}
                   <code className="font-mono">VITE_GOOGLE_CLIENT_ID</code>, and{' '}
                   <code className="font-mono">VITE_GOOGLE_DRIVE_PARENT_FOLDER_ID</code> to your .env file.
                 </div>
               ) : !driveConnected ? (
-                <div className="flex items-center gap-3 mb-4 pb-4 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2.5" style={{ borderBottom: '1px solid #F0ECE4' }}>
+                <div className="flex items-center gap-3 mb-4 pb-4 bg-warning-bg border border-warning-border rounded-lg px-3 py-2.5" style={{ borderBottom: '1px solid var(--border-lite)' }}>
                   <AlertTriangle size={13} className="text-amber-500 shrink-0" />
-                  <span className="text-[12px] text-amber-800 flex-1">Connect Google Drive to upload documents.</span>
+                  <span className="text-[12px] text-warning-text flex-1">Connect Google Drive to upload documents.</span>
                   <button
                     className="shrink-0 btn-xs blue"
                     disabled={!drivePreloaded}
@@ -333,11 +333,11 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                   </button>
                 </div>
               ) : (
-                <div className="flex items-center gap-2 mb-4 pb-4" style={{ borderBottom: '1px solid #F0ECE4' }}>
+                <div className="flex items-center gap-2 mb-4 pb-4" style={{ borderBottom: '1px solid var(--border-lite)' }}>
                   <select
                     value={newDocType}
                     onChange={e => setNewDocType(e.target.value)}
-                    className="px-2.5 py-1.5 text-[13px] rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-navy-700/25 transition-colors"
+                    className="px-2.5 py-1.5 text-[13px] rounded-lg border border-line bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 transition-colors"
                   >
                     {DOC_TYPES.map(dt => (
                       <option key={dt.value} value={dt.value}>{dt.label}</option>
@@ -359,7 +359,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                       disabled={docUploading}
                     />
                   </label>
-                  <span className="text-[11px] text-slate-400">
+                  <span className="text-[11px] text-ink-faint">
                     Folder: Room {tenant.room_no} - {tenant.name}
                   </span>
                 </div>
@@ -368,22 +368,22 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
               {/* Document list */}
               {detailDocs.length === 0 ? (
                 <div className="text-center py-6">
-                  <FileText size={28} className="mx-auto mb-2 text-slate-200" />
-                  <p className="text-[13px] text-slate-400">No documents uploaded yet.</p>
+                  <FileText size={28} className="mx-auto mb-2 text-ink-faint" />
+                  <p className="text-[13px] text-ink-faint">No documents uploaded yet.</p>
                 </div>
               ) : (
                 <div className="space-y-2">
                   {detailDocs.map(d => (
-                    <div key={d.id} className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 hover:bg-slate-100 transition-colors group/doc">
-                      <FileText size={18} className="text-slate-400 shrink-0" />
+                    <div key={d.id} className="flex items-center gap-3 p-3 rounded-xl bg-surface-2 hover:bg-surface-3 transition-colors group/doc">
+                      <FileText size={18} className="text-ink-faint shrink-0" />
                       <div className="flex-1 min-w-0">
-                        <div className="text-[13px] font-medium text-slate-900 truncate">{d.filename}</div>
+                        <div className="text-[13px] font-medium text-ink truncate">{d.filename}</div>
                         <div className="flex items-center gap-2 mt-0.5">
                           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${DOC_TYPE_COLORS[d.doc_type] || DOC_TYPE_COLORS.OTHER}`}>
                             {DOC_TYPES.find(t => t.value === d.doc_type)?.label || d.doc_type}
                           </span>
-                          {d.size_bytes && <span className="text-[11px] text-slate-400">{fmtSize(d.size_bytes)}</span>}
-                          <span className="text-[11px] text-slate-400">{fmtDate(d.uploaded_at)}</span>
+                          {d.size_bytes && <span className="text-[11px] text-ink-faint">{fmtSize(d.size_bytes)}</span>}
+                          <span className="text-[11px] text-ink-faint">{fmtDate(d.uploaded_at)}</span>
                         </div>
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
@@ -415,8 +415,8 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
           {profileTab === 'payments' && (
             detailPays.length === 0 ? (
               <div className="text-center py-6">
-                <CreditCard size={28} className="mx-auto mb-2 text-slate-200" />
-                <p className="text-[13px] text-slate-400">No payments recorded yet.</p>
+                <CreditCard size={28} className="mx-auto mb-2 text-ink-faint" />
+                <p className="text-[13px] text-ink-faint">No payments recorded yet.</p>
               </div>
             ) : (
               <table className="payments-table">
@@ -427,7 +427,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                       <td>{fmtDate(p.payment_date)}</td>
                       <td>{p.pay_type}</td>
                       <td>{'₱' + Number(p.amount).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                      <td className="text-slate-500">{p.notes || '—'}</td>
+                      <td className="text-ink-muted">{p.notes || '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -439,7 +439,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
           {profileTab === 'tickets' && (
             detailTickets.length === 0 ? (
               <div className="text-center py-6">
-                <p className="text-[13px] text-slate-400">No maintenance tickets.</p>
+                <p className="text-[13px] text-ink-faint">No maintenance tickets.</p>
               </div>
             ) : (
               <table className="payments-table">
@@ -451,12 +451,12 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                       <td>{tk.concern}</td>
                       <td>
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          tk.status === 'PENDING' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'
+                          tk.status === 'PENDING' ? 'bg-warning-bg text-warning-text' : 'bg-success-bg text-success-text'
                         }`}>
                           {tk.status}
                         </span>
                       </td>
-                      <td className="text-[11px] text-slate-400">
+                      <td className="text-[11px] text-ink-faint">
                         {tk.raised_at ? new Date(tk.raised_at).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
                       </td>
                     </tr>
@@ -470,9 +470,9 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
           {profileTab === 'history' && (
             detailHistory.length === 0 ? (
               <div className="text-center py-6">
-                <History size={28} className="mx-auto mb-2 text-slate-200" />
-                <p className="text-[13px] text-slate-400">No activity history yet.</p>
-                <p className="text-[11px] text-slate-300 mt-1">Actions like moves, transfers, tickets, and payments will appear here.</p>
+                <History size={28} className="mx-auto mb-2 text-ink-faint" />
+                <p className="text-[13px] text-ink-faint">No activity history yet.</p>
+                <p className="text-[11px] text-ink-faint mt-1">Actions like moves, transfers, tickets, and payments will appear here.</p>
               </div>
             ) : (
               <div className="py-1">
@@ -483,25 +483,25 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                   return (
                     <div key={entry.id} className="flex gap-3 relative">
                       {!isLast && (
-                        <div className="absolute left-[8px] top-5 bottom-0 w-px bg-slate-100" />
+                        <div className="absolute left-[8px] top-5 bottom-0 w-px bg-surface-3" />
                       )}
-                      <div className={`shrink-0 mt-1.5 w-[18px] h-[18px] rounded-full border-2 border-white ring-1 ring-slate-100 flex items-center justify-center bg-white`}>
+                      <div className={`shrink-0 mt-1.5 w-[18px] h-[18px] rounded-full border-2 ring-1 ring-line-subtle flex items-center justify-center bg-surface`} style={{ borderColor: 'var(--surface)' }}>
                         <span className={`w-2 h-2 rounded-full ${dotColor}`} />
                       </div>
                       <div className="pb-4 flex-1 min-w-0">
                         <div className="flex items-start justify-between gap-2">
-                          <span className="text-[12px] font-semibold text-slate-900 leading-snug">
+                          <span className="text-[12px] font-semibold text-ink leading-snug">
                             {entry.activity_type}
                           </span>
-                          <span className="text-[10px] text-slate-400 shrink-0 whitespace-nowrap mt-0.5">
+                          <span className="text-[10px] text-ink-faint shrink-0 whitespace-nowrap mt-0.5">
                             {fmtDate(entry.recorded_at)}
                           </span>
                         </div>
                         {entry.notes && (
-                          <p className="text-[12px] text-slate-500 mt-0.5 leading-snug">{entry.notes}</p>
+                          <p className="text-[12px] text-ink-muted mt-0.5 leading-snug">{entry.notes}</p>
                         )}
                         {isPayment && entry.amount_paid && (
-                          <p className="text-[12px] font-medium text-slate-700 mt-0.5">
+                          <p className="text-[12px] font-medium text-ink-secondary mt-0.5">
                             ₱{Number(entry.amount_paid).toLocaleString('en-PH', { minimumFractionDigits: 2 })}
                           </p>
                         )}

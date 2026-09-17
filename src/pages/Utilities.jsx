@@ -182,7 +182,7 @@ export default function Utilities() {
   if (loading && !cutoffs.length) return <Spin />
   if (!cutoffs.length) return (
     <div className="page"><div className="page-title">Utilities</div>
-      <div className="card"><div className="empty"><Zap size={32} className="mx-auto mb-3 text-slate-300" />
+      <div className="card"><div className="empty"><Zap size={32} className="mx-auto mb-3 text-ink-faint" />
         <p>No cutoffs yet.</p>
         <button className="btn primary mt-4" onClick={() => setShowOpen(true)}>+ Open New Cutoff</button>
       </div></div>
@@ -199,7 +199,7 @@ export default function Utilities() {
 
   const win = cutoff ? (utility === 'WATER'
     ? `${cutoff.water_start} → ${cutoff.water_end}` : `${cutoff.electric_start} → ${cutoff.electric_end}`) : ''
-  const accent = utility === 'WATER' ? '#2563EB' : '#D97706'
+  const accent = utility === 'WATER' ? 'var(--blue)' : 'var(--amber)'
 
   return (
     <div className="page">
@@ -220,13 +220,13 @@ export default function Utilities() {
         <select value={cutoffId || ''} onChange={e => setCutoffId(Number(e.target.value))}>
           {cutoffs.map(c => <option key={c.id} value={c.id}>{c.name}{c.is_active ? ' (active)' : ''}</option>)}
         </select>
-        <div className="flex gap-1 p-1 bg-slate-100 rounded-lg">
+        <div className="flex gap-1 p-1 bg-surface-3 rounded-lg">
           {['WATER', 'ELECTRIC'].map(u => (
             <button key={u} onClick={() => setUtility(u)}
               className={`px-4 py-1.5 rounded-md text-[12px] font-semibold transition-all inline-flex items-center gap-1 ${
                 utility === u
                   ? u === 'WATER' ? 'bg-blue-600 text-white shadow-sm' : 'bg-amber-500 text-white shadow-sm'
-                  : 'text-slate-500 hover:text-slate-700'
+                  : 'text-ink-muted hover:text-ink-secondary'
               }`}>
               {u === 'WATER' ? <><Droplets size={13} /> Water</> : <><Zap size={13} /> Electric</>}
             </button>
@@ -236,7 +236,7 @@ export default function Utilities() {
 
       {/* Provider line & rate */}
       <div className="card p-4 mb-4">
-        <div className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest mb-3">
+        <div className="text-[10px] font-extrabold text-ink-faint uppercase tracking-widest mb-3">
           {utility === 'WATER' ? 'Maynilad' : 'MERALCO'} Main Line &amp; Rate
         </div>
         <div className="flex gap-4 flex-wrap items-end">
@@ -248,9 +248,9 @@ export default function Utilities() {
             </div>
           ))}
           <div className="pb-1.5 px-1">
-            <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wide mb-0.5">Standard rate</div>
-            <div className="text-[18px] font-extrabold text-slate-900">
-              ₱{r4(stdRate)}<span className="text-[11px] text-slate-400">/{unit}</span>
+            <div className="text-[10px] text-ink-faint font-bold uppercase tracking-wide mb-0.5">Standard rate</div>
+            <div className="text-[18px] font-extrabold text-ink">
+              ₱{r4(stdRate)}<span className="text-[11px] text-ink-faint">/{unit}</span>
             </div>
           </div>
           <div className="fg max-w-[90px]">
@@ -258,18 +258,18 @@ export default function Utilities() {
             <input type="number" step="0.1" value={cfg[`${uKey}_markup_pct`] ?? ''} disabled={readOnly || override}
               onChange={e => setF(`${uKey}_markup_pct`, e.target.value)} />
           </div>
-          <label className="flex items-center gap-1.5 text-[12px] text-slate-600 pb-2 cursor-pointer">
+          <label className="flex items-center gap-1.5 text-[12px] text-ink-secondary pb-2 cursor-pointer">
             <input type="checkbox" checked={!!override} disabled={readOnly}
               onChange={e => setF(`${uKey}_rate_override`, e.target.checked)} className="w-4 h-4 accent-navy-700" /> manual
           </label>
           <div className="fg max-w-[130px]">
-            <label className={utility === 'WATER' ? 'text-blue-600' : 'text-amber-600'}>Bedspace rate</label>
+            <label className={utility === 'WATER' ? 'text-info-text' : 'text-warning-text'}>Bedspace rate</label>
             <input type="number" step="0.0001" value={override ? (cfg[`${uKey}_bedspace_rate`] ?? '') : Number(bedRate.toFixed(4))}
               disabled={readOnly || !override}
               onChange={e => setF(`${uKey}_bedspace_rate`, e.target.value)} />
           </div>
         </div>
-        <p className="text-[11px] text-slate-400 mt-2 leading-relaxed">
+        <p className="text-[11px] text-ink-faint mt-2 leading-relaxed">
           Standard = Bill ÷ Consumption · Bedspace = Standard × (1 + Markup%){override ? ' — manual override on' : ''}. The main line is the direct provider meter (≠ sum of room sub-meters).
         </p>
       </div>
@@ -279,7 +279,7 @@ export default function Utilities() {
 
       {/* Common areas */}
       <div className="card p-4 mb-4">
-        <div className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest mb-3">
+        <div className="text-[10px] font-extrabold text-ink-faint uppercase tracking-widest mb-3">
           Common Areas — {utility === 'WATER' ? 'Water' : 'Electric'}
         </div>
         <div className="table-wrap">
@@ -296,12 +296,12 @@ export default function Utilities() {
                 <tr key={name}>
                   <td><strong>{name}</strong></td>
                   <td>
-                    <span className={`badge ${rt === 'BEDSPACE' ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
+                    <span className={`badge ${rt === 'BEDSPACE' ? 'bg-info-bg text-info-text' : 'bg-surface-3 text-ink-muted'}`}>
                       {rt === 'BEDSPACE' ? 'Bedspace' : 'Standard'}
                     </span>
                   </td>
-                  <td><input type="number" step="0.01" value={a.previous_reading ?? 0} disabled={readOnly} onChange={e => setA('previous_reading', e.target.value)} className="w-24 px-2 py-1 border border-slate-200 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" /></td>
-                  <td><input type="number" step="0.01" value={a.current_reading ?? 0} disabled={readOnly} onChange={e => setA('current_reading', e.target.value)} className="w-24 px-2 py-1 border border-slate-200 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" /></td>
+                  <td><input type="number" step="0.01" value={a.previous_reading ?? 0} disabled={readOnly} onChange={e => setA('previous_reading', e.target.value)} className="w-24 px-2 py-1 border border-line rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" /></td>
+                  <td><input type="number" step="0.01" value={a.current_reading ?? 0} disabled={readOnly} onChange={e => setA('current_reading', e.target.value)} className="w-24 px-2 py-1 border border-line rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" /></td>
                   <td className="text-right">{cons}</td>
                   <td className="td-rate text-right">{peso(cons * rate)}</td>
                 </tr>
@@ -309,7 +309,7 @@ export default function Utilities() {
             })}
           </tbody></table>
         </div>
-        <p className="text-[11px] text-slate-400 mt-2">Lobby / 2nd Floor / Roof Deck = standard (overhead). Commercial = bedspace (separate billing, pending).</p>
+        <p className="text-[11px] text-ink-faint mt-2">Lobby / 2nd Floor / Roof Deck = standard (overhead). Commercial = bedspace (separate billing, pending).</p>
       </div>
 
       {/* Room readings */}
@@ -321,22 +321,22 @@ export default function Utilities() {
           </tr></thead><tbody>
             {rows.map(r => (
               <tr key={r.room_id}>
-                <td className="font-bold text-slate-900">{r.room_no}</td>
-                <td className="text-[11px] text-slate-400">{r.room_type}</td>
+                <td className="font-bold text-ink">{r.room_no}</td>
+                <td className="text-[11px] text-ink-faint">{r.room_type}</td>
                 <td>{Math.round(r.prev)}</td>
                 <td>{readOnly
                   ? <span className="font-semibold">{r.curr === '' ? '—' : r.curr}</span>
                   : <input type="number" step="0.01" value={r.curr} onChange={e => setEdits(ed => ({ ...ed, [r.room_id]: e.target.value }))}
-                      className="w-24 px-2 py-1 border border-slate-200 rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" />}
+                      className="w-24 px-2 py-1 border border-line rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" />}
                 </td>
-                <td className={`font-semibold ${r.cons < 0 ? 'text-red-600' : 'text-slate-900'}`}>{r.cons == null ? '—' : r.cons}</td>
-                <td className="text-[12px] text-slate-400 text-right">{r4(bedRate)}</td>
+                <td className={`font-semibold ${r.cons < 0 ? 'text-danger-text' : 'text-ink'}`}>{r.cons == null ? '—' : r.cons}</td>
+                <td className="text-[12px] text-ink-faint text-right">{r4(bedRate)}</td>
                 <td className="td-rate text-right">{r.amount == null ? '—' : peso(r.amount)}</td>
               </tr>
             ))}
           </tbody><tfoot>
-            <tr className="bg-slate-50 border-t-2 border-navy-700">
-              <td colSpan={4} className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wide">Room Totals</td>
+            <tr className="bg-surface-2 border-t-2 border-navy-700">
+              <td colSpan={4} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wide">Room Totals</td>
               <td className="font-extrabold">{totals.cons.toLocaleString('en-PH')}</td>
               <td></td>
               <td className="font-extrabold text-navy-500 text-right">{peso(totals.amount)}</td>
@@ -364,28 +364,28 @@ function PnLCard({ pnl, utility }) {
   const isShortfall = pnl.variance < 0
   const Row = ({ label, val, cls }) => (
     <div className="flex justify-between py-1 text-[13px]">
-      <span className="text-slate-500">{label}</span>
-      <span className={`font-semibold ${cls || 'text-slate-900'}`}>{val}</span>
+      <span className="text-ink-muted">{label}</span>
+      <span className={`font-semibold ${cls || 'text-ink'}`}>{val}</span>
     </div>
   )
   return (
     <div className={`card p-4 mb-4 border-t-[3px] ${isShortfall ? 'border-t-red-600' : 'border-t-emerald-600'}`}>
-      <div className="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1">
+      <div className="text-[10px] font-extrabold text-ink-faint uppercase tracking-widest mb-3 flex items-center gap-1">
         {utility === 'WATER' ? <><Droplets size={12} /> Water</> : <><Zap size={12} /> Electric</>} P&amp;L
       </div>
       <div className="grid grid-cols-2 gap-x-7">
         <div>
-          <Row label="Provider cost" val={peso(pnl.cost)} cls="text-red-600" />
-          <Row label="Room collections" val={peso(pnl.roomCollections)} cls="text-emerald-600" />
+          <Row label="Provider cost" val={peso(pnl.cost)} cls="text-danger-text" />
+          <Row label="Room collections" val={peso(pnl.roomCollections)} cls="text-success-text" />
         </div>
         <div>
           <Row label="Overhead (standard)" val={peso(pnl.overhead)} />
-          <Row label="Commercial (pending)" val={peso(pnl.commercial)} cls="text-slate-300" />
+          <Row label="Commercial (pending)" val={peso(pnl.commercial)} cls="text-ink-faint" />
         </div>
       </div>
-      <div className="border-t border-slate-100 mt-3 pt-3 flex justify-between items-center">
-        <span className="text-[12px] font-extrabold text-slate-500 uppercase tracking-wide">Variance</span>
-        <span className={`text-[18px] font-extrabold ${isShortfall ? 'text-red-600' : 'text-emerald-600'}`}>
+      <div className="border-t border-line-subtle mt-3 pt-3 flex justify-between items-center">
+        <span className="text-[12px] font-extrabold text-ink-muted uppercase tracking-wide">Variance</span>
+        <span className={`text-[18px] font-extrabold ${isShortfall ? 'text-danger-text' : 'text-success-text'}`}>
           {isShortfall ? '−' : '+'}{peso(Math.abs(pnl.variance))} {isShortfall ? 'Shortfall' : 'Surplus'}
         </span>
       </div>
@@ -435,17 +435,17 @@ function OpenCutoffModal({ cutoffs, onClose, onDone, show }) {
               <div className="form-section flex items-center gap-1"><Droplets size={12} /> Water window</div>
               <div className="fg"><label>Start *</label><input type="date" value={f.water_start} onChange={e => onW(e.target.value)} /></div>
               <div className="fg">
-                <label>End <span className="text-[9px] text-slate-400 font-semibold">(auto +1mo)</span></label>
-                <input type="date" value={f.water_end} disabled className="bg-slate-50" />
+                <label>End <span className="text-[9px] text-ink-faint font-semibold">(auto +1mo)</span></label>
+                <input type="date" value={f.water_end} disabled className="bg-surface-2" />
               </div>
               <div className="form-section flex items-center gap-1"><Zap size={12} /> Electric window</div>
               <div className="fg"><label>Start *</label><input type="date" value={f.electric_start} onChange={e => onE(e.target.value)} /></div>
               <div className="fg">
-                <label>End <span className="text-[9px] text-slate-400 font-semibold">(auto +1mo)</span></label>
-                <input type="date" value={f.electric_end} disabled className="bg-slate-50" />
+                <label>End <span className="text-[9px] text-ink-faint font-semibold">(auto +1mo)</span></label>
+                <input type="date" value={f.electric_end} disabled className="bg-surface-2" />
               </div>
             </div>
-            <p className="text-[11px] text-slate-400 mt-3 leading-relaxed">
+            <p className="text-[11px] text-ink-faint mt-3 leading-relaxed">
               Previous readings carry forward. Enter the provider main line + markup after opening to set rates.
             </p>
           </div>

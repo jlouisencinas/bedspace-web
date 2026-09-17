@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo } from 'react'
 import { fetchBeds, updateBedStatus, logBedStatusChange } from '../lib/supabase'
 import { useToast } from '../components/Toast'
 import { useAuth } from '../lib/auth'
-import { Search, SearchX, X } from 'lucide-react'
+import SearchInput from '../components/SearchInput'
+import { SearchX, X } from 'lucide-react'
 
 function statusClass(s) {
   if (!s) return 'vacant'
@@ -17,10 +18,10 @@ function statusClass(s) {
 
 function BedStatusBadge({ status }) {
   const MAP = {
-    'LEASED':        { label: 'Leased',   cls: 'bg-blue-50 text-blue-700 border border-blue-100' },
-    'VACANT':        { label: 'Vacant',   cls: 'bg-emerald-50 text-emerald-700 border border-emerald-100' },
+    'LEASED':        { label: 'Leased',   cls: 'bg-info-bg text-info-text border border-info-border' },
+    'VACANT':        { label: 'Vacant',   cls: 'bg-success-bg text-success-text border border-success-border' },
     'RESERVED':      { label: 'Reserved', cls: 'bg-navy-100 text-navy-700 border border-navy-200' },
-    'OUT OF ORDER':  { label: 'OOO',      cls: 'bg-slate-100 text-slate-500 border border-slate-200' },
+    'OUT OF ORDER':  { label: 'OOO',      cls: 'bg-surface-3 text-ink-muted border border-line' },
   }
   const s = status?.toUpperCase()
   const c = MAP[s] || MAP['VACANT']
@@ -74,10 +75,10 @@ function BedStatusModal({ bed, onClose, onSaved }) {
 
         <div className="modal-body">
           <div className="flex items-center gap-2 mb-5">
-            <span className="text-[13px] text-slate-500">Current status:</span>
+            <span className="text-[13px] text-ink-muted">Current status:</span>
             <BedStatusBadge status={bed.status || 'VACANT'} />
             {current === 'RESERVED' && bed.reserved_name && (
-              <span className="text-[13px] text-slate-700 font-medium">— {bed.reserved_name}</span>
+              <span className="text-[13px] text-ink-secondary font-medium">— {bed.reserved_name}</span>
             )}
           </div>
 
@@ -90,7 +91,7 @@ function BedStatusModal({ bed, onClose, onSaved }) {
                 className={`w-full text-left px-4 py-3 rounded-xl border text-[13px] font-medium transition-colors ${
                   pending === a.to
                     ? 'border-navy-600 bg-navy-50 text-navy-800'
-                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                    : 'border-line bg-surface text-ink-secondary hover:bg-surface-2'
                 }`}
               >
                 {a.to === 'RESERVED'      && '🔖 '}
@@ -103,7 +104,7 @@ function BedStatusModal({ bed, onClose, onSaved }) {
 
           {needName && (
             <div className="mb-1">
-              <label className="block text-[12px] font-semibold text-slate-600 mb-1.5">
+              <label className="block text-[12px] font-semibold text-ink-secondary mb-1.5">
                 Reserved for *
               </label>
               <input
@@ -113,13 +114,13 @@ function BedStatusModal({ bed, onClose, onSaved }) {
                 placeholder="Full name of person reserving"
                 autoFocus
                 onKeyDown={e => e.key === 'Enter' && handleConfirm()}
-                className="w-full px-3 py-2 text-[13px] rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
+                className="w-full px-3 py-2 text-[13px] rounded-lg border border-line focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
               />
             </div>
           )}
 
           {error && (
-            <p className="mt-2 text-[12px] text-red-600">{error}</p>
+            <p className="mt-2 text-[12px] text-danger-text">{error}</p>
           )}
         </div>
 
@@ -218,7 +219,7 @@ export default function BedMap() {
             { cls: 'bg-navy-500',    label: 'Reserved' },
             { cls: 'bg-slate-300',   label: 'OOO'      },
           ].map(({ cls, label }) => (
-            <div key={label} className="flex items-center gap-1.5 text-slate-500">
+            <div key={label} className="flex items-center gap-1.5 text-ink-muted">
               <span className={`w-2.5 h-2.5 rounded-full ${cls}`} />
               {label}
             </div>
@@ -228,24 +229,18 @@ export default function BedMap() {
 
       {/* ── Toolbar ── */}
       <div className="toolbar">
-        <div className="relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="search"
-            placeholder="Search room, tenant or reserved name…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="pl-9 pr-3 py-2 rounded-lg text-[13px] bg-white w-64
-                       focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
-            style={{ border: '1px solid #E8E2D9' }}
-          />
-        </div>
+        <SearchInput
+          placeholder="Search room, tenant or reserved name…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="w-64"
+        />
         <select
           value={typeFilter}
           onChange={e => setTypeFilter(e.target.value)}
-          className="px-3 py-2 rounded-lg text-[13px] bg-white
+          className="px-3 py-2 rounded-lg text-[13px] bg-surface
                      focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
-          style={{ border: '1px solid #E8E2D9' }}
+          style={{ border: '1px solid var(--border)' }}
         >
           <option value="">All Room Types</option>
           {roomTypes.map(t => <option key={t} value={t}>{t}</option>)}
@@ -253,9 +248,9 @@ export default function BedMap() {
         <select
           value={statFilter}
           onChange={e => setStatFilter(e.target.value)}
-          className="px-3 py-2 rounded-lg text-[13px] bg-white
+          className="px-3 py-2 rounded-lg text-[13px] bg-surface
                      focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
-          style={{ border: '1px solid #E8E2D9' }}
+          style={{ border: '1px solid var(--border)' }}
         >
           <option value="">All Statuses</option>
           <option value="LEASED">Leased</option>
@@ -268,7 +263,7 @@ export default function BedMap() {
       {/* ── Grid ── */}
       {grouped.length === 0 ? (
         <div className="empty">
-          <SearchX size={32} className="mx-auto mb-3 text-slate-300" />
+          <SearchX size={32} className="mx-auto mb-3 text-ink-faint" />
           <p>No rooms match your filter</p>
         </div>
       ) : (
@@ -297,7 +292,7 @@ export default function BedMap() {
                     return (
                       <div
                         key={b.bed_id}
-                        className={`bed-row transition-colors ${clickable ? 'cursor-pointer hover:bg-slate-50 rounded-lg -mx-1 px-1' : ''}`}
+                        className={`bed-row transition-colors ${clickable ? 'cursor-pointer hover:bg-surface-2 rounded-lg -mx-1 px-1' : ''}`}
                         onClick={clickable ? () => setStatusModal(b) : undefined}
                         title={clickable ? 'Click to change status' : undefined}
                       >

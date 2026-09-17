@@ -4,7 +4,8 @@ import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
 import NewTicketModal     from '../components/NewTicketModal'
 import ResolveTicketModal from '../components/ResolveTicketModal'
-import { Wrench, Plus, CheckCircle, Search, Hammer } from 'lucide-react'
+import SearchInput from '../components/SearchInput'
+import { Wrench, Plus, CheckCircle, Hammer } from 'lucide-react'
 
 function fmtDateTime(d) {
   if (!d) return '—'
@@ -86,22 +87,18 @@ export default function Maintenance() {
 
       {/* ── Toolbar ── */}
       <div className="toolbar">
-        <div className="relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="search" placeholder="Search concern, tenant, room…"
-            value={search} onChange={e => setSearch(e.target.value)}
-            className="pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-white w-64
-                       focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
-          />
-        </div>
+        <SearchInput
+          placeholder="Search concern, tenant, room…"
+          value={search} onChange={e => setSearch(e.target.value)}
+          className="w-64"
+        />
         <select value={roomFilter} onChange={e => setRoomFilter(e.target.value)}
-          className="px-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-navy-700/25 transition-colors">
+          className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 transition-colors">
           <option value="">All Rooms</option>
           {rooms.map(r => <option key={r.id} value={r.id}>Room {r.room_no}</option>)}
         </select>
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-          className="px-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-navy-700/25 transition-colors">
+          className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 transition-colors">
           <option value="PENDING">Pending</option>
           <option value="RESOLVED">Resolved</option>
           <option value="">All</option>
@@ -112,7 +109,7 @@ export default function Maintenance() {
         <div className="loading-screen"><div className="spinner" /></div>
       ) : filtered.length === 0 ? (
         <div className="empty">
-          <Hammer size={32} className="mx-auto mb-3 text-slate-300" />
+          <Hammer size={32} className="mx-auto mb-3 text-ink-faint" />
           <p>{statusFilter === 'PENDING' ? 'No open tickets — all clear!' : 'No tickets found.'}</p>
         </div>
       ) : (
@@ -133,36 +130,36 @@ export default function Maintenance() {
             <tbody>
               {filtered.map(t => (
                 <tr key={t.id}>
-                  <td className="font-semibold text-slate-900 whitespace-nowrap">
+                  <td className="font-semibold text-ink whitespace-nowrap">
                     {t.rooms?.room_no ? `Room ${t.rooms.room_no}` : '—'}
                   </td>
                   <td>
-                    {t.tenants?.name || <span className="text-slate-400 italic">Staff-raised</span>}
+                    {t.tenants?.name || <span className="text-ink-faint italic">Staff-raised</span>}
                   </td>
-                  <td className="font-medium text-slate-800">{t.concern}</td>
+                  <td className="font-medium text-ink">{t.concern}</td>
                   <td className="text-[12px] max-w-[160px] truncate" title={t.remarks}>
                     {t.remarks || '—'}
                   </td>
-                  <td className="text-[11px] text-slate-400 whitespace-nowrap">{fmtDateTime(t.raised_at)}</td>
+                  <td className="text-[11px] text-ink-faint whitespace-nowrap">{fmtDateTime(t.raised_at)}</td>
                   <td>
                     {t.status === 'PENDING' ? (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-warning-bg text-warning-text">
                         <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />PENDING
                       </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-success-bg text-success-text">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />RESOLVED
                       </span>
                     )}
                   </td>
-                  <td className="text-[12px] text-slate-500 max-w-[200px]">
+                  <td className="text-[12px] text-ink-muted max-w-[200px]">
                     {t.resolution_notes
                       ? <span title={t.resolution_notes}>{t.resolution_notes}</span>
                       : t.status === 'RESOLVED'
-                        ? <span className="text-slate-300">—</span>
+                        ? <span className="text-ink-faint">—</span>
                         : null}
                     {t.resolved_at && (
-                      <div className="text-[11px] text-slate-300 mt-0.5">{fmtDateTime(t.resolved_at)}</div>
+                      <div className="text-[11px] text-ink-faint mt-0.5">{fmtDateTime(t.resolved_at)}</div>
                     )}
                   </td>
                   {canWrite && (

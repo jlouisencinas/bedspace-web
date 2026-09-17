@@ -31,19 +31,20 @@ function PayCell({ row, category, pays, billed, selected, onToggle, onAmountChan
   const netPaid = r2(pays.reduce((s, p) => s + Number(p.amount || 0), 0))
   const key     = `${row.id}:${category}`
   const staged  = selected.get(key)
+  const remaining = Math.max(r2(billed - netPaid), 0)
 
   if (netPaid > 0) {
     return (
       <div className="space-y-1.5">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100">
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-success-bg text-success-text border border-success-border">
             ✓ Paid
           </span>
-          <span className="text-[13px] font-semibold text-emerald-700">{fmtPeso(netPaid)}</span>
-          <span className="text-[11px] text-slate-400">{fmtDate(lastPaymentDate(pays))}</span>
+          <span className="text-[13px] font-semibold text-success-text">{fmtPeso(netPaid)}</span>
+          <span className="text-[11px] text-ink-faint">{fmtDate(lastPaymentDate(pays))}</span>
           <button
-            onClick={() => onToggle(row, category, 0)}
-            className="text-[11px] text-slate-400 hover:text-navy-600 underline transition-colors"
+            onClick={() => onToggle(row, category, remaining)}
+            className="text-[11px] text-ink-faint hover:text-navy-600 underline transition-colors"
           >
             {staged ? 'cancel' : '+ add'}
           </button>
@@ -54,33 +55,35 @@ function PayCell({ row, category, pays, billed, selected, onToggle, onAmountChan
             value={staged.amount}
             onChange={e => onAmountChange(row, category, e.target.value)}
             placeholder="₱ 0.00"
-            className="w-32 px-2.5 py-1.5 text-[13px] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-navy-500/25 transition-colors"
-            style={{ border: '1px solid #E8E2D9' }}
+            className="w-32 px-2.5 py-1.5 text-[13px] rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-navy-500/25 transition-colors"
+            style={{ border: '1px solid var(--border)' }}
           />
         )}
       </div>
     )
   }
 
-  const remaining = Math.max(r2(billed - netPaid), 0)
   return (
-    <label className="flex items-center gap-2 cursor-pointer select-none">
-      <input
-        type="checkbox"
-        checked={!!staged}
-        onChange={() => onToggle(row, category, remaining)}
-        className="w-4 h-4 accent-navy-600 shrink-0"
-      />
-      <input
-        type="text"
-        value={staged ? staged.amount : ''}
-        onChange={e => onAmountChange(row, category, e.target.value)}
-        disabled={!staged}
-        placeholder="₱ 0.00"
-        className="w-28 px-2.5 py-1.5 text-[13px] rounded-lg bg-white disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-navy-500/25 transition-colors"
-        style={{ border: '1px solid #E8E2D9' }}
-      />
-    </label>
+    <div className="space-y-1">
+      <div className="text-[11px] text-ink-faint">Billed: {fmtPeso(billed)}</div>
+      <label className="flex items-center gap-2 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={!!staged}
+          onChange={() => onToggle(row, category, remaining)}
+          className="w-4 h-4 accent-navy-600 shrink-0"
+        />
+        <input
+          type="text"
+          value={staged ? staged.amount : ''}
+          onChange={e => onAmountChange(row, category, e.target.value)}
+          disabled={!staged}
+          placeholder="₱ 0.00"
+          className="w-28 px-2.5 py-1.5 text-[13px] rounded-lg bg-surface disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-navy-500/25 transition-colors"
+          style={{ border: '1px solid var(--border)' }}
+        />
+      </label>
+    </div>
   )
 }
 
@@ -274,7 +277,7 @@ export default function Collections() {
       {!activeCutoff ? (
         <div className="card mt-4">
           <div className="empty">
-            <Wallet size={32} className="mx-auto mb-3 text-slate-300" />
+            <Wallet size={32} className="mx-auto mb-3 text-ink-faint" />
             <p>No active cutoff. Open one in Utilities first.</p>
           </div>
         </div>
@@ -282,13 +285,13 @@ export default function Collections() {
         <>
           {/* Summary bar */}
           <div className="toolbar mt-4 flex-wrap gap-y-2 items-center">
-            <span className="text-slate-500 text-[12px]">
-              Rent+Water: <strong className="text-emerald-600">{rwCount}/{n}</strong> paid
+            <span className="text-ink-muted text-[12px]">
+              Rent+Water: <strong className="text-success-text">{rwCount}/{n}</strong> paid
               {rwPaidTotal > 0 && <strong className="text-navy-600 ml-1">· {fmt(rwPaidTotal)}</strong>}
             </span>
-            <span className="text-slate-200">|</span>
-            <span className="text-slate-500 text-[12px]">
-              Electricity: <strong className="text-emerald-600">{elecCount}/{n}</strong> paid
+            <span className="text-ink-faint">|</span>
+            <span className="text-ink-muted text-[12px]">
+              Electricity: <strong className="text-success-text">{elecCount}/{n}</strong> paid
               {elecPaidTotal > 0 && <strong className="text-navy-600 ml-1">· {fmt(elecPaidTotal)}</strong>}
             </span>
           </div>
@@ -299,8 +302,8 @@ export default function Collections() {
                 <tr>
                   <th>Tenant</th>
                   <th>Room / Bed</th>
-                  <th>Rent + Water <span className="font-normal text-slate-400 text-[10px]">(due EOM)</span></th>
-                  <th>Electricity <span className="font-normal text-slate-400 text-[10px]">(due 10th)</span></th>
+                  <th>Rent + Water <span className="font-normal text-ink-faint text-[10px]">(due EOM)</span></th>
+                  <th>Electricity <span className="font-normal text-ink-faint text-[10px]">(due 10th)</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -309,9 +312,9 @@ export default function Collections() {
                 ) : collectionRows.map(r => (
                   <tr key={r.id}>
                     <td className="td-name">{r.name}</td>
-                    <td className="text-[12px] text-slate-500">
+                    <td className="text-[12px] text-ink-muted">
                       Rm {r.room_no} · {r.bed_letter}
-                      {r.bed_location && <span className="text-slate-400 ml-1">{r.bed_location}</span>}
+                      {r.bed_location && <span className="text-ink-faint ml-1">{r.bed_location}</span>}
                     </td>
                     <td>
                       <PayCell
@@ -337,24 +340,24 @@ export default function Collections() {
 
       {/* ── Sticky batch-save bar ── */}
       {selected.size > 0 && (
-        <div className="sticky bottom-4 z-20 mt-4 bg-white rounded-xl border border-navy-200 shadow-modal px-4 py-3 flex flex-wrap items-center gap-3">
-          <span className="text-[13px] font-semibold text-slate-700 shrink-0">
+        <div className="sticky bottom-4 z-20 mt-4 bg-surface rounded-xl border border-navy-200 shadow-modal px-4 py-3 flex flex-wrap items-center gap-3">
+          <span className="text-[13px] font-semibold text-ink-secondary shrink-0">
             {selectedList.length} selected · <span className="text-navy-600">{fmtPeso(selectedTotal)}</span>
           </span>
           <input
             type="date"
             value={batchDate}
             onChange={e => setBatchDate(e.target.value)}
-            className="px-2.5 py-1.5 text-[13px] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-navy-500/25 transition-colors"
-            style={{ border: '1px solid #E8E2D9' }}
+            className="px-2.5 py-1.5 text-[13px] rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-navy-500/25 transition-colors"
+            style={{ border: '1px solid var(--border)' }}
           />
           <input
             type="text"
             value={batchNotes}
             onChange={e => setBatchNotes(e.target.value)}
             placeholder="Notes (optional)"
-            className="flex-1 min-w-[160px] px-2.5 py-1.5 text-[13px] rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-navy-500/25 transition-colors"
-            style={{ border: '1px solid #E8E2D9' }}
+            className="flex-1 min-w-[160px] px-2.5 py-1.5 text-[13px] rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-navy-500/25 transition-colors"
+            style={{ border: '1px solid var(--border)' }}
           />
           <button
             onClick={handleSaveBatch}

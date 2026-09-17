@@ -39,10 +39,10 @@ export default function ResolveTicketModal({ ticket, onClose, onSaved }) {
         </div>
         <form onSubmit={handleSubmit}>
           <div className="modal-body space-y-4">
-            <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-[13px]">
-              <div className="font-semibold text-slate-900 mb-1">{ticket.concern}</div>
-              <div className="text-slate-500">{room} · {tenant} · Raised {fmtDateTime(ticket.raised_at)}</div>
-              {ticket.remarks && <div className="mt-1.5 text-slate-600 italic">{ticket.remarks}</div>}
+            <div className="bg-surface-2 border border-line-subtle rounded-xl px-4 py-3 text-[13px]">
+              <div className="font-semibold text-ink mb-1">{ticket.concern}</div>
+              <div className="text-ink-muted">{room} · {tenant} · Raised {fmtDateTime(ticket.raised_at)}</div>
+              {ticket.remarks && <div className="mt-1.5 text-ink-secondary italic">{ticket.remarks}</div>}
             </div>
             <div className="fg">
               <label>Resolution notes (optional)</label>
@@ -54,7 +54,7 @@ export default function ResolveTicketModal({ ticket, onClose, onSaved }) {
               />
             </div>
             {error && (
-              <div className="p-3 bg-red-50 text-red-700 text-[13px] rounded-xl border border-red-100">{error}</div>
+              <div className="p-3 bg-danger-bg text-danger-text text-[13px] rounded-xl border border-danger-border">{error}</div>
             )}
           </div>
           <div className="modal-foot">

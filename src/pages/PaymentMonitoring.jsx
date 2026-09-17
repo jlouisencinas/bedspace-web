@@ -8,7 +8,8 @@ import { computeBilling } from '../lib/billing'
 import { getCachedBilling, cacheBilling } from '../lib/billingCache'
 import { buildPaymentMonitoring } from '../lib/collectionsSummary'
 import { useToast } from '../components/Toast'
-import { Search, TrendingUp, AlertTriangle, Wallet } from 'lucide-react'
+import SearchInput from '../components/SearchInput'
+import { TrendingUp, AlertTriangle, Wallet } from 'lucide-react'
 
 function fmt(n) {
   return '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -139,7 +140,7 @@ export default function PaymentMonitoring() {
           <select
             value={cutoffId ?? ''}
             onChange={e => { setLoading(true); setCutoffId(Number(e.target.value)) }}
-            className="px-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
+            className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
           >
             {cutoffs.map(c => (
               <option key={c.id} value={c.id}>{c.name}{c.is_active ? ' (active)' : ''}</option>
@@ -151,14 +152,14 @@ export default function PaymentMonitoring() {
       {!selectedCutoff ? (
         <div className="card mt-4">
           <div className="empty">
-            <Wallet size={32} className="mx-auto mb-3 text-slate-300" />
+            <Wallet size={32} className="mx-auto mb-3 text-ink-faint" />
             <p>No active cutoff. Open one in Utilities first.</p>
           </div>
         </div>
       ) : (
         <>
           {isHistorical && (
-            <div className="mt-4 px-4 py-3 bg-amber-50 border border-amber-100 rounded-xl text-[13px] text-amber-800 flex items-start gap-2">
+            <div className="mt-4 px-4 py-3 bg-warning-bg border border-warning-border rounded-xl text-[13px] text-warning-text flex items-start gap-2">
               <AlertTriangle size={15} className="shrink-0 mt-0.5 text-amber-500" />
               Historical cutoffs may not reflect tenants who have since moved out — see Reports for the saved period-end figures.
             </div>
@@ -166,16 +167,12 @@ export default function PaymentMonitoring() {
 
           {/* ── Toolbar ── */}
           <div className="toolbar mt-4">
-            <div className="relative">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="search" placeholder="Search name, room…"
-                value={search} onChange={e => setSearch(e.target.value)}
-                className="pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-white w-60
-                           focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
-              />
-            </div>
-            <label className="flex items-center gap-1.5 text-[13px] text-slate-600 cursor-pointer select-none">
+            <SearchInput
+              placeholder="Search name, room…"
+              value={search} onChange={e => setSearch(e.target.value)}
+              className="w-60"
+            />
+            <label className="flex items-center gap-1.5 text-[13px] text-ink-secondary cursor-pointer select-none">
               <input type="checkbox" checked={unpaidOnly} onChange={e => setUnpaidOnly(e.target.checked)} />
               Unpaid only
             </label>
@@ -205,21 +202,21 @@ export default function PaymentMonitoring() {
                   ) : sorted.map(r => (
                     <tr key={r.id}>
                       <td className="td-name">{r.name}{r.wholeRoom && <span className="ml-1.5 text-[10px] font-bold text-navy-600 bg-navy-50 border border-navy-100 px-1.5 py-0.5 rounded">Whole Room</span>}</td>
-                      <td className="text-[12px] text-slate-500">Rm {r.room_no || '—'}{r.bed_letter ? ` · ${r.bed_letter}` : ''}</td>
+                      <td className="text-[12px] text-ink-muted">Rm {r.room_no || '—'}{r.bed_letter ? ` · ${r.bed_letter}` : ''}</td>
                       <td>{fmt(r.billed.rentWater)}</td>
                       <td>{fmt(r.billed.electric)}</td>
                       <td>{fmt(r.billed.addons)}</td>
-                      <td className="font-semibold text-slate-900">{fmt(r.billed.total)}</td>
-                      <td className="text-emerald-600 font-medium">{fmt(r.paid.total)}</td>
+                      <td className="font-semibold text-ink">{fmt(r.billed.total)}</td>
+                      <td className="text-success-text font-medium">{fmt(r.paid.total)}</td>
                       <td>
                         {r.outstanding > 0
-                          ? <span className="font-semibold text-red-600">{fmt(r.outstanding)}</span>
+                          ? <span className="font-semibold text-danger-text">{fmt(r.outstanding)}</span>
                           : r.credit > 0
-                            ? <span className="font-semibold text-blue-600">+{fmt(r.credit)} credit</span>
-                            : <span className="text-emerald-600 font-medium">Paid</span>
+                            ? <span className="font-semibold text-info-text">+{fmt(r.credit)} credit</span>
+                            : <span className="text-success-text font-medium">Paid</span>
                         }
                       </td>
-                      <td className="text-[12px] text-slate-500">{fmtDate(r.lastPaymentDate)}</td>
+                      <td className="text-[12px] text-ink-muted">{fmtDate(r.lastPaymentDate)}</td>
                     </tr>
                   ))}
                 </tbody>

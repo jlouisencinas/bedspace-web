@@ -39,13 +39,13 @@ export default function RecordPaymentModal({ tenant, cutoffId, cutoffName, onClo
     <div className="overlay" onClick={e => e.stopPropagation()}>
       <div className="modal modal-sm">
         <div className="modal-head">
-          <h3 className="flex items-center gap-2"><CreditCard size={15} className="text-slate-400" /> Record Payment</h3>
+          <h3 className="flex items-center gap-2"><CreditCard size={15} className="text-ink-faint" /> Record Payment</h3>
           <button className="btn-close" onClick={onClose}><X size={16} /></button>
         </div>
         <div className="modal-body space-y-4">
-          <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-[13px]">
-            <div className="font-semibold text-slate-900">{tenant.name}</div>
-            <div className="text-slate-500 mt-0.5">Room {tenant.room_no} · Bed {tenant.bed_letter} · {fmt(tenant.rate)}/mo</div>
+          <div className="bg-surface-2 border border-line-subtle rounded-xl px-4 py-3 text-[13px]">
+            <div className="font-semibold text-ink">{tenant.name}</div>
+            <div className="text-ink-muted mt-0.5">Room {tenant.room_no} · Bed {tenant.bed_letter} · {fmt(tenant.rate)}/mo</div>
           </div>
           <div className="form-grid">
             <div className="fg">
@@ -78,12 +78,12 @@ export default function RecordPaymentModal({ tenant, cutoffId, cutoffName, onClo
             </div>
           </div>
           {!cutoffId && (
-            <div className="p-3 bg-amber-50 text-amber-800 text-[13px] rounded-xl border border-amber-100">
+            <div className="p-3 bg-warning-bg text-warning-text text-[13px] rounded-xl border border-warning-border">
               No active cutoff — this payment won't be visible in Collections or Payment Monitoring until a cutoff is opened.
             </div>
           )}
           {error && (
-            <div className="p-3 bg-red-50 text-red-700 text-[13px] rounded-xl border border-red-100">{error}</div>
+            <div className="p-3 bg-danger-bg text-danger-text text-[13px] rounded-xl border border-danger-border">{error}</div>
           )}
         </div>
         <div className="modal-foot">

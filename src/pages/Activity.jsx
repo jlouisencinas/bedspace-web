@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { fetchActivityLog } from '../lib/supabase'
-import { Search, ClipboardList } from 'lucide-react'
+import SearchInput from '../components/SearchInput'
+import { ClipboardList } from 'lucide-react'
 
 function fmt(n) { return n ? '₱' + Number(n).toLocaleString('en-PH') : '—' }
 function fmtDate(d) {
@@ -16,44 +17,44 @@ function fmtDateTime(d) {
 
 const TYPE_CONFIG = {
   // Tenants
-  'Move In':                    { bg: 'bg-emerald-50',  text: 'text-emerald-700',  dot: 'bg-emerald-500'  },
-  'Move Out':                   { bg: 'bg-red-50',      text: 'text-red-700',      dot: 'bg-red-400'      },
-  'Room Transfer':              { bg: 'bg-blue-50',     text: 'text-blue-700',     dot: 'bg-blue-500'     },
-  'Tenant Profile Updated':     { bg: 'bg-sky-50',      text: 'text-sky-700',      dot: 'bg-sky-400'      },
-  'Move-out Date Changed':      { bg: 'bg-amber-50',    text: 'text-amber-700',    dot: 'bg-amber-400'    },
+  'Move In':                    { bg: 'bg-success-bg',  text: 'text-success-text',  dot: 'bg-emerald-500'  },
+  'Move Out':                   { bg: 'bg-danger-bg',      text: 'text-danger-text',      dot: 'bg-red-400'      },
+  'Room Transfer':              { bg: 'bg-info-bg',     text: 'text-info-text',     dot: 'bg-blue-500'     },
+  'Tenant Profile Updated':     { bg: 'bg-badge-sky-bg',      text: 'text-badge-sky-text',      dot: 'bg-sky-400'      },
+  'Move-out Date Changed':      { bg: 'bg-warning-bg',    text: 'text-warning-text',    dot: 'bg-amber-400'    },
   // Payments
-  'Payment - Rent + Water':     { bg: 'bg-navy-50',     text: 'text-navy-700',     dot: 'bg-navy-500'     },
-  'Payment - Electricity':      { bg: 'bg-blue-50',     text: 'text-blue-700',     dot: 'bg-blue-400'     },
-  'Payment - Other':            { bg: 'bg-slate-100',   text: 'text-slate-600',    dot: 'bg-slate-400'    },
-  'Payment Voided':             { bg: 'bg-rose-50',     text: 'text-rose-700',     dot: 'bg-rose-400'     },
+  'Payment - Rent + Water':     { bg: 'bg-warning-bg',  text: 'text-warning-text', dot: 'bg-navy-500'     },
+  'Payment - Electricity':      { bg: 'bg-info-bg',     text: 'text-info-text',     dot: 'bg-blue-400'     },
+  'Payment - Other':            { bg: 'bg-surface-3',   text: 'text-ink-secondary',    dot: 'bg-slate-400'    },
+  'Payment Voided':             { bg: 'bg-badge-rose-bg',     text: 'text-badge-rose-text',     dot: 'bg-rose-400'     },
   // Approvals
-  'Approval Requested':         { bg: 'bg-amber-50',    text: 'text-amber-700',    dot: 'bg-amber-500'    },
-  'Approval Approved':          { bg: 'bg-blue-50',     text: 'text-blue-700',     dot: 'bg-blue-500'     },
-  'Approval Rejected':          { bg: 'bg-rose-50',     text: 'text-rose-700',     dot: 'bg-rose-400'     },
+  'Approval Requested':         { bg: 'bg-warning-bg',    text: 'text-warning-text',    dot: 'bg-amber-500'    },
+  'Approval Approved':          { bg: 'bg-info-bg',     text: 'text-info-text',     dot: 'bg-blue-500'     },
+  'Approval Rejected':          { bg: 'bg-badge-rose-bg',     text: 'text-badge-rose-text',     dot: 'bg-rose-400'     },
   // Billing
-  'Cutoff Opened':              { bg: 'bg-emerald-50',  text: 'text-emerald-700',  dot: 'bg-emerald-400'  },
-  'Cutoff Updated':             { bg: 'bg-slate-100',   text: 'text-slate-600',    dot: 'bg-slate-400'    },
-  'Cutoff Deleted':             { bg: 'bg-rose-50',     text: 'text-rose-700',     dot: 'bg-rose-400'     },
-  'Meter Readings Saved':       { bg: 'bg-indigo-50',   text: 'text-indigo-700',   dot: 'bg-indigo-400'   },
-  'Interim Reading Added':      { bg: 'bg-violet-50',   text: 'text-violet-700',   dot: 'bg-violet-400'   },
-  'Interim Reading Deleted':    { bg: 'bg-rose-50',     text: 'text-rose-600',     dot: 'bg-rose-300'     },
-  'Add-on Saved':               { bg: 'bg-teal-50',     text: 'text-teal-700',     dot: 'bg-teal-400'     },
-  'Add-on Updated':             { bg: 'bg-teal-50',     text: 'text-teal-600',     dot: 'bg-teal-300'     },
-  'Add-on Deleted':             { bg: 'bg-rose-50',     text: 'text-rose-600',     dot: 'bg-rose-300'     },
-  'Room Split Updated':         { bg: 'bg-purple-50',   text: 'text-purple-700',   dot: 'bg-purple-400'   },
+  'Cutoff Opened':              { bg: 'bg-success-bg',  text: 'text-success-text',  dot: 'bg-emerald-400'  },
+  'Cutoff Updated':             { bg: 'bg-surface-3',   text: 'text-ink-secondary',    dot: 'bg-slate-400'    },
+  'Cutoff Deleted':             { bg: 'bg-badge-rose-bg',     text: 'text-badge-rose-text',     dot: 'bg-rose-400'     },
+  'Meter Readings Saved':       { bg: 'bg-badge-indigo-bg',   text: 'text-badge-indigo-text',   dot: 'bg-indigo-400'   },
+  'Interim Reading Added':      { bg: 'bg-badge-violet-bg',   text: 'text-badge-violet-text',   dot: 'bg-violet-400'   },
+  'Interim Reading Deleted':    { bg: 'bg-badge-rose-bg',     text: 'text-badge-rose-text',     dot: 'bg-rose-300'     },
+  'Add-on Saved':               { bg: 'bg-badge-teal-bg',     text: 'text-badge-teal-text',     dot: 'bg-teal-400'     },
+  'Add-on Updated':             { bg: 'bg-badge-teal-bg',     text: 'text-badge-teal-text',     dot: 'bg-teal-300'     },
+  'Add-on Deleted':             { bg: 'bg-badge-rose-bg',     text: 'text-badge-rose-text',     dot: 'bg-rose-300'     },
+  'Room Split Updated':         { bg: 'bg-badge-purple-bg',   text: 'text-badge-purple-text',   dot: 'bg-purple-400'   },
   // Tickets
-  'Ticket Raised':              { bg: 'bg-amber-50',    text: 'text-amber-700',    dot: 'bg-amber-400'    },
-  'Ticket Resolved':            { bg: 'bg-emerald-50',  text: 'text-emerald-600',  dot: 'bg-emerald-400'  },
+  'Ticket Raised':              { bg: 'bg-warning-bg',    text: 'text-warning-text',    dot: 'bg-amber-400'    },
+  'Ticket Resolved':            { bg: 'bg-success-bg',  text: 'text-success-text',  dot: 'bg-emerald-400'  },
   // Property
-  'Room Config Updated':        { bg: 'bg-blue-50',     text: 'text-blue-700',     dot: 'bg-blue-400'     },
-  'Bed Rate Updated':           { bg: 'bg-indigo-50',   text: 'text-indigo-700',   dot: 'bg-indigo-400'   },
-  'Bed Removed':                { bg: 'bg-rose-50',     text: 'text-rose-700',     dot: 'bg-rose-400'     },
-  'Room Reconfigured':          { bg: 'bg-purple-50',   text: 'text-purple-700',   dot: 'bg-purple-400'   },
-  'Add-on Type Created':        { bg: 'bg-teal-50',     text: 'text-teal-700',     dot: 'bg-teal-400'     },
-  'Add-on Type Updated':        { bg: 'bg-teal-50',     text: 'text-teal-600',     dot: 'bg-teal-300'     },
-  'Add-on Type Deleted':        { bg: 'bg-rose-50',     text: 'text-rose-600',     dot: 'bg-rose-300'     },
+  'Room Config Updated':        { bg: 'bg-info-bg',     text: 'text-info-text',     dot: 'bg-blue-400'     },
+  'Bed Rate Updated':           { bg: 'bg-badge-indigo-bg',   text: 'text-badge-indigo-text',   dot: 'bg-indigo-400'   },
+  'Bed Removed':                { bg: 'bg-badge-rose-bg',     text: 'text-badge-rose-text',     dot: 'bg-rose-400'     },
+  'Room Reconfigured':          { bg: 'bg-badge-purple-bg',   text: 'text-badge-purple-text',   dot: 'bg-purple-400'   },
+  'Add-on Type Created':        { bg: 'bg-badge-teal-bg',     text: 'text-badge-teal-text',     dot: 'bg-teal-400'     },
+  'Add-on Type Updated':        { bg: 'bg-badge-teal-bg',     text: 'text-badge-teal-text',     dot: 'bg-teal-300'     },
+  'Add-on Type Deleted':        { bg: 'bg-badge-rose-bg',     text: 'text-badge-rose-text',     dot: 'bg-rose-300'     },
   // System
-  'Bed Status Changed':         { bg: 'bg-slate-100',   text: 'text-slate-500',    dot: 'bg-slate-300'    },
+  'Bed Status Changed':         { bg: 'bg-surface-3',   text: 'text-ink-muted',    dot: 'bg-slate-300'    },
 }
 
 const APPROVAL_TYPES = new Set(['Approval Requested', 'Approval Approved', 'Approval Rejected'])
@@ -68,7 +69,7 @@ const BILLING_TYPES  = new Set([
 ])
 
 function TypeBadge({ type }) {
-  const c = TYPE_CONFIG[type] || { bg: 'bg-slate-100', text: 'text-slate-500', dot: 'bg-slate-400' }
+  const c = TYPE_CONFIG[type] || { bg: 'bg-surface-3', text: 'text-ink-muted', dot: 'bg-slate-400' }
   return (
     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold whitespace-nowrap ${c.bg} ${c.text}`}>
       <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
@@ -117,28 +118,23 @@ export default function Activity() {
           <h1 className="page-title">Activity Log</h1>
           <p className="page-sub">All recorded tenant and approval events</p>
         </div>
-        <div className="text-[12px] font-semibold text-slate-400">
+        <div className="text-[12px] font-semibold text-ink-faint">
           {filtered.length} records
         </div>
       </div>
 
       {/* ── Toolbar ── */}
       <div className="toolbar">
-        <div className="relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="search"
-            placeholder="Search name, room, or notes…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-white w-64
-                       focus:outline-none focus:ring-2 focus:ring-navy-700/10 focus:border-navy-600 transition-colors"
-          />
-        </div>
+        <SearchInput
+          placeholder="Search name, room, or notes…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="w-64"
+        />
         <select
           value={typeFilter}
           onChange={e => setTypeFilter(e.target.value)}
-          className="px-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-white
+          className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface
                      focus:outline-none focus:ring-2 focus:ring-navy-700/10 focus:border-navy-600 transition-colors"
         >
           <option value="">All Types</option>
@@ -211,7 +207,7 @@ export default function Activity() {
             {filtered.length === 0 ? (
               <tr>
                 <td colSpan={9}>
-                  <div className="empty"><ClipboardList size={32} className="mx-auto mb-3 text-slate-300" /><p>No activity records</p></div>
+                  <div className="empty"><ClipboardList size={32} className="mx-auto mb-3 text-ink-faint" /><p>No activity records</p></div>
                 </td>
               </tr>
             ) : filtered.map((r, i) => {
@@ -220,8 +216,8 @@ export default function Activity() {
               const isBilling    = BILLING_TYPES.has(r.activity_type)
               const hideTenantCols = isApproval || isPayment || isBilling
               return (
-                <tr key={i} className={isApproval ? 'bg-amber-50/40' : isPayment ? 'bg-navy-50/20' : isBilling ? 'bg-slate-50/60' : ''}>
-                  <td className="whitespace-nowrap text-[11px] text-slate-400 font-medium">
+                <tr key={i} className={isApproval ? 'bg-warning-bg' : isPayment ? 'bg-info-bg' : isBilling ? 'bg-surface-2' : ''}>
+                  <td className="whitespace-nowrap text-[11px] text-ink-faint font-medium">
                     {fmtDateTime(r.recorded_at)}
                   </td>
                   <td><TypeBadge type={r.activity_type} /></td>
@@ -230,13 +226,13 @@ export default function Activity() {
                     {r.room_no ? `Rm ${r.room_no}${r.bed_letter ? ` · ${r.bed_letter}` : ''}` : '—'}
                   </td>
                   <td className="td-rate">{hideTenantCols ? '—' : fmt(r.rate)}</td>
-                  <td className="text-[12px] text-slate-500">{hideTenantCols ? '—' : fmtDate(r.move_in_date)}</td>
-                  <td className="text-[12px] text-slate-500">{hideTenantCols ? '—' : fmtDate(r.move_out_date)}</td>
-                  <td className="text-[12px] font-semibold text-emerald-700">{fmt(r.amount_paid)}</td>
-                  <td className="text-[11px] text-slate-500 max-w-[260px]">
+                  <td className="text-[12px] text-ink-muted">{hideTenantCols ? '—' : fmtDate(r.move_in_date)}</td>
+                  <td className="text-[12px] text-ink-muted">{hideTenantCols ? '—' : fmtDate(r.move_out_date)}</td>
+                  <td className="text-[12px] font-semibold text-success-text">{fmt(r.amount_paid)}</td>
+                  <td className="text-[11px] text-ink-muted max-w-[260px]">
                     {r.notes
                       ? <span title={r.notes} className="line-clamp-2">{r.notes}</span>
-                      : <span className="text-slate-300">—</span>}
+                      : <span className="text-ink-faint">—</span>}
                   </td>
                 </tr>
               )

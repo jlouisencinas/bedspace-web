@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { AlertTriangle, Clock, Search, SearchX, UserPen } from 'lucide-react'
+import { AlertTriangle, Clock, SearchX, UserPen } from 'lucide-react'
 import { fetchTenants, fetchTenantContacts, fetchTenantEmails } from '../lib/supabase'
+import SearchInput from '../components/SearchInput'
 import { requestApproval, fetchPendingForEntity } from '../lib/approvals'
 import {
   PROFILE_FIELDS, norm, entriesFromDb, diffEntries, applyTenantProfileChange,
@@ -291,19 +292,17 @@ export default function EditTenantProfile() {
       <div className="grid gap-5 lg:grid-cols-[320px_1fr] items-start">
         {/* ── Search ── */}
         <div className="card p-3">
-          <div className="relative mb-3">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              type="search" placeholder="Search name or room…"
+          <div className="mb-3">
+            <SearchInput
+              placeholder="Search name or room…"
               value={query} onChange={e => setQuery(e.target.value)}
-              className="pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-white w-full
-                         focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
+              className="w-full"
             />
           </div>
           <div className="max-h-[70vh] overflow-y-auto space-y-0.5">
             {results.length === 0 ? (
               <div className="empty">
-                <SearchX size={28} className="mx-auto mb-3 text-slate-300" />
+                <SearchX size={28} className="mx-auto mb-3 text-ink-faint" />
                 <p>No tenants found</p>
               </div>
             ) : results.map(t => (
@@ -313,11 +312,11 @@ export default function EditTenantProfile() {
                 disabled={busy}
                 onClick={() => pick(t)}
                 className={`w-full text-left px-3 py-2 rounded-lg transition-colors disabled:cursor-not-allowed ${
-                  sel?.id === t.id ? 'bg-navy-500/15' : 'hover:bg-slate-50'
+                  sel?.id === t.id ? 'bg-navy-500/15' : 'hover:bg-surface-2'
                 }`}
               >
-                <div className="text-[13px] font-semibold text-slate-900 truncate">{t.name}</div>
-                <div className="text-[11px] text-slate-500 mt-0.5">
+                <div className="text-[13px] font-semibold text-ink truncate">{t.name}</div>
+                <div className="text-[11px] text-ink-muted mt-0.5">
                   Room {t.room_no ?? '—'} · Bed {t.bed_letter ?? '—'} · Move-out {fmtDate(t.move_out_date)}
                 </div>
               </button>
@@ -329,22 +328,22 @@ export default function EditTenantProfile() {
         <div className="card p-5">
           {!sel ? (
             <div className="empty">
-              <UserPen size={28} className="mx-auto mb-3 text-slate-300" />
+              <UserPen size={28} className="mx-auto mb-3 text-ink-faint" />
               <p>Select a tenant to edit their profile.</p>
             </div>
           ) : !ready ? (
             <div className="flex justify-center py-14"><div className="spinner" /></div>
           ) : (
             <form onSubmit={handleSave}>
-              <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-[13px] mb-4">
-                <div className="font-semibold text-slate-900">{baseline.tenant.name}</div>
-                <div className="text-slate-500 mt-0.5">
+              <div className="bg-surface-2 border border-line-subtle rounded-xl px-4 py-3 text-[13px] mb-4">
+                <div className="font-semibold text-ink">{baseline.tenant.name}</div>
+                <div className="text-ink-muted mt-0.5">
                   Room {baseline.tenant.room_no ?? '—'} · Bed {baseline.tenant.bed_letter ?? '—'}
                 </div>
               </div>
 
               {pending.length > 0 && (
-                <div className="bg-amber-50 border border-amber-100 rounded-xl px-3 py-2.5 text-[12px] text-amber-800 flex items-start gap-2 mb-4">
+                <div className="bg-warning-bg border border-warning-border rounded-xl px-3 py-2.5 text-[12px] text-warning-text flex items-start gap-2 mb-4">
                   <Clock size={13} className="shrink-0 mt-px" />
                   <div className="space-y-0.5">
                     {pending.map(p => (
@@ -359,7 +358,7 @@ export default function EditTenantProfile() {
               )}
 
               {!isAdmin && (
-                <div className="bg-amber-50 border border-amber-100 rounded-xl px-3 py-2.5 text-[12px] text-amber-800 flex items-start gap-2 mb-4">
+                <div className="bg-warning-bg border border-warning-border rounded-xl px-3 py-2.5 text-[12px] text-warning-text flex items-start gap-2 mb-4">
                   <AlertTriangle size={13} className="shrink-0 mt-px" />
                   All changes require admin approval and will only apply once reviewed.
                 </div>
@@ -473,7 +472,7 @@ export default function EditTenantProfile() {
                   <>
                     <div className="form-section">Approval</div>
                     <div className="fg full">
-                      <label>Reason for change <span className="text-red-600">*</span></label>
+                      <label>Reason for change <span className="text-danger-text">*</span></label>
                       <textarea rows={2} value={reason}
                         onChange={e => { setError(''); setReason(e.target.value) }}
                         placeholder="Briefly describe why this is being updated…" />
@@ -483,7 +482,7 @@ export default function EditTenantProfile() {
               </div>
 
               {error && (
-                <div className="mt-4 px-3 py-2.5 bg-red-50 border border-red-100 rounded-xl text-[13px] text-red-700 flex items-start gap-2">
+                <div className="mt-4 px-3 py-2.5 bg-danger-bg border border-danger-border rounded-xl text-[13px] text-danger-text flex items-start gap-2">
                   <AlertTriangle size={13} className="shrink-0 mt-px" />
                   {error}
                 </div>

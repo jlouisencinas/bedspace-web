@@ -441,6 +441,10 @@ create table if not exists approval_requests (
 create index if not exists approval_requests_status_idx on approval_requests(status, created_at desc);
 create index if not exists approval_requests_entity_idx on approval_requests(entity_type, entity_id);
 
+alter table public.approval_requests drop constraint if exists approval_requests_entity_type_check;
+alter table public.approval_requests add constraint approval_requests_entity_type_check
+  check (entity_type in ('TENANT','TENANT_STAY','BED','ROOM','PAYMENT','INTERIM_READING'));
+
 -- ════════════════════════════════════════════════════════════════
 -- 5. EXTENDED TABLES (invoicing, documents, tenant history)
 -- ════════════════════════════════════════════════════════════════
@@ -837,11 +841,54 @@ drop policy if exists auth_all on public.tenant_contacts;
 drop policy if exists auth_all on public.tenant_documents;
 drop policy if exists auth_all on public.tenant_emails;
 
--- profiles: each user reads only their own row.
+-- profiles: self, or admin can read/manage all (Users page).
+--
+-- A policy on `profiles` cannot query `profiles` again directly to check the
+-- caller's role — Postgres re-applies the same policy to that inner query,
+-- which recurses (42P17 infinite recursion; empirically confirmed live: it
+-- broke ALL reads of `profiles`, including self-reads used by login/role
+-- resolution, for every role). is_admin() sidesteps this: SECURITY DEFINER
+-- makes it run as the function owner (the table owner, which bypasses RLS
+-- on this table), so its internal SELECT never re-triggers profiles_select.
+create or replace function public.is_admin(uid uuid default auth.uid())
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (select 1 from public.profiles where id = uid and role = 'admin');
+$$;
+
+-- Functions grant EXECUTE to PUBLIC by default — without this, anyone,
+-- including an unauthenticated `anon` request, could call
+-- /rest/v1/rpc/is_admin?uid=<guessed-uuid> directly to probe whether a given
+-- account is an admin. It only returns a boolean and UUIDs aren't
+-- guessable, but there's no reason to expose it outside the RLS policies
+-- above (which evaluate it internally as `authenticated`, not via RPC).
+revoke execute on function public.is_admin(uuid) from public;
+grant execute on function public.is_admin(uuid) to authenticated;
+-- This project's `ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA
+-- public` auto-grants EXECUTE on every new function to anon/authenticated/
+-- service_role independently of the PUBLIC grant above, so anon retained
+-- its own explicit grant even after the revoke from public — confirmed live
+-- by database-admin. This narrow, explicit revoke closes that for just this
+-- one function; it does not touch the project-wide default-privilege rule
+-- itself (a separate, broader decision) or service_role (server-side use).
+revoke execute on function public.is_admin(uuid) from anon;
+
 alter table public.profiles enable row level security;
 drop policy if exists profiles_self_select on public.profiles;
-create policy profiles_self_select on public.profiles
-  for select to authenticated using (id = auth.uid());
+drop policy if exists profiles_select on public.profiles;
+create policy profiles_select on public.profiles
+  for select to authenticated
+  using (id = auth.uid() or public.is_admin());
+
+drop policy if exists profiles_update on public.profiles;
+create policy profiles_update on public.profiles
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
 
 -- Remove the blanket policy from all 23 tables it was applied to.
 -- MUST run before creating the replacement policies below — RLS policies
@@ -980,6 +1027,40 @@ create policy interim_readings_insert on public.interim_readings for insert to a
 drop policy if exists interim_readings_delete on public.interim_readings;
 create policy interim_readings_delete on public.interim_readings for delete to authenticated
   using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+-- DB-layer guard — non-admin cannot directly DELETE a single interim_readings
+-- row; deleteCutoff()'s cascade (user-permitted) still works via
+-- pg_trigger_depth(). Mirrors guard_tenants_protected_fields()'s admin-bypass
+-- pattern. The interim_readings_delete RLS policy itself stays admin+user
+-- (unchanged) — tightening it directly would break deleteCutoff()'s cascade
+-- delete for the user role.
+-- pg_trigger_depth() is already 1 while THIS trigger's own body is running
+-- for a plain top-level DELETE — "inside a trigger" starts counting from
+-- this trigger itself, not from 0 (empirically confirmed live: `> 0` never
+-- blocked anything). A cascade via deleteCutoff() (DELETE FROM cutoffs -->
+-- FK ON DELETE CASCADE --> this trigger) runs one level deeper, inside the
+-- cascade's own internal RI trigger PLUS this one, so depth is 2 there.
+-- `> 1` is therefore the correct cutoff: allow only the cascade case.
+create or replace function public.guard_interim_readings_delete()
+returns trigger language plpgsql
+set search_path = public
+as $$
+declare v_role text;
+begin
+  if pg_trigger_depth() > 1 then
+    return old;
+  end if;
+  select role into v_role from public.profiles where id = auth.uid();
+  if v_role is distinct from 'admin' then
+    raise exception 'Only admin can delete an interim reading directly. Submit the deletion for approval.';
+  end if;
+  return old;
+end $$;
+
+drop trigger if exists trg_guard_interim_readings_delete on public.interim_readings;
+create trigger trg_guard_interim_readings_delete
+  before delete on public.interim_readings
+  for each row execute function public.guard_interim_readings_delete();
 
 alter table public.area_readings enable row level security;
 drop policy if exists area_readings_select on public.area_readings;

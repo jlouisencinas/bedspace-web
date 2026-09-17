@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
+import { useTheme } from '../lib/theme'
 import {
   LayoutDashboard, LayoutGrid, Users, Wrench, Zap,
   CreditCard, BarChart2, History, CheckSquare, UserCog,
   Menu, X, LogOut, Wallet, Building2, TrendingUp, UserPen,
+  Sun, Moon,
 } from 'lucide-react'
 import BrandIcon from './BrandIcon'
 
@@ -33,8 +35,8 @@ function NavItem({ to, label, Icon, end }) {
       className={({ isActive }) =>
         `flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] font-medium transition-all duration-100 group ${
           isActive
-            ? 'bg-navy-500/15 text-navy-900 font-semibold'
-            : 'text-slate-500 hover:bg-navy-500/8 hover:text-slate-700'
+            ? 'bg-navy-500/15 text-ink font-semibold'
+            : 'text-ink-muted hover:bg-navy-500/8 hover:text-ink-secondary'
         }`
       }
     >
@@ -42,7 +44,7 @@ function NavItem({ to, label, Icon, end }) {
         <>
           <Icon
             size={16}
-            className={`shrink-0 transition-colors ${isActive ? 'text-navy-500' : 'text-slate-400 group-hover:text-slate-600'}`}
+            className={`shrink-0 transition-colors ${isActive ? 'text-navy-500' : 'text-ink-faint group-hover:text-ink-muted'}`}
           />
           <span>{label}</span>
         </>
@@ -60,27 +62,43 @@ function AvatarInitials({ email }) {
   )
 }
 
+function ThemeToggle({ className = '' }) {
+  const { isDark, toggleTheme } = useTheme()
+  return (
+    <button
+      onClick={toggleTheme}
+      title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+      className={`p-1.5 rounded-lg hover:bg-surface-3 text-ink-faint hover:text-ink-secondary transition-colors ${className}`}
+    >
+      {isDark ? <Sun size={16} /> : <Moon size={16} />}
+    </button>
+  )
+}
+
 function SidebarContent({ role, user, signOut, navItems, onClose }) {
   const roleLabel = role === 'admin' ? 'Admin' : role === 'user' ? 'User' : 'Viewer'
   const roleColor = role === 'admin'
     ? 'bg-navy-100 text-navy-700'
     : role === 'user'
-      ? 'bg-blue-50 text-blue-600'
-      : 'bg-slate-100 text-slate-500'
+      ? 'bg-info-bg text-info-text'
+      : 'bg-surface-3 text-ink-muted'
 
   return (
     <div className="flex flex-col h-full">
       {/* Brand */}
-      <div className="flex items-center justify-between px-4 py-4" style={{ borderBottom: '1px solid #E8E2D9' }}>
+      <div className="flex items-center justify-between px-4 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
         <div className="flex items-center gap-2.5">
           <BrandIcon size={28} className="text-navy-500 shrink-0" />
-          <span className="text-[14px] font-bold text-slate-900 tracking-tight">Bedspace</span>
+          <span className="text-[14px] font-bold text-ink tracking-tight">Bedspace</span>
         </div>
-        {onClose && (
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-slate-100 text-slate-400">
-            <X size={18} />
-          </button>
-        )}
+        <div className="flex items-center gap-1">
+          <ThemeToggle />
+          {onClose && (
+            <button onClick={onClose} className="p-1 rounded-lg hover:bg-surface-3 text-ink-faint">
+              <X size={18} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Navigation */}
@@ -91,11 +109,11 @@ function SidebarContent({ role, user, signOut, navItems, onClose }) {
       </nav>
 
       {/* User footer */}
-      <div className="px-4 py-3" style={{ borderTop: '1px solid #E8E2D9' }}>
+      <div className="px-4 py-3" style={{ borderTop: '1px solid var(--border)' }}>
         <div className="flex items-center gap-2.5 mb-2.5">
           <AvatarInitials email={user?.email} />
           <div className="flex-1 min-w-0">
-            <div className="text-[12px] font-medium text-slate-600 truncate">{user?.email}</div>
+            <div className="text-[12px] font-medium text-ink-secondary truncate">{user?.email}</div>
             <span className={`inline-block mt-0.5 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${roleColor}`}>
               {roleLabel}
             </span>
@@ -103,9 +121,9 @@ function SidebarContent({ role, user, signOut, navItems, onClose }) {
         </div>
         <button
           onClick={signOut}
-          className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-slate-400 hover:bg-navy-500/10 hover:text-slate-600 transition-colors"
+          className="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-ink-faint hover:bg-navy-500/10 hover:text-ink-secondary transition-colors"
         >
-          <LogOut size={13} className="text-slate-400" />
+          <LogOut size={13} className="text-ink-faint" />
           Sign out
         </button>
       </div>
@@ -129,34 +147,36 @@ export default function Sidebar() {
   return (
     <>
       {/* ── Mobile top bar ── */}
-      <div className="sidebar-mobile-bar lg:hidden fixed top-0 left-0 right-0 h-13 bg-white z-30 flex items-center px-4 gap-3 shadow-sm" style={{ borderBottom: '1px solid #E8E2D9' }}>
+      <div className="sidebar-mobile-bar lg:hidden fixed top-0 left-0 right-0 h-13 bg-surface z-30 flex items-center px-4 gap-3 shadow-sm" style={{ borderBottom: '1px solid var(--border)' }}>
         <button
           onClick={() => setMobileOpen(true)}
-          className="p-1.5 rounded-lg hover:bg-slate-50 text-slate-500"
+          className="p-1.5 rounded-lg hover:bg-surface-2 text-ink-muted"
         >
           <Menu size={20} />
         </button>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-1">
           <BrandIcon size={24} className="text-navy-500 shrink-0" />
-          <span className="text-[14px] font-bold text-slate-900">Bedspace</span>
+          <span className="text-[14px] font-bold text-ink">Bedspace</span>
         </div>
+        <ThemeToggle />
       </div>
 
       {/* ── Mobile overlay ── */}
       {mobileOpen && (
         <div className="lg:hidden fixed inset-0 z-50 flex animate-fade-in">
-          <div className="w-[240px] h-full shadow-modal flex flex-col animate-slide-in-left" style={{ background: '#FEF6E6' }}>
+          <div className="w-[240px] h-full shadow-modal flex flex-col animate-slide-in-left" style={{ background: 'var(--surface-2)' }}>
             <SidebarContent {...props} onClose={() => setMobileOpen(false)} />
           </div>
           <div
-            className="bg-black/30 flex-1"
+            className="flex-1"
+            style={{ background: 'var(--overlay)' }}
             onClick={() => setMobileOpen(false)}
           />
         </div>
       )}
 
       {/* ── Desktop sidebar ── */}
-      <div className="sidebar-desktop hidden lg:flex w-[240px] shrink-0 flex-col h-screen sticky top-0 z-20" style={{ background: '#FEF6E6', borderRight: '1px solid #E8E2D9' }}>
+      <div className="sidebar-desktop hidden lg:flex w-[240px] shrink-0 flex-col h-screen sticky top-0 z-20" style={{ background: 'var(--surface-2)', borderRight: '1px solid var(--border)' }}>
         <SidebarContent {...props} />
       </div>
     </>

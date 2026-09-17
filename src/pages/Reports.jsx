@@ -74,7 +74,7 @@ export default function Reports() {
   const present = monthReports.filter(Boolean)
 
   const qTotal = (field) => present.reduce((s, r) => s + Number(r[field] || 0), 0)
-  const varColor = (v) => v < 0 ? 'text-red-600' : 'text-emerald-600'
+  const varColor = (v) => v < 0 ? 'text-danger-text' : 'text-success-text'
 
   return (
     <div className="page">
@@ -101,7 +101,7 @@ export default function Reports() {
       </div>
 
       {reports.length === 0 ? (
-        <div className="card"><div className="empty"><BarChart2 size={32} className="mx-auto mb-3 text-slate-300" />
+        <div className="card"><div className="empty"><BarChart2 size={32} className="mx-auto mb-3 text-ink-faint" />
           <p>No snapshots yet. Click "Snapshot now", or they're saved automatically when you open a new cutoff.</p>
         </div></div>
       ) : (
@@ -117,13 +117,13 @@ export default function Reports() {
                       {MO[mi - 1]}{monthReports[i] ? '' : ' ·'}
                     </th>
                   ))}
-                  <th className="text-right bg-slate-100/60">Quarter Total</th>
+                  <th className="text-right bg-surface-3">Quarter Total</th>
                 </tr>
               </thead>
               <tbody>
                 {ROWS.map((row, idx) => row.section ? (
-                  <tr key={idx} className="bg-slate-50">
-                    <td colSpan={5} className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider">
+                  <tr key={idx} className="bg-surface-2">
+                    <td colSpan={5} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wider">
                       {row.section}
                     </td>
                   </tr>
@@ -131,11 +131,11 @@ export default function Reports() {
                   <tr key={idx}>
                     <td className={row.bold ? 'font-extrabold' : 'font-medium'}>{row.label}</td>
                     {monthReports.map((r, i) => (
-                      <td key={i} className={`text-right ${row.bold ? 'font-extrabold' : ''} ${r && row.signed ? varColor(Number(r[row.sum])) : 'text-slate-900'}`}>
+                      <td key={i} className={`text-right ${row.bold ? 'font-extrabold' : ''} ${r && row.signed ? varColor(Number(r[row.sum])) : 'text-ink'}`}>
                         {r ? row.get(r) : '—'}
                       </td>
                     ))}
-                    <td className={`text-right bg-slate-50 font-extrabold ${row.signed ? varColor(qTotal(row.sum)) : 'text-navy-500'}`}>
+                    <td className={`text-right bg-surface-2 font-extrabold ${row.signed ? varColor(qTotal(row.sum)) : 'text-navy-500'}`}>
                       {row.sum ? peso(qTotal(row.sum)) : '—'}
                     </td>
                   </tr>
@@ -149,13 +149,13 @@ export default function Reports() {
       {/* Manage snapshots (edit / delete / backfill) — admin only */}
       {isAdmin && reports.length > 0 && (
         <div className="card mt-4 p-4">
-          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">All saved months</div>
+          <div className="text-[10px] font-bold text-ink-faint uppercase tracking-widest mb-3">All saved months</div>
           {[...reports].sort((a, b) => a.period_date.localeCompare(b.period_date)).map(r => (
-            <div key={r.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0 text-[13px]">
+            <div key={r.id} className="flex items-center gap-2 py-2 border-b border-line-subtle last:border-0 text-[13px]">
               <div className="flex-1">
-                <strong className="text-slate-900">{r.period_name || r.period_date?.slice(0, 7)}</strong>
+                <strong className="text-ink">{r.period_name || r.period_date?.slice(0, 7)}</strong>
                 {r.manual && <span className="badge oor ml-1.5">manual</span>}
-                <span className="text-slate-400 ml-2">Total {peso(r.col_total)} · Variance {peso(r.total_variance)}</span>
+                <span className="text-ink-faint ml-2">Total {peso(r.col_total)} · Variance {peso(r.total_variance)}</span>
               </div>
               <button className="btn-xs blue" onClick={() => setEditRow(r)}>Edit</button>
               <button className="btn-xs red" onClick={async () => {
@@ -167,7 +167,7 @@ export default function Reports() {
         </div>
       )}
 
-      <p className="text-[11px] text-slate-400 mt-4 leading-relaxed">
+      <p className="text-[11px] text-ink-faint mt-4 leading-relaxed">
         Snapshots auto-save when you open the next cutoff (re-closing overrides). Use <strong>+ Manual month</strong> to backfill earlier months or <strong>Edit</strong> to override any figure. Quarter columns show the three actual months; money rows total the quarter.
       </p>
 
@@ -253,9 +253,9 @@ function ManualReportModal({ initial, onClose, onDone, show }) {
             {field('Water variance', 'water_variance')}
             {field('Electric variance', 'electric_variance')}
           </div>
-          <div className="mt-3 flex gap-5 text-[13px] text-slate-600 bg-slate-50 rounded-lg px-3 py-2">
+          <div className="mt-3 flex gap-5 text-[13px] text-ink-secondary bg-surface-2 rounded-lg px-3 py-2">
             <span>Total Collections: <strong className="text-navy-500">{peso(colTotal)}</strong></span>
-            <span>Total Variance: <strong className={totVar < 0 ? 'text-red-600' : 'text-emerald-600'}>{peso(totVar)}</strong></span>
+            <span>Total Variance: <strong className={totVar < 0 ? 'text-danger-text' : 'text-success-text'}>{peso(totVar)}</strong></span>
           </div>
         </div>
         <div className="modal-foot">

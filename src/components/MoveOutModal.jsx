@@ -123,8 +123,8 @@ export default function MoveOutModal({ bed, onClose, onSubmit, saving }) {
           </div>
           <div className="modal-body text-center py-8">
             <Clock size={36} className="mx-auto mb-3 text-amber-400" />
-            <h4 className="text-[15px] font-semibold text-slate-900 mb-2">Sent for Approval</h4>
-            <p className="text-[13px] text-slate-500 leading-relaxed">
+            <h4 className="text-[15px] font-semibold text-ink mb-2">Sent for Approval</h4>
+            <p className="text-[13px] text-ink-muted leading-relaxed">
               The move-out request has been submitted to an admin for review.
               The tenant and bed will remain active until approved.
             </p>
@@ -146,9 +146,9 @@ export default function MoveOutModal({ bed, onClose, onSubmit, saving }) {
         </div>
         <form onSubmit={handleSubmit}>
           <div className="modal-body space-y-4">
-            <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 text-[13px]">
-              <div className="font-semibold text-slate-900">{name}</div>
-              <div className="text-slate-500 mt-0.5">{roomInfo}{rate && ` · ${rate}`}</div>
+            <div className="bg-danger-bg border border-danger-border rounded-xl px-4 py-3 text-[13px]">
+              <div className="font-semibold text-ink">{name}</div>
+              <div className="text-ink-muted mt-0.5">{roomInfo}{rate && ` · ${rate}`}</div>
             </div>
             <div className="form-grid">
               <div className="fg">
@@ -167,7 +167,7 @@ export default function MoveOutModal({ bed, onClose, onSubmit, saving }) {
               <div className="form-section">Final Meter Readings</div>
 
               <div className="fg">
-                <label>Water Reading <span className="text-red-600">*</span></label>
+                <label>Water Reading <span className="text-danger-text">*</span></label>
                 <input
                   type="number"
                   value={form.water_reading}
@@ -178,14 +178,14 @@ export default function MoveOutModal({ bed, onClose, onSubmit, saving }) {
                   required
                 />
                 {minWater !== null && (
-                  <span className="block text-[11px] text-slate-400 mt-1">
+                  <span className="block text-[11px] text-ink-faint mt-1">
                     Min: {minWater} (period start)
                   </span>
                 )}
               </div>
 
               <div className="fg">
-                <label>Electric Reading <span className="text-red-600">*</span></label>
+                <label>Electric Reading <span className="text-danger-text">*</span></label>
                 <input
                   type="number"
                   value={form.electric_reading}
@@ -196,7 +196,7 @@ export default function MoveOutModal({ bed, onClose, onSubmit, saving }) {
                   required
                 />
                 {minElec !== null && (
-                  <span className="block text-[11px] text-slate-400 mt-1">
+                  <span className="block text-[11px] text-ink-faint mt-1">
                     Min: {minElec} (period start)
                   </span>
                 )}
@@ -209,11 +209,11 @@ export default function MoveOutModal({ bed, onClose, onSubmit, saving }) {
 
               {needsApproval && (
                 <div className="fg full space-y-3">
-                  <div className="bg-amber-50 border border-amber-100 rounded-xl px-3 py-2.5 text-[12px] text-amber-800">
+                  <div className="bg-warning-bg border border-warning-border rounded-xl px-3 py-2.5 text-[12px] text-warning-text">
                     <AlertTriangle size={13} className="shrink-0 mt-px inline mr-1" /> Move-out requires admin approval. The bed and tenant will remain active until an admin reviews and approves this request.
                   </div>
                   <div className="fg">
-                    <label>Reason for move-out <span className="text-red-600">*</span></label>
+                    <label>Reason for move-out <span className="text-danger-text">*</span></label>
                     <textarea
                       rows={2}
                       value={reason}
@@ -226,7 +226,7 @@ export default function MoveOutModal({ bed, onClose, onSubmit, saving }) {
               )}
             </div>
             {error && (
-              <div className="p-3 bg-red-50 text-red-700 text-[13px] rounded-xl border border-red-100">{error}</div>
+              <div className="p-3 bg-danger-bg text-danger-text text-[13px] rounded-xl border border-danger-border">{error}</div>
             )}
           </div>
           <div className="modal-foot">

@@ -221,6 +221,14 @@ of the four open questions raised when this was planned:
 - **Judgment-laden "losing"/"earning" wording removed from the utility P&L variance display —
   DONE.** `Utilities.jsx` now renders the room-collections-vs-provider-cost variance as
   "Shortfall" / "Surplus" instead of "losing" / "earning."
+- **Deleting a "Move-out readings this cutoff" entry (Billing) needs a confirmation step and
+  proper approval.** These are the interim meter readings captured at a tenant's move-out for the
+  active cutoff. Today's delete button removes one with no confirmation. Confirmed requirement:
+  (1) a confirmation modal before deleting, always; (2) **proper approval** — matching the general
+  principle in §7, admin deletes directly (after confirming), non-admin (`user`) submits the
+  deletion for admin approval, since it affects a billing figure that's already fed into utility
+  proration. — **DONE.** Confirmed rendered in `Billing.jsx`, backed by a DB trigger enforcing the
+  admin-direct/non-admin-approval split (see backlog §15).
 
 ## 7. Roles & permissions
 - **RLS must be real, not just client-side, even though this is an internal-only tool. — DONE.**
@@ -243,7 +251,7 @@ of the four open questions raised when this was planned:
   in-app Approvals page; an admin only finds out by manually checking it. **Confirmed requirement:
   admin should additionally be notified by email** when an override needs their approval. Not yet
   implemented — no email-sending capability exists anywhere in the codebase today (no SMTP
-  provider, no Supabase Edge Functions). *(Implementation task — see backlog §14. Open question:
+  provider, no Supabase Edge Functions). *(Implementation task — see backlog §15. Open question:
   which email-sending mechanism — a Supabase Edge Function calling a transactional email provider
   (Resend/SendGrid/etc.) is the natural fit given the stack, but needs an account/API key decision
   before implementation.)*
@@ -263,7 +271,10 @@ of the four open questions raised when this was planned:
   raise/resolve actions) is visible only to `admin` and `user` — not `viewer`.** Confirmed
   requirement: the panel is a write-capable operational tool, and `/maintenance` itself is already
   admin+user-only, so nothing about it should surface for a read-only viewer session on the
-  Dashboard either. *(Implementation task — see backlog §14.)*
+  Dashboard either. — **DONE**, browser-tested both roles.
+- **Raising a ticket happens only in the Maintenance module, not from the Dashboard. — DONE.** The
+  Dashboard's Room Maintenance panel (§10) stays as a view of pending tickets and keeps its
+  Resolve action; "+ Raise Ticket" is Maintenance-page-only.
 
 ## 9. Reporting
 - **New requirement: daily occupancy tracking.** The business needs occupancy rate computed on a
@@ -312,8 +323,10 @@ in another module.**
   recording lives in Collections per §3/§12). All four quick-action buttons, and the
   tenant-search picker that powered them, have been removed from the Dashboard. **The Dashboard
   does not offer a tenant-search-and-act entry point** — staff use the Tenants page for that.
-- **Room Maintenance panel — DONE, with role gating (see §8).** Compact pending-ticket list with
-  raise/resolve actions and a "View all in Maintenance →" link, visible only to `admin`/`user`.
+- **Room Maintenance panel — DONE, with role gating (see §8).** Compact pending-ticket list and a
+  "View all in Maintenance →" link, visible only to `admin`/`user`. **Raise Ticket is removed from
+  this panel** — raising a ticket happens only in the Maintenance module (§8); the panel is a
+  read/monitor surface for the Dashboard, not a duplicate entry point.
 - **Metrics/widgets — DONE** (definitions in §9):
   - Beds moving out this month
   - Move-ins this month
@@ -322,12 +335,9 @@ in another module.**
   - Occupancy rate YTD (bar graph)
   - Move-in source breakdown
   - Projected vs. actual rent collection summary (links into §11 for full drill-down)
-- **Icon convention.** The Monthly Revenue KPI card must use a **peso-appropriate icon** (₱), not
-  a dollar-sign icon — confirmed correction, since this is a Philippine-peso business tool.
-  *(Implementation task — see backlog §14. `lucide-react`, the icon set already used throughout
-  the app, has no dedicated peso glyph — use a styled "₱" character in place of an `<Icon>`
-  component, matching the size/color conventions of the other KPI card icons, unless a suitable
-  icon is found.)*
+- **Icon convention. — DONE.** The Monthly Revenue KPI card uses `lucide-react`'s `PhilippinePeso`
+  icon (it does exist in the installed version — an earlier note here assuming otherwise was
+  wrong), not a dollar sign.
 - **Existing Dashboard elements to keep, unchanged:** Upcoming Move-outs (rolling 30-day) list,
   Recent Activity feed, today's occupancy segmented bar (this is a *different, complementary*
   widget from the YTD bar graph above, not a replacement for it).
@@ -363,14 +373,18 @@ Tenants module.
 - **Existing behavior, confirmed correct, keep:** a table of tenants × billing categories
   (rent+water, electricity) with clickable cells for the active cutoff; clicking a cell records
   that tenant's payment for that category.
-- **New requirement: multi-select + batch save.** Instead of writing to the database on every
-  single click (today's behavior), staff should be able to **select multiple cells** (a
-  multi-select/checkbox interaction across tenants and/or categories) and then commit all of them
-  with **one "Save" action**. Purpose: faster data entry during high-volume collection periods
-  (e.g. many tenants paying around the same date), fewer round-trips. *(Implementation task — see
-  backlog §14.)*
-- **New requirement: undo functionality.** Staff must be able to reverse a payment they just
-  recorded. **This must comply with the non-negotiable in §13 — never delete a payment record.**
+- **Both Rent+Water and Electricity amounts auto-populate from the active billing period. — DONE**
+  when a cell is staged for entry (checkbox or "+ add"): defaults to that tenant's actual billed
+  amount for the active cutoff (rent+water from the Rent+Water cutoff, electricity from the
+  Electric cutoff — independent windows per §2/§5), editable before saving. Browser-verified
+  correct to the peso for both categories. See the next section for a follow-up display gap found
+  right after this shipped (the amount was only visible once staged, not at rest).
+- **New requirement: multi-select + batch save. — DONE.** Instead of writing to the database on
+  every single click, staff select multiple cells (a multi-select/checkbox interaction across
+  tenants and/or categories) and commit all of them with one "Save" action — one batched insert,
+  not N round-trips.
+- **New requirement: undo functionality. — DONE.** Staff can reverse a payment they just recorded.
+  **This must comply with the non-negotiable in §14 — never delete a payment record.**
   "Undo" has to be implemented as a void/compensating adjustment that preserves the original
   record and the full audit trail, never a hard `DELETE` of the `payments` row. *(Open question
   for implementation: is "undo" scoped to reversing the just-completed save/batch only, or a
@@ -382,8 +396,33 @@ Tenants module.
   (§11) and the Dashboard's collections summary widget (§10)** — both already read from the same
   shared calculation, so this should hold automatically; re-verify it still holds once the
   write pattern changes from single-click to multi-select/batch-save.
+- **A cell's billed amount must be visible whether or not it's checked/selected — DONE, then a
+  gap found.** The auto-populate work above (now shipped) only actually surfaces the amount once
+  a cell is ticked/opened for entry — staff can't see what a tenant owes at a glance without
+  interacting with the row. **Confirmed requirement: the actual (billed) amount must be visible
+  in the cell at all times**, checked or not, with proper currency formatting (₱, thousands
+  separator, 2 decimal places — matching the peso formatting convention used elsewhere in the app,
+  e.g. Payment Monitoring). Checking the cell still stages it for the batch save as before; this
+  is purely about always-visible display. *(Implementation task — see backlog §15.)*
 
-## 13. Non-negotiables
+## 13. UI/UX & theming
+- **Dark / Light theme toggle.** Confirmed requirement: the app gets a theme toggle (dark and
+  light modes), reachable from the main UI (e.g. Sidebar). Persists per browser (`localStorage`),
+  respects a sensible default (system preference on first visit is a reasonable choice, confirm at
+  implementation time rather than defaulting silently to one or the other). **Modernize the look
+  and feel while building this** — not just a color-inversion pass. *(Implementation task — see
+  backlog §15. Use the project's design-taste-frontend skill for this: audit the current UI first,
+  build a real light+dark design system — tokens/CSS variables, not ad-hoc per-component
+  overrides — rather than a templated look. This is a real visual redesign touching shared
+  components broadly; budget it as such, not as a small toggle switch.)*
+- **Search bar icon/placeholder overlap — confirmed bug.** In search inputs across the app (at
+  least Tenants, Edit Tenant Profile, wherever else a search icon is positioned inside the input),
+  the search icon visually overlaps the placeholder/typed text instead of sitting cleanly to one
+  side with proper padding. *(Implementation task — see backlog §15: audit every search input for
+  this, fix as one consistent pattern rather than one-off per page, since it'll be touched again
+  by the theming work above — coordinate the two.)*
+
+## 14. Non-negotiables
 - A tenant's outstanding balance must always reconcile — sum of bills must equal sum of payments
   plus adjustments, with no drift.
 - A room's metered utility consumption (water or electric) must always equal the total amount
@@ -397,7 +436,7 @@ Tenants module.
   governs the new Collections undo feature (§12)** — undo must be a void/compensating entry, never
   a `DELETE`.
 
-## 14. Confirmed implementation backlog
+## 15. Confirmed implementation backlog
 Concrete follow-up work items surfaced by this requirements pass, for the dev pipeline to pick up:
 - [ ] Fix move-out approval flow: add payment-confirmation step, then free bed + deactivate tenant
       + log activity (§3).
@@ -433,7 +472,7 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       **done**. Collections is now the sole payment-recording entry point.
 - [x] Build Collections' multi-select + batch-save payment recording UX (§12) — **done**.
 - [x] Build Collections' payment-undo/void functionality — audit-trail-preserving, never a hard
-      delete (§12/§13) — **done**, via a compensating negative-amount row (`voids_payment_id`),
+      delete (§12/§14) — **done**, via a compensating negative-amount row (`voids_payment_id`),
       applied and empirically verified live (double-void correctly rejected by a DB unique index).
 - [x] Gate the Dashboard's Room Maintenance panel (including its "View all in Maintenance" link
       and raise/resolve actions) to `admin`/`user` only, hidden from `viewer` (§8/§10) — **done**.
@@ -445,6 +484,36 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       and move-out date; remove the old Edit Details button from the tenant profile modal —
       **done**. Admin saves directly; every non-admin change goes through one approval request,
       enforced at the DB layer. Browser-tested as both `user` and `admin`.
-- [ ] Fix the `profiles` RLS gap so the admin Users page actually works (§7) — confirmed still
-      broken: only `profiles_self_select` exists, no admin-broad-select or update policy, so
-      `Users.jsx`'s list-all-users and change-role actions silently fail/no-op under real RLS.
+- [x] Fix the `profiles` RLS gap so the admin Users page actually works (§7) — **done**. Fixed via
+      a `SECURITY DEFINER is_admin()` helper (the first attempt, a self-referential RLS subquery,
+      caused live infinite recursion — 42P17, broke all `profiles` reads for every role including
+      login/role resolution; caught and reverted immediately, then rebuilt correctly). All users
+      (admin, user, viewer) now visible on `/users`, role changes persist, browser-tested.
+- [x] Remove the "Raise Ticket" action from the Dashboard's Room Maintenance panel (§8/§10) —
+      **done**. Raising a ticket now only happens in the Maintenance module; browser-tested both
+      roles.
+- [x] Auto-populate Collections' Rent+Water and Electricity amounts from the active billing period
+      for both categories (§12) — **done** for the amount staged into an interaction (checkbox/"+
+      add"), browser-verified correct for both categories. A follow-up gap was found immediately
+      after — see the next item.
+- [x] Make Collections' billed amount always visible per cell, checked or not, with proper
+      currency formatting (§12) — **done**. Renders via the existing `fmtPeso` formatter, no
+      interaction required.
+- [x] Add a confirmation modal + approval step to the "Move-out readings this cutoff" delete
+      button (§6) — **done**. Backed by a DB trigger that only permits a direct delete for admin
+      while still letting the cutoff-delete cascade through for `user` (first version's depth
+      check was wrong and was a no-op — caught in live verification, fixed, re-verified).
+- [x] Build a Dark/Light theme toggle with a modernized visual design (§13) — **done**. CSS
+      custom-property token system (bridged through Tailwind's color config) covering the shared
+      chrome and a mechanical sweep of common color patterns app-wide; Sun/Moon toggle in the
+      Sidebar, persisted to `localStorage`, defaults to system preference, no flash on load.
+      Excludes `Login.jsx` and the print pages by design (always render their fixed/print-safe
+      look regardless of theme). QA caught and a revision round fixed: two core token values that
+      failed WCAG AA contrast (recomputed with real luminance math), several dark-mode-breaking
+      spots the mechanical sweep correctly skipped but never migrated (opacity-suffixed classes,
+      a hardcoded white ring), and ~16 of Activity's activity-type badge colors plus Property's
+      status badges that weren't in the original sweep's mapping table — extended with 7 new
+      theme-aware badge tokens, all contrast-verified in both modes on re-review.
+- [x] Fix the search-bar icon/placeholder-text overlap across the app (§13) — **done**. Root
+      cause was a CSS specificity bug (a global `.toolbar` rule silently overriding each input's
+      padding), fixed via a shared `SearchInput` component across all 6 affected pages.

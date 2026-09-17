@@ -7,9 +7,9 @@ import { UserPlus, X, AlertTriangle } from 'lucide-react'
 const ROLES = ['admin', 'user', 'viewer']
 
 const ROLE_CONFIG = {
-  admin:  { bg: 'bg-amber-50',   text: 'text-amber-800',  label: 'Admin'  },
-  user:   { bg: 'bg-blue-50',    text: 'text-blue-700',   label: 'User'   },
-  viewer: { bg: 'bg-slate-100',  text: 'text-slate-500',  label: 'Viewer' },
+  admin:  { bg: 'bg-warning-bg',   text: 'text-warning-text',  label: 'Admin'  },
+  user:   { bg: 'bg-info-bg',    text: 'text-info-text',   label: 'User'   },
+  viewer: { bg: 'bg-surface-3',  text: 'text-ink-muted',  label: 'Viewer' },
 }
 
 function RoleBadge({ role }) {
@@ -65,7 +65,7 @@ function CreateUserModal({ onClose, onCreated }) {
         </div>
         <form onSubmit={submit}>
           <div className="modal-body">
-            <div className="mb-4 p-3 bg-amber-50 border border-amber-100 rounded-xl text-[12px] text-amber-700">
+            <div className="mb-4 p-3 bg-warning-bg border border-warning-border rounded-xl text-[12px] text-warning-text">
               <AlertTriangle size={13} className="shrink-0 mt-px inline mr-1" /> Requires <strong>Allow new users to sign up</strong> to be enabled in Supabase Auth. Disable again after.
             </div>
             <div className="form-grid grid-cols-1">
@@ -89,7 +89,7 @@ function CreateUserModal({ onClose, onCreated }) {
               </div>
             </div>
             {err && (
-              <div className="mt-3 p-3 bg-red-50 text-red-700 text-[13px] rounded-xl border border-red-100">{err}</div>
+              <div className="mt-3 p-3 bg-danger-bg text-danger-text text-[13px] rounded-xl border border-danger-border">{err}</div>
             )}
           </div>
           <div className="modal-foot">
@@ -155,15 +155,15 @@ export default function Users() {
       </div>
 
       {/* ── Role legend ── */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-card p-4 mb-5 flex flex-wrap gap-5 text-[12px]">
+      <div className="bg-surface rounded-xl border border-line shadow-card p-4 mb-5 flex flex-wrap gap-5 text-[12px]">
         {[
-          ['Admin',  'Full access + approvals management',    'text-amber-700'],
-          ['User',   'Day-to-day ops (Tenants, Billing, Utilities)', 'text-blue-700'],
-          ['Viewer', 'Read-only (Dashboard, Bed Map, Reports)', 'text-slate-500'],
+          ['Admin',  'Full access + approvals management',    'text-warning-text'],
+          ['User',   'Day-to-day ops (Tenants, Billing, Utilities)', 'text-info-text'],
+          ['Viewer', 'Read-only (Dashboard, Bed Map, Reports)', 'text-ink-muted'],
         ].map(([r, desc, c]) => (
           <div key={r} className="flex items-start gap-2">
             <span className={`font-bold text-[12px] ${c} shrink-0 mt-px`}>{r}</span>
-            <span className="text-slate-400">— {desc}</span>
+            <span className="text-ink-faint">— {desc}</span>
           </div>
         ))}
       </div>
@@ -191,20 +191,20 @@ export default function Users() {
                       <div className="flex items-center gap-3">
                         <Avatar email={p.email} />
                         <div>
-                          <div className="text-[13px] font-medium text-slate-900">{p.email}</div>
+                          <div className="text-[13px] font-medium text-ink">{p.email}</div>
                           {isMe && (
-                            <div className="text-[10px] text-slate-400 font-medium uppercase tracking-wider mt-0.5">You</div>
+                            <div className="text-[10px] text-ink-faint font-medium uppercase tracking-wider mt-0.5">You</div>
                           )}
                         </div>
                       </div>
                     </td>
                     <td><RoleBadge role={p.role} /></td>
-                    <td className="text-[12px] text-slate-400">
+                    <td className="text-[12px] text-ink-faint">
                       {new Date(p.created_at).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })}
                     </td>
                     <td>
                       {isMe ? (
-                        <span className="text-[12px] text-slate-300 italic">Cannot change own role</span>
+                        <span className="text-[12px] text-ink-faint italic">Cannot change own role</span>
                       ) : (
                         <div className="flex gap-2">
                           {ROLES.filter(r => r !== p.role).map(r => {

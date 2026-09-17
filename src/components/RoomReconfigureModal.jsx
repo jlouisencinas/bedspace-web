@@ -11,7 +11,7 @@ const ROOM_TYPES = [
   'Solo Room', '2-Bed Sharing', '4-Bed Sharing', '6-Bed Sharing',
 ]
 
-const INPUT_SM = 'px-2 py-1 border border-slate-200 rounded-lg text-[12px] bg-white focus:outline-none focus:border-navy-500 transition-colors'
+const INPUT_SM = 'px-2 py-1 border border-line rounded-lg text-[12px] bg-surface focus:outline-none focus:border-navy-500 transition-colors'
 
 function nextLetter(usedLetters) {
   for (let i = 0; i < 26; i++) {
@@ -164,10 +164,10 @@ export default function RoomReconfigureModal({ room, onClose, onDone }) {
             <h3>Confirm Reconfiguration</h3>
           </div>
           <div className="modal-body">
-            <p className="text-[13px] text-slate-600">{confirm.summary}</p>
-            <p className="text-[12px] text-slate-400 mt-2">This is a structural, admin-only change and takes effect immediately.</p>
+            <p className="text-[13px] text-ink-secondary">{confirm.summary}</p>
+            <p className="text-[12px] text-ink-faint mt-2">This is a structural, admin-only change and takes effect immediately.</p>
             {error && (
-              <div className="mt-3 px-3 py-2.5 bg-red-50 border border-red-100 rounded-xl text-[13px] text-red-700 flex items-start gap-2">
+              <div className="mt-3 px-3 py-2.5 bg-danger-bg border border-danger-border rounded-xl text-[13px] text-danger-text flex items-start gap-2">
                 <AlertTriangle size={13} className="shrink-0 mt-px text-red-500" />
                 {error}
               </div>
@@ -202,11 +202,11 @@ export default function RoomReconfigureModal({ room, onClose, onDone }) {
             </select>
           </div>
 
-          <h4 className="text-[12px] font-semibold text-slate-600 mb-2">Existing Beds</h4>
-          <div className="border border-slate-200 rounded-xl overflow-hidden mb-5">
+          <h4 className="text-[12px] font-semibold text-ink-secondary mb-2">Existing Beds</h4>
+          <div className="border border-line rounded-xl overflow-hidden mb-5">
             <table className="w-full text-[12px]">
               <thead>
-                <tr className="text-[10px] text-slate-400 uppercase tracking-widest bg-slate-50">
+                <tr className="text-[10px] text-ink-faint uppercase tracking-widest bg-surface-2">
                   <th className="px-3 py-2 text-left font-semibold">Bed</th>
                   <th className="px-3 py-2 text-left font-semibold">Status</th>
                   <th className="px-3 py-2 text-right font-semibold">Rate</th>
@@ -215,17 +215,17 @@ export default function RoomReconfigureModal({ room, onClose, onDone }) {
               </thead>
               <tbody>
                 {activeBeds.length === 0 ? (
-                  <tr><td colSpan={4} className="px-3 py-3 text-center text-slate-300">No active beds</td></tr>
+                  <tr><td colSpan={4} className="px-3 py-3 text-center text-ink-faint">No active beds</td></tr>
                 ) : activeBeds.map(bed => {
                   const marked = removeIds.has(bed.id)
                   const isLeased = bed.status === 'LEASED'
                   return (
-                    <tr key={bed.id} className={`border-t border-slate-50 ${marked ? 'opacity-40 bg-slate-50' : ''}`}>
+                    <tr key={bed.id} className={`border-t border-line-subtle ${marked ? 'opacity-40 bg-surface-2' : ''}`}>
                       <td className="px-3 py-2 font-semibold">{bed.bed_letter}</td>
-                      <td className="px-3 py-2 text-slate-500">{bed.status}</td>
+                      <td className="px-3 py-2 text-ink-muted">{bed.status}</td>
                       <td className="px-3 py-2 text-right">
                         <div className="relative inline-flex items-center float-right">
-                          <span className="absolute left-2 text-[12px] text-slate-400 pointer-events-none select-none">₱</span>
+                          <span className="absolute left-2 text-[12px] text-ink-faint pointer-events-none select-none">₱</span>
                           <input
                             type="number" min="0" step="0.01"
                             value={rates[bed.id] ?? ''}
@@ -252,7 +252,7 @@ export default function RoomReconfigureModal({ room, onClose, onDone }) {
           </div>
 
           <div className="flex items-center justify-between mb-2">
-            <h4 className="text-[12px] font-semibold text-slate-600">Add Beds</h4>
+            <h4 className="text-[12px] font-semibold text-ink-secondary">Add Beds</h4>
             <button type="button" onClick={addNewBedRow} className="btn-xs blue flex items-center gap-1">
               <Plus size={10} /> Add Row
             </button>
@@ -262,7 +262,7 @@ export default function RoomReconfigureModal({ room, onClose, onDone }) {
             <>
               <div className="flex items-center gap-2 mb-2">
                 <div className="relative inline-flex items-center">
-                  <span className="absolute left-2 text-[12px] text-slate-400 pointer-events-none select-none">₱</span>
+                  <span className="absolute left-2 text-[12px] text-ink-faint pointer-events-none select-none">₱</span>
                   <input
                     type="number" min="0" step="0.01"
                     value={bulkRate}
@@ -274,10 +274,10 @@ export default function RoomReconfigureModal({ room, onClose, onDone }) {
                 <button type="button" onClick={applyBulkRate} className="btn-xs gray">Apply to all new beds</button>
               </div>
 
-              <div className="border border-slate-200 rounded-xl overflow-hidden mb-4">
+              <div className="border border-line rounded-xl overflow-hidden mb-4">
                 <table className="w-full text-[12px]">
                   <thead>
-                    <tr className="text-[10px] text-slate-400 uppercase tracking-widest bg-slate-50">
+                    <tr className="text-[10px] text-ink-faint uppercase tracking-widest bg-surface-2">
                       <th className="px-3 py-2 text-left font-semibold">Letter</th>
                       <th className="px-3 py-2 text-left font-semibold">Location</th>
                       <th className="px-3 py-2 text-right font-semibold">Rate</th>
@@ -286,7 +286,7 @@ export default function RoomReconfigureModal({ room, onClose, onDone }) {
                   </thead>
                   <tbody>
                     {newBeds.map(row => (
-                      <tr key={row.key} className="border-t border-slate-50">
+                      <tr key={row.key} className="border-t border-line-subtle">
                         <td className="px-3 py-2">
                           <input
                             type="text" maxLength={2}
@@ -306,7 +306,7 @@ export default function RoomReconfigureModal({ room, onClose, onDone }) {
                         </td>
                         <td className="px-3 py-2 text-right">
                           <div className="relative inline-flex items-center float-right">
-                            <span className="absolute left-2 text-[12px] text-slate-400 pointer-events-none select-none">₱</span>
+                            <span className="absolute left-2 text-[12px] text-ink-faint pointer-events-none select-none">₱</span>
                             <input
                               type="number" min="0" step="0.01"
                               value={row.default_rate}
@@ -329,7 +329,7 @@ export default function RoomReconfigureModal({ room, onClose, onDone }) {
           )}
 
           {error && (
-            <div className="mt-1 px-3 py-2.5 bg-red-50 border border-red-100 rounded-xl text-[13px] text-red-700 flex items-start gap-2">
+            <div className="mt-1 px-3 py-2.5 bg-danger-bg border border-danger-border rounded-xl text-[13px] text-danger-text flex items-start gap-2">
               <AlertTriangle size={13} className="shrink-0 mt-px text-red-500" />
               {error}
             </div>

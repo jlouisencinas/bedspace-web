@@ -10,8 +10,9 @@ import MoveInModal          from '../components/MoveInModal'
 import MoveOutModal         from '../components/MoveOutModal'
 import TransferModal        from '../components/TransferModal'
 import TenantProfileModal   from '../components/TenantProfileModal'
+import SearchInput          from '../components/SearchInput'
 import {
-  Search, UserPlus, Eye, LogOut, SearchX,
+  UserPlus, Eye, LogOut, SearchX,
 } from 'lucide-react'
 
 const PAGE = 20
@@ -223,22 +224,18 @@ export default function Tenants() {
 
       {/* ── Toolbar ── */}
       <div className="toolbar">
-        <div className="relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="search" placeholder="Search name, room, bed…"
-            value={search} onChange={e => { setSearch(e.target.value); setPage(0) }}
-            className="pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-white w-60
-                       focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
-          />
-        </div>
+        <SearchInput
+          placeholder="Search name, room, bed…"
+          value={search} onChange={e => { setSearch(e.target.value); setPage(0) }}
+          className="w-60"
+        />
         <select value={statFilter} onChange={e => { setStatFilter(e.target.value); setPage(0) }}
-          className="px-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors">
+          className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors">
           <option value="LEASED">Active (Leased)</option>
           <option value="ALL">All Tenants</option>
         </select>
         <select value={roomFilter} onChange={e => { setRoomFilter(e.target.value); setPage(0) }}
-          className="px-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors">
+          className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors">
           <option value="">All Rooms</option>
           {rooms.map(r => <option key={r} value={r}>Room {r}</option>)}
         </select>
@@ -259,18 +256,18 @@ export default function Tenants() {
           </thead>
           <tbody>
             {pageRows.length === 0
-              ? <tr><td colSpan={7}><div className="empty"><SearchX size={28} className="mx-auto mb-3 text-slate-300" /><p>No tenants found</p></div></td></tr>
+              ? <tr><td colSpan={7}><div className="empty"><SearchX size={28} className="mx-auto mb-3 text-ink-faint" /><p>No tenants found</p></div></td></tr>
               : pageRows.map(t => (
                 <tr key={t.id} className="group">
                   <td className="td-name">{t.name}</td>
-                  <td className="font-medium text-slate-700">{t.room_no}</td>
+                  <td className="font-medium text-ink-secondary">{t.room_no}</td>
                   <td>
-                    <span className="font-bold text-slate-900">{t.bed_letter}</span>
-                    {t.bed_location && <span className="text-slate-400 text-[11px] ml-1">{t.bed_location}</span>}
+                    <span className="font-bold text-ink">{t.bed_letter}</span>
+                    {t.bed_location && <span className="text-ink-faint text-[11px] ml-1">{t.bed_location}</span>}
                   </td>
                   <td className="td-rate">{fmt(t.rate)}</td>
-                  <td className="text-[12px] text-slate-500">{fmtDate(t.move_in_date)}</td>
-                  <td className="text-[12px] text-slate-500">{fmtDate(t.move_out_date)}</td>
+                  <td className="text-[12px] text-ink-muted">{fmtDate(t.move_in_date)}</td>
+                  <td className="text-[12px] text-ink-muted">{fmtDate(t.move_out_date)}</td>
                   <td>
                     <div className="flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
                       <button className="btn-xs blue"  onClick={() => setDetail(t)}>

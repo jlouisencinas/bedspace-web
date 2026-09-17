@@ -166,8 +166,8 @@ export default function TransferModal({ tenant, vacantBeds, onClose, onDone }) {
           </div>
           <div className="modal-body text-center py-8">
             <Clock size={36} className="mx-auto mb-3 text-amber-400" />
-            <h4 className="text-[15px] font-semibold text-slate-900 mb-2">Sent for Approval</h4>
-            <p className="text-[13px] text-slate-500 leading-relaxed max-w-[260px] mx-auto">
+            <h4 className="text-[15px] font-semibold text-ink mb-2">Sent for Approval</h4>
+            <p className="text-[13px] text-ink-muted leading-relaxed max-w-[260px] mx-auto">
               Transfer request for <strong>{tenant.name}</strong> has been submitted.
               An admin will review and process it.
             </p>
@@ -185,7 +185,7 @@ export default function TransferModal({ tenant, vacantBeds, onClose, onDone }) {
       <div className="modal" style={{ maxWidth: 520 }}>
         <div className="modal-head">
           <h3 className="flex items-center gap-2">
-            <ArrowRightLeft size={15} className="text-slate-400" /> Room Transfer
+            <ArrowRightLeft size={15} className="text-ink-faint" /> Room Transfer
           </h3>
           <button className="btn-close" onClick={onClose}><X size={16} /></button>
         </div>
@@ -193,9 +193,9 @@ export default function TransferModal({ tenant, vacantBeds, onClose, onDone }) {
         <form onSubmit={handleSubmit}>
           <div className="modal-body">
             {/* Current placement banner */}
-            <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-[13px] mb-5">
-              <div className="font-semibold text-slate-900">{tenant.name}</div>
-              <div className="text-slate-500 mt-0.5">
+            <div className="bg-surface-2 border border-line-subtle rounded-xl px-4 py-3 text-[13px] mb-5">
+              <div className="font-semibold text-ink">{tenant.name}</div>
+              <div className="text-ink-muted mt-0.5">
                 Currently: Room {tenant.room_no} · Bed {tenant.bed_letter}
                 {tenant.bed_location ? ` (${tenant.bed_location})` : ''} · {fmt(tenant.rate)}/mo
               </div>
@@ -244,7 +244,7 @@ export default function TransferModal({ tenant, vacantBeds, onClose, onDone }) {
                   required
                 />
                 {rateChanged && (
-                  <div className="mt-1 text-[11px] text-amber-600 font-medium">
+                  <div className="mt-1 text-[11px] text-warning-text font-medium">
                     Rate change: {fmt(tenant.rate)} → {fmt(newRate)}
                     {!isAdmin && ' — requires admin approval'}
                   </div>
@@ -265,10 +265,10 @@ export default function TransferModal({ tenant, vacantBeds, onClose, onDone }) {
                   onChange={e => { setWaterReading(e.target.value); setError('') }}
                   required
                 />
-                <span className="block text-[11px] text-slate-400 mt-1">
+                <span className="block text-[11px] text-ink-faint mt-1">
                   Closing reading for Room {tenant.room_no}
                   {minWater !== null && (
-                    <> · <span className="text-slate-500 font-medium">min: {minWater}</span></>
+                    <> · <span className="text-ink-muted font-medium">min: {minWater}</span></>
                   )}
                 </span>
               </div>
@@ -284,17 +284,17 @@ export default function TransferModal({ tenant, vacantBeds, onClose, onDone }) {
                   onChange={e => { setElectricReading(e.target.value); setError('') }}
                   required
                 />
-                <span className="block text-[11px] text-slate-400 mt-1">
+                <span className="block text-[11px] text-ink-faint mt-1">
                   Closing reading for Room {tenant.room_no}
                   {minElec !== null && (
-                    <> · <span className="text-slate-500 font-medium">min: {minElec}</span></>
+                    <> · <span className="text-ink-muted font-medium">min: {minElec}</span></>
                   )}
                 </span>
               </div>
 
               {/* Info banner */}
               <div className="fg full">
-                <div className="flex items-start gap-2 bg-blue-50 border border-blue-100 rounded-xl px-3 py-2.5 text-[12px] text-blue-800">
+                <div className="flex items-start gap-2 bg-info-bg border border-info-border rounded-xl px-3 py-2.5 text-[12px] text-blue-800">
                   <Info size={13} className="shrink-0 mt-px text-blue-500" />
                   Utility contributions through {transferDate ? fmtDate(transferDate) : 'the transfer date'} will be
                   allocated to Room {tenant.room_no}'s current billing statement.
@@ -304,7 +304,7 @@ export default function TransferModal({ tenant, vacantBeds, onClose, onDone }) {
               {/* ── Opening Reading — New Room ── */}
               <div className="form-section">
                 Opening Reading — New Room
-                <span className="text-slate-400 font-normal text-[11px] ml-1">(optional)</span>
+                <span className="text-ink-faint font-normal text-[11px] ml-1">(optional)</span>
               </div>
 
               <div className="fg">
@@ -317,10 +317,10 @@ export default function TransferModal({ tenant, vacantBeds, onClose, onDone }) {
                   placeholder="e.g. 430.00"
                   onChange={e => { setToWaterReading(e.target.value); setError('') }}
                 />
-                <span className="block text-[11px] text-slate-400 mt-1">
+                <span className="block text-[11px] text-ink-faint mt-1">
                   Meter reading at the new room when you arrived
                   {selectedBed && minToWater !== null && (
-                    <> · <span className="text-slate-500 font-medium">period start: {minToWater}</span></>
+                    <> · <span className="text-ink-muted font-medium">period start: {minToWater}</span></>
                   )}
                 </span>
               </div>
@@ -335,10 +335,10 @@ export default function TransferModal({ tenant, vacantBeds, onClose, onDone }) {
                   placeholder="e.g. 413.00"
                   onChange={e => { setToElectricReading(e.target.value); setError('') }}
                 />
-                <span className="block text-[11px] text-slate-400 mt-1">
+                <span className="block text-[11px] text-ink-faint mt-1">
                   Meter reading at the new room when you arrived
                   {selectedBed && minToElec !== null && (
-                    <> · <span className="text-slate-500 font-medium">period start: {minToElec}</span></>
+                    <> · <span className="text-ink-muted font-medium">period start: {minToElec}</span></>
                   )}
                 </span>
               </div>
@@ -358,7 +358,7 @@ export default function TransferModal({ tenant, vacantBeds, onClose, onDone }) {
               {!isAdmin && (
                 <>
                   <div className="fg full">
-                    <div className="flex items-start gap-2 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2.5 text-[12px] text-amber-800">
+                    <div className="flex items-start gap-2 bg-warning-bg border border-warning-border rounded-xl px-3 py-2.5 text-[12px] text-warning-text">
                       <AlertTriangle size={13} className="shrink-0 mt-px text-amber-500" />
                       Transfer requests require admin approval before taking effect.
                       All details entered above will be reviewed.
@@ -379,7 +379,7 @@ export default function TransferModal({ tenant, vacantBeds, onClose, onDone }) {
             </div>
 
             {error && (
-              <div className="mt-3 px-3 py-2.5 bg-red-50 border border-red-100 rounded-xl text-[13px] text-red-700 flex items-start gap-2">
+              <div className="mt-3 px-3 py-2.5 bg-danger-bg border border-danger-border rounded-xl text-[13px] text-danger-text flex items-start gap-2">
                 <span className="shrink-0 mt-px">⚠</span>
                 {error}
               </div>

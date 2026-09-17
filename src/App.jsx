@@ -24,14 +24,14 @@ import PaymentMonitoring from './pages/PaymentMonitoring'
 
 function SetupScreen() {
   return (
-    <div className="flex items-center justify-center min-h-screen bg-slate-50 p-6">
-      <div className="bg-white rounded-2xl p-8 max-w-md w-full shadow-modal border-t-4 border-navy-700">
+    <div className="flex items-center justify-center min-h-screen bg-surface-2 p-6">
+      <div className="bg-surface rounded-2xl p-8 max-w-md w-full shadow-modal border-t-4 border-navy-700">
         <BrandIcon size={36} className="text-navy-500 mb-3" />
-        <h2 className="text-xl font-bold text-slate-900 mb-1">Bedspace Manager</h2>
-        <p className="text-red-600 font-semibold text-sm mb-5 flex items-center gap-1.5"><AlertTriangle size={14} className="shrink-0" /> Supabase credentials not configured</p>
-        <ol className="text-slate-600 text-sm leading-8 list-decimal pl-5">
-          <li>Set <code className="bg-slate-100 px-1.5 py-0.5 rounded text-xs">VITE_SUPABASE_URL</code> and <code className="bg-slate-100 px-1.5 py-0.5 rounded text-xs">VITE_SUPABASE_ANON_KEY</code></li>
-          <li>Locally: in <code className="bg-slate-100 px-1.5 py-0.5 rounded text-xs">.env</code>. On Vercel: Project → Settings → Environment Variables, then redeploy.</li>
+        <h2 className="text-xl font-bold text-ink mb-1">Bedspace Manager</h2>
+        <p className="text-danger-text font-semibold text-sm mb-5 flex items-center gap-1.5"><AlertTriangle size={14} className="shrink-0" /> Supabase credentials not configured</p>
+        <ol className="text-ink-secondary text-sm leading-8 list-decimal pl-5">
+          <li>Set <code className="bg-surface-3 px-1.5 py-0.5 rounded text-xs">VITE_SUPABASE_URL</code> and <code className="bg-surface-3 px-1.5 py-0.5 rounded text-xs">VITE_SUPABASE_ANON_KEY</code></li>
+          <li>Locally: in <code className="bg-surface-3 px-1.5 py-0.5 rounded text-xs">.env</code>. On Vercel: Project → Settings → Environment Variables, then redeploy.</li>
         </ol>
       </div>
     </div>

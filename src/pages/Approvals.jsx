@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { fetchApprovals, approveRequest, rejectRequest } from '../lib/approvals'
-import { supabase, processTransfer, logTenantMoveOutDateChange } from '../lib/supabase'
+import { supabase, processTransfer, logTenantMoveOutDateChange, deleteInterimReading } from '../lib/supabase'
 import { applyTenantProfileChange, PROFILE_FIELD_LABELS } from '../lib/tenantProfile'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
@@ -31,7 +31,7 @@ function entityDesc(r) {
   const nv = r.new_value || {}
   const name = nv._tenant_name, room = nv._room_no, bed = nv._bed_letter
   if (name) return [name, room && `Room ${room}`, bed && `Bed ${bed}`].filter(Boolean).join(' · ')
-  const typeLabel = { TENANT: 'Tenant', TENANT_STAY: 'Tenant', BED: 'Bed', ROOM: 'Room', PAYMENT: 'Payment', ADDON: 'Add-on' }
+  const typeLabel = { TENANT: 'Tenant', TENANT_STAY: 'Tenant', BED: 'Bed', ROOM: 'Room', PAYMENT: 'Payment', ADDON: 'Add-on', INTERIM_READING: 'Meter Reading' }
   return `${typeLabel[r.entity_type] || r.entity_type} #${r.entity_id}`
 }
 
@@ -110,6 +110,15 @@ function proposedLabel(r) {
   if (r.field_name === 'delete_addon') {
     return `Delete add-on #${nv._addon_id}`
   }
+  if (r.field_name === 'interim_reading_delete') {
+    return [
+      'Delete',
+      nv._room_no != null && `Room ${nv._room_no}`,
+      nv.utility,
+      nv.reading_date && `Date: ${fmtDate(nv.reading_date)}`,
+      nv.reading_value != null && `Reading: ${nv.reading_value}`,
+    ].filter(Boolean).join(' · ') || '—'
+  }
   const v = nv[r.field_name] ?? nv
   return typeof v === 'object' ? JSON.stringify(v) : (v != null ? String(v) : '—')
 }
@@ -118,6 +127,14 @@ function currentLabel(r) {
   const ov = r.old_value || {}
   if (r.field_name === 'tenant_profile') return profileSummary(ov)
   if (r.field_name === 'move_out') return 'Active tenant'
+  if (r.field_name === 'interim_reading_delete') {
+    return [
+      ov.room_no != null && `Room ${ov.room_no}`,
+      ov.utility,
+      ov.reading_date && `Date: ${fmtDate(ov.reading_date)}`,
+      ov.reading_value != null && `Reading: ${ov.reading_value}`,
+    ].filter(Boolean).join(' · ') || 'Reading exists'
+  }
   if (r.field_name === 'tenant_details') {
     return [
       ov.move_out_date !== undefined && `Move-out: ${fmtDate(ov.move_out_date)}`,
@@ -149,12 +166,13 @@ const FIELD_LABELS = {
   remove_bed:     'Remove Bed',
   add_addon:      'Add Add-on',
   delete_addon:   'Delete Add-on',
+  interim_reading_delete: 'Delete Interim Reading',
 }
 
 const STATUS_CONFIG = {
-  PENDING:  { bg: 'bg-amber-50',   text: 'text-amber-700',  icon: Clock,        dot: 'bg-amber-500'   },
-  APPROVED: { bg: 'bg-emerald-50', text: 'text-emerald-700',icon: CheckCircle,  dot: 'bg-emerald-500' },
-  REJECTED: { bg: 'bg-red-50',     text: 'text-red-700',    icon: XCircle,      dot: 'bg-red-400'     },
+  PENDING:  { bg: 'bg-warning-bg',   text: 'text-warning-text',  icon: Clock,        dot: 'bg-amber-500'   },
+  APPROVED: { bg: 'bg-success-bg', text: 'text-success-text',icon: CheckCircle,  dot: 'bg-emerald-500' },
+  REJECTED: { bg: 'bg-danger-bg',     text: 'text-danger-text',    icon: XCircle,      dot: 'bg-red-400'     },
 }
 
 function StatusBadge({ status }) {
@@ -170,11 +188,11 @@ function StatusBadge({ status }) {
 // ── Tenant profile change detail ─────────────────────────────────────────────
 
 function EntryList({ list }) {
-  if (!list?.length) return <div className="text-slate-400 italic">None</div>
+  if (!list?.length) return <div className="text-ink-faint italic">None</div>
   return list.map((e, i) => (
     <div key={e.id ?? `new-${i}`}>
       {e.value}
-      {e.label && <span className="text-[11px] text-slate-400"> {e.label}</span>}
+      {e.label && <span className="text-[11px] text-ink-faint"> {e.label}</span>}
       {e.isPrimary && <span className="text-[10px] font-bold text-navy-600"> (Primary)</span>}
     </div>
   ))
@@ -183,15 +201,15 @@ function EntryList({ list }) {
 function EntryListChange({ title, before, after }) {
   return (
     <div>
-      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">{title}</div>
+      <div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider mb-1">{title}</div>
       <div className="grid grid-cols-2 gap-3">
-        <div className="bg-red-50 border border-red-100 rounded-xl p-3">
-          <div className="text-[10px] font-bold text-red-600 uppercase tracking-wider mb-1.5">Current</div>
-          <div className="text-slate-700"><EntryList list={before} /></div>
+        <div className="bg-danger-bg border border-danger-border rounded-xl p-3">
+          <div className="text-[10px] font-bold text-danger-text uppercase tracking-wider mb-1.5">Current</div>
+          <div className="text-ink-secondary"><EntryList list={before} /></div>
         </div>
-        <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
-          <div className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider mb-1.5">Proposed</div>
-          <div className="text-slate-700 font-medium"><EntryList list={after} /></div>
+        <div className="bg-success-bg border border-success-border rounded-xl p-3">
+          <div className="text-[10px] font-bold text-success-text uppercase tracking-wider mb-1.5">Proposed</div>
+          <div className="text-ink-secondary font-medium"><EntryList list={after} /></div>
         </div>
       </div>
     </div>
@@ -206,21 +224,21 @@ function ProfileChangeDetail({ request }) {
   return (
     <div className="space-y-3 text-[13px]">
       {(fieldKeys.length > 0 || hasMoveOut) && (
-        <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 space-y-2">
+        <div className="bg-surface-2 border border-line-subtle rounded-xl p-4 space-y-2">
           {fieldKeys.map(k => (
             <div key={k}>
-              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-0.5">{PROFILE_FIELD_LABELS[k] || k}</div>
-              <span className="text-red-600">{ov.fields?.[k] ?? '—'}</span>
-              <span className="mx-2 text-slate-300">→</span>
-              <span className="text-emerald-700 font-medium">{nv.fields[k] ?? '—'}</span>
+              <div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider mb-0.5">{PROFILE_FIELD_LABELS[k] || k}</div>
+              <span className="text-danger-text">{ov.fields?.[k] ?? '—'}</span>
+              <span className="mx-2 text-ink-faint">→</span>
+              <span className="text-success-text font-medium">{nv.fields[k] ?? '—'}</span>
             </div>
           ))}
           {hasMoveOut && (
             <div>
-              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-0.5">Planned Move-out Date</div>
-              <span className="text-red-600">{fmtDate(ov.move_out_date)}</span>
-              <span className="mx-2 text-slate-300">→</span>
-              <span className="text-emerald-700 font-medium">{fmtDate(nv.move_out_date)}</span>
+              <div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider mb-0.5">Planned Move-out Date</div>
+              <span className="text-danger-text">{fmtDate(ov.move_out_date)}</span>
+              <span className="mx-2 text-ink-faint">→</span>
+              <span className="text-success-text font-medium">{fmtDate(nv.move_out_date)}</span>
             </div>
           )}
         </div>
@@ -349,6 +367,11 @@ function DecideModal({ request, onClose, onDone }) {
       return
     }
 
+    if (nv?._action === 'delete_interim_reading') {
+      await deleteInterimReading(nv._reading_id)
+      return
+    }
+
     if (approved.entity_type === 'TENANT' && approved.field_name === 'move_out_date') {
       const tenant = await fetchTenantForApply(approved.entity_id)
       const newDate = nv?.move_out_date || null
@@ -384,21 +407,21 @@ function DecideModal({ request, onClose, onDone }) {
         <div className="modal-body space-y-4">
 
           {/* Request metadata 2×2 grid */}
-          <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 grid grid-cols-2 gap-x-6 gap-y-3 text-[13px]">
+          <div className="bg-surface-2 border border-line-subtle rounded-xl p-4 grid grid-cols-2 gap-x-6 gap-y-3 text-[13px]">
             <div>
-              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-0.5">Date Submitted</div>
-              <div className="font-medium text-slate-900">{fmtDateTime(request.created_at)}</div>
+              <div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider mb-0.5">Date Submitted</div>
+              <div className="font-medium text-ink">{fmtDateTime(request.created_at)}</div>
             </div>
             <div>
-              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-0.5">Requested By</div>
-              <div className="font-medium text-slate-900 truncate">{requesterLabel(request)}</div>
+              <div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider mb-0.5">Requested By</div>
+              <div className="font-medium text-ink truncate">{requesterLabel(request)}</div>
             </div>
             <div>
-              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-0.5">Tenant / Entity</div>
-              <div className="font-medium text-slate-900">{entityDesc(request)}</div>
+              <div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider mb-0.5">Tenant / Entity</div>
+              <div className="font-medium text-ink">{entityDesc(request)}</div>
             </div>
             <div>
-              <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-0.5">Action</div>
+              <div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider mb-0.5">Action</div>
               <div className="font-semibold text-navy-500">{fieldLabel}</div>
             </div>
           </div>
@@ -408,20 +431,20 @@ function DecideModal({ request, onClose, onDone }) {
             <ProfileChangeDetail request={request} />
           ) : (
             <div className="grid grid-cols-2 gap-3">
-              <div className="bg-red-50 border border-red-100 rounded-xl p-3 text-[13px]">
-                <div className="text-[10px] font-bold text-red-600 uppercase tracking-wider mb-1.5">Current</div>
-                <div className="text-slate-700">{currentLabel(request)}</div>
+              <div className="bg-danger-bg border border-danger-border rounded-xl p-3 text-[13px]">
+                <div className="text-[10px] font-bold text-danger-text uppercase tracking-wider mb-1.5">Current</div>
+                <div className="text-ink-secondary">{currentLabel(request)}</div>
               </div>
-              <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-[13px]">
-                <div className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider mb-1.5">Proposed</div>
-                <div className="text-slate-700 font-medium">{proposedLabel(request)}</div>
+              <div className="bg-success-bg border border-success-border rounded-xl p-3 text-[13px]">
+                <div className="text-[10px] font-bold text-success-text uppercase tracking-wider mb-1.5">Proposed</div>
+                <div className="text-ink-secondary font-medium">{proposedLabel(request)}</div>
               </div>
             </div>
           )}
 
           {/* Reason */}
           {request.reason && (
-            <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 text-[13px] text-amber-800">
+            <div className="bg-warning-bg border border-warning-border rounded-xl px-4 py-3 text-[13px] text-warning-text">
               <span className="font-semibold">Reason: </span>{request.reason}
             </div>
           )}
@@ -438,7 +461,7 @@ function DecideModal({ request, onClose, onDone }) {
           </div>
 
           {error && (
-            <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 text-[13px] text-red-700">
+            <div className="bg-danger-bg border border-danger-border rounded-xl px-4 py-3 text-[13px] text-danger-text">
               {error}
             </div>
           )}
@@ -513,7 +536,7 @@ export default function Approvals() {
         </div>
 
         {/* Filter tabs */}
-        <div className="flex gap-1.5 p-1 bg-slate-100 rounded-lg">
+        <div className="flex gap-1.5 p-1 bg-surface-3 rounded-lg">
           {[
             { value: 'PENDING',  label: 'Pending'  },
             { value: 'APPROVED', label: 'Approved' },
@@ -525,8 +548,8 @@ export default function Approvals() {
               onClick={() => setFilterStatus(value)}
               className={`px-3 py-1.5 rounded-md text-[12px] font-semibold transition-all ${
                 filterStatus === value
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-700'
+                  ? 'bg-surface text-ink shadow-sm'
+                  : 'text-ink-muted hover:text-ink-secondary'
               }`}
             >
               {label}
@@ -542,7 +565,7 @@ export default function Approvals() {
         <div className="empty">
           {filterStatus === 'PENDING'
             ? <CheckCircle size={32} className="mx-auto mb-3 text-emerald-400" />
-            : <ClipboardList size={32} className="mx-auto mb-3 text-slate-300" />}
+            : <ClipboardList size={32} className="mx-auto mb-3 text-ink-faint" />}
           <p>{filterStatus === 'PENDING' ? 'No pending requests — all caught up!' : 'No requests found.'}</p>
         </div>
       ) : (
@@ -566,24 +589,24 @@ export default function Approvals() {
                 const fieldLabel = FIELD_LABELS[r.field_name] || r.field_name
                 return (
                   <tr key={r.id}>
-                    <td className="text-[11px] text-slate-400 whitespace-nowrap">{fmtDateTime(r.created_at)}</td>
+                    <td className="text-[11px] text-ink-faint whitespace-nowrap">{fmtDateTime(r.created_at)}</td>
                     <td className="text-[12px] max-w-[150px] truncate">{requesterLabel(r)}</td>
-                    <td className="text-[13px] font-medium text-slate-800">{entityDesc(r)}</td>
+                    <td className="text-[13px] font-medium text-ink">{entityDesc(r)}</td>
                     <td className="text-[12px] font-semibold text-navy-500">{fieldLabel}</td>
                     <td className="text-[12px] max-w-[200px]">
-                      <span className="text-red-600">{currentLabel(r)}</span>
-                      <span className="mx-2 text-slate-300">→</span>
-                      <span className="text-emerald-700 font-medium">{proposedLabel(r)}</span>
+                      <span className="text-danger-text">{currentLabel(r)}</span>
+                      <span className="mx-2 text-ink-faint">→</span>
+                      <span className="text-success-text font-medium">{proposedLabel(r)}</span>
                     </td>
-                    <td className="text-[12px] text-slate-500 max-w-[160px] truncate" title={r.reason}>
+                    <td className="text-[12px] text-ink-muted max-w-[160px] truncate" title={r.reason}>
                       {r.reason || '—'}
                     </td>
                     <td><StatusBadge status={r.status} /></td>
                     {filterStatus !== 'PENDING' && (
-                      <td className="text-[11px] text-slate-400 whitespace-nowrap">
+                      <td className="text-[11px] text-ink-faint whitespace-nowrap">
                         {r.decided_at ? fmtDateTime(r.decided_at) : '—'}
                         {r.decision_maker?.email && (
-                          <div className="text-[10px] text-slate-300 mt-0.5">{r.decision_maker.email}</div>
+                          <div className="text-[10px] text-ink-faint mt-0.5">{r.decision_maker.email}</div>
                         )}
                       </td>
                     )}
