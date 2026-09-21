@@ -6,7 +6,7 @@ import {
   LayoutDashboard, LayoutGrid, Users, Wrench, Zap,
   CreditCard, BarChart2, History, CheckSquare, UserCog,
   Menu, X, LogOut, Wallet, Building2, TrendingUp, UserPen,
-  Sun, Moon,
+  Sun, Moon, Bell,
 } from 'lucide-react'
 import BrandIcon from './BrandIcon'
 
@@ -25,6 +25,7 @@ const ALL_NAV = [
   { to: '/property',   label: 'Property',     icon: Building2,      roles: ['admin','user'] },
   { to: '/approvals',   label: 'Approvals',    icon: CheckSquare,    roles: ['admin'] },
   { to: '/users',       label: 'Users',        icon: UserCog,        roles: ['admin'] },
+  { to: '/notification-settings', label: 'Notification Settings', icon: Bell, roles: ['admin'] },
 ]
 
 function NavItem({ to, label, Icon, end }) {

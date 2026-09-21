@@ -4,6 +4,7 @@ import { fetchTickets } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
 import { useToast } from './Toast'
 import ResolveTicketModal from './ResolveTicketModal'
+import TicketDetailModal from './TicketDetailModal'
 import { Wrench, CheckCircle, ArrowRight } from 'lucide-react'
 
 function fmtDate(d) {
@@ -19,6 +20,7 @@ export default function RoomMaintenancePanel() {
   const [tickets, setTickets] = useState([])
   const [loading, setLoading] = useState(true)
   const [resolveT, setResolveT] = useState(null)
+  const [detailT, setDetailT] = useState(null)
   const { show, ToastEl } = useToast()
 
   const load = useCallback(async () => {
@@ -50,7 +52,7 @@ export default function RoomMaintenancePanel() {
         ) : (
           <div className="divide-y divide-line-subtle">
             {tickets.slice(0, 6).map(t => (
-              <div key={t.id} className="px-5 py-3 flex items-center justify-between gap-3">
+              <div key={t.id} className="px-5 py-3 flex items-center justify-between gap-3 cursor-pointer hover:bg-surface-2" onClick={() => setDetailT(t)}>
                 <div className="min-w-0">
                   <div className="text-[13px] font-semibold text-ink truncate">
                     {t.rooms?.room_no ? `Room ${t.rooms.room_no}` : '—'} — {t.concern}
@@ -60,7 +62,7 @@ export default function RoomMaintenancePanel() {
                   </div>
                 </div>
                 {canWrite && (
-                  <button className="btn-xs green shrink-0" onClick={() => setResolveT(t)}>
+                  <button className="btn-xs green shrink-0" onClick={e => { e.stopPropagation(); setResolveT(t) }}>
                     <CheckCircle size={11} /> Resolve
                   </button>
                 )}
@@ -80,6 +82,14 @@ export default function RoomMaintenancePanel() {
           ticket={resolveT}
           onClose={() => setResolveT(null)}
           onSaved={() => { setResolveT(null); show('Ticket resolved.', 'success'); load() }}
+        />
+      )}
+      {detailT && (
+        <TicketDetailModal
+          ticket={detailT}
+          canWrite={canWrite}
+          onClose={() => setDetailT(null)}
+          onResolve={(t) => { setDetailT(null); setResolveT(t) }}
         />
       )}
       {ToastEl}

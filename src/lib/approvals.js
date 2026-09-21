@@ -1,4 +1,5 @@
 import { supabase } from './supabase'
+import { notifyAsync } from './notify'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -73,6 +74,8 @@ export async function requestApproval({ entityType, entityId, fieldName, oldValu
       `Reason: ${reason}`,
     ].join(' '),
   })
+
+  notifyAsync('approval_request', data.id)
 
   return data
 }

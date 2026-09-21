@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/auth'
 import BrandIcon from '../components/BrandIcon'
-import { BedDouble, CreditCard, Zap, Users } from 'lucide-react'
+import { BedDouble, CreditCard, Zap, Users, Eye, EyeOff } from 'lucide-react'
 
 export default function Login() {
   const { signIn } = useAuth()
   const [email,    setEmail]    = useState('')
   const [password, setPassword] = useState('')
+  const [showPw,   setShowPw]   = useState(false)
   const [busy,     setBusy]     = useState(false)
   const [err,      setErr]      = useState('')
 
@@ -27,7 +28,7 @@ export default function Login() {
           <span className="text-white font-bold text-[16px] tracking-tight">Bedspace Manager</span>
         </div>
 
-        <div>
+        <div className="my-auto">
           <h1 className="text-white text-[32px] font-bold leading-snug mb-4">
             Manage your<br />property with ease
           </h1>
@@ -51,9 +52,6 @@ export default function Login() {
           </div>
         </div>
 
-        <p className="text-white/30 text-[11px]">
-          © {new Date().getFullYear()} LKL Reports — All rights reserved
-        </p>
       </div>
 
       {/* ── Right form panel ── */}
@@ -91,18 +89,30 @@ export default function Login() {
               <label className="block text-[12px] font-semibold text-slate-600 mb-1.5 uppercase tracking-wide">
                 Password
               </label>
-              <input
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-                placeholder="••••••••"
-                className="w-full px-3.5 py-2.5 text-[14px] text-slate-900 bg-white border border-slate-200 rounded-xl
-                           placeholder:text-slate-400
-                           focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600
-                           transition-all"
-              />
+              <div className="relative">
+                <input
+                  type={showPw ? 'text' : 'password'}
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  required
+                  placeholder="••••••••"
+                  className="w-full pl-3.5 pr-11 py-2.5 text-[14px] text-slate-900 bg-white border border-slate-200 rounded-xl
+                             placeholder:text-slate-400 [&::-ms-reveal]:hidden
+                             focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600
+                             transition-all"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw(v => !v)}
+                  onMouseDown={e => e.preventDefault()}
+                  aria-label={showPw ? 'Hide password' : 'Show password'}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 p-2 rounded-lg text-slate-500 hover:text-slate-700
+                             focus:outline-none focus-visible:ring-2 focus-visible:ring-navy-600 transition-colors"
+                >
+                  {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
             </div>
 
             {err && (

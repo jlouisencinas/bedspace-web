@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { notifyAsync } from './notify'
 
 const url = import.meta.env.VITE_SUPABASE_URL
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -503,6 +504,14 @@ export async function fetchTickets({ roomId, status } = {}) {
   return data
 }
 
+export async function fetchProfileEmail(userId) {
+  if (!userId) return null
+  const { data, error } = await supabase
+    .from('profiles').select('email').eq('id', userId).maybeSingle()
+  if (error) throw error
+  return data?.email || null
+}
+
 export async function addTicket({ roomId, tenantId, concern, remarks }) {
   const { data, error } = await supabase
     .from('maintenance_tickets')
@@ -533,6 +542,8 @@ export async function addTicket({ roomId, tenantId, concern, remarks }) {
     notes:         concern,
     metadata:      { concern, remarks: remarks || null, room_no: data.rooms?.room_no },
   })
+
+  notifyAsync('maintenance_ticket', data.id)
 
   return data
 }

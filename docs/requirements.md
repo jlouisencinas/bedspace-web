@@ -245,16 +245,108 @@ of the four open questions raised when this was planned:
 - **Add-ons are explicitly NOT approval-gated.** `user` role can add/remove billing add-ons
   (parking, aircon, etc.) freely, with no approval and no reason required — the only requirement
   is that it's logged in `activity_log`. Confirmed intentional, not a gap to close.
-- **Admin overrides on the approval workflow should notify admin by EMAIL, not just an in-app
-  list.** Today, approval requests (move-out, transfer, room config, bed rate, bed removal — and
-  any override requiring sign-off, e.g. a non-standard move-out date change) only appear in the
-  in-app Approvals page; an admin only finds out by manually checking it. **Confirmed requirement:
-  admin should additionally be notified by email** when an override needs their approval. Not yet
-  implemented — no email-sending capability exists anywhere in the codebase today (no SMTP
-  provider, no Supabase Edge Functions). *(Implementation task — see backlog §15. Open question:
-  which email-sending mechanism — a Supabase Edge Function calling a transactional email provider
-  (Resend/SendGrid/etc.) is the natural fit given the stack, but needs an account/API key decision
-  before implementation.)*
+- **Admin overrides on the approval workflow, and newly-raised maintenance tickets, should notify
+  by EMAIL, not just an in-app list.** Today, approval requests (move-out, transfer, room config,
+  bed rate, bed removal, tenant profile edits, interim-reading deletes) and maintenance tickets
+  only appear in-app (Approvals / Maintenance pages); nobody finds out except by manually
+  checking. **Confirmed requirement, expanded scope:** email notifications for both (1) a new
+  pending approval request being raised, and (2) a new maintenance ticket being raised.
+  **Delivery decision (revised): Google Apps Script, not Resend.** Mail is sent by an Apps Script
+  web app running under the **bedspacemkt@gmail.com** account (`MailApp.sendEmail`), the same
+  approach the owner already uses in the IDSS project. The Supabase Edge Function still decides
+  *who* gets what (from the admin-managed recipient list) and then hands the finished email to
+  the Apps Script web app, authenticated with a shared secret. Neither the shared secret nor the
+  web app URL goes in the repo (Supabase secrets only). See the "Notification settings module"
+  below for the configuration surface. — **DONE**, live and owner-tested (see below).
+
+### Login & role-gated routing
+- **Password show/hide toggle — DONE.** An eye icon button inside the Login page's password field
+  toggles the input between masked and visible text. It is `type="button"` (never submits the
+  form), keyboard-focusable, and carries an `aria-label` ("Show password" / "Hide password") plus
+  `aria-pressed`. The input is not remounted, so typed text is preserved; `autoComplete` attributes
+  are unchanged so password managers keep working. The field stays visible/masked only for the
+  current page view — it is not reset after a failed login.
+- **Role must be resolved before routing — DONE.** `useAuth().loading` stays true from sign-in
+  until the user's role has been read from `profiles` (`src/lib/auth.jsx`); `App.jsx` shows the
+  loading screen and only then mounts the router and the role-gated routes. This is what makes
+  deep links work — e.g. a link in a notification email to `/maintenance` or `/approvals` lands in
+  that module for a permitted role, instead of being bounced to the Dashboard before the role
+  arrived. A role that isn't permitted for the target route (the catch-all `*` route) is redirected
+  to the Dashboard.
+- **Failed role lookup falls back to `viewer`** (least privilege) rather than granting anything.
+- Client-side route gating is a UX convenience only; **RLS remains the real enforcement** (§7 above).
+
+### Notification settings module (new)
+- **Purpose:** let an admin configure who receives email notifications, without that list being
+  tied to actual `profiles` accounts — the recipient(s) may not even be app users (e.g. an office
+  manager's inbox, a shared distribution address).
+- **Admin-only configuration page**: add/remove one or more notification email addresses. Each
+  entry can opt in/out of each notification type independently. A newly-added address is
+  subscribed to every currently-available type by default.
+- **Extensible by design — more email types will be added later.** The owner confirmed further
+  email notifications are planned, so the set of notification types must NOT be hardcoded as
+  columns/checkboxes. Adding a new type later should be a small code change (register the type
+  and its email template) with no schema migration and no rewrite of the settings page — the page
+  should render its subscription options from a single registry of types (id, label, description).
+  Today's two types: **Approval requests** and **Maintenance tickets**. — **DONE**: the registry is
+  `supabase/functions/_shared/notification-types.ts` (imported by both the Vite client and the Edge
+  Function); subscriptions live in `notification_subscriptions` (one row per recipient + type id),
+  not per-type columns.
+- **Sender is fixed** (bedspacemkt@gmail.com via Apps Script) and not configurable in the app; the
+  admin UI configures recipients only.
+- **A "Send test email" action** on the settings page (admin-only) so an admin can confirm the
+  Apps Script setup works end to end without having to raise a real ticket.
+- **Triggers:**
+  - A new `approval_requests` row is inserted (any `entity_type`/`field_name`) — matches the
+    existing broad "any override requiring sign-off" scope, not just a subset.
+  - A new `maintenance_tickets` row is inserted (raised, `status = 'PENDING'`).
+- **Not in scope for this pass:** notifying on ticket *resolution*, on approval *decision*
+  (approved/rejected), or any other event — only the two "something needs attention" triggers
+  above. A broader notification matrix is a possible future extension, not assumed here.
+- **Delivery mechanism:** the Supabase Edge Function (`notify-email`, called fire-and-forget from
+  the client right after the triggering insert succeeds) loads the subscribed recipients, builds
+  the email, and POSTs it to the Apps Script web app with a shared secret; the Apps Script sends
+  it with `MailApp`. Failure to send must not block or roll back the underlying
+  ticket/approval-request creation — notification is best-effort, fire-and-forget from the
+  user's perspective.
+- **The Apps Script endpoint must not be an open mail relay.** Unlike the IDSS script (whose URL
+  is its only protection, acceptable there because it can only trigger a fixed job), this
+  endpoint accepts a recipient list and message body, so it must reject any request that doesn't
+  carry the shared secret. Likewise the Edge Function must not let any logged-in user make it
+  email arbitrary content to the admin list: prefer having it build the message from the actual
+  ticket/approval row (by id) rather than trusting caller-supplied text.
+- **Mail quota:** Google caps how many recipients a script can email per day (Gmail-account
+  limit, lower than Workspace). Notifications are low-volume, but the design should send one
+  message per event rather than one per recipient where practical, and surface a failure clearly
+  in the function logs if the quota is hit.
+- **The Apps Script lives outside the repo's deploy path** (edited in the Google editor). Keep a
+  copy in the repo (`apps-script/`) as the reviewable source of truth, like the IDSS project
+  does, and note that a code change needs a new web-app deployment version to take effect.
+- **Delivery guards (implemented design):** the Edge Function only emails for a record that is
+  still `PENDING` and was created within the last **5 minutes**, so it cannot be used to re-blast
+  old records. Each record is emailed **at most once** (a unique `notification_log` row is claimed
+  before sending; a repeat call is a no-op). The review-link base URL comes from the server-side
+  `APP_URL` secret, never from the client. Subscriptions are **opt-in**: a newly-registered
+  notification type does not email existing recipients until an admin ticks it for them (new
+  recipients are subscribed to every registered type when added).
+
+### Notification module — final state
+- **Live and owner-tested (as reported by the owner, 2026-09-21; not verifiable from the repo).** The
+  Apps Script mailer (sending as bedspacemkt@gmail.com) is deployed; the `notification_subscriptions`
+  and `notification_log` tables were applied to the live database on 2026-09-20
+  (both admin-read-only via `is_admin()`; `notification_log` has no client write policies — the
+  Edge Function writes it with the service role).
+- **Flow:** `requestApproval()` (`src/lib/approvals.js`) and `addTicket()` (`src/lib/supabase.js`)
+  call `notifyAsync(type, recordId)` (`src/lib/notify.js`) after the insert succeeds. The client
+  sends only the type and record id; the `notify-email` Edge Function loads the real row, checks
+  the caller is allowed to have raised it, builds the email, and posts it to the Apps Script.
+- **Admin "Send test email"** on `/notification-settings`, for all recipients or a single one.
+- **Guards:** once-per-record (unique `notification_log` claim), 5-minute freshness window
+  (`FRESHNESS_MS` in `events.ts`), record must still be `PENDING`, and sends are chunked at 20
+  recipients per Apps Script call.
+- **Secrets:** `APPS_SCRIPT_URL`, `APPS_SCRIPT_SECRET` and `APP_URL` exist only as Supabase
+  secrets; `MAILER_SECRET` exists only in the Apps Script's Script Properties. None is in the repo.
+  If the first two are unset the function no-ops with a logged warning.
 
 ## 8. Maintenance requests
 - Keep the current two-state model: **Pending → Resolved**. No priority, assignee, or
@@ -275,6 +367,14 @@ of the four open questions raised when this was planned:
 - **Raising a ticket happens only in the Maintenance module, not from the Dashboard. — DONE.** The
   Dashboard's Room Maintenance panel (§10) stays as a view of pending tickets and keeps its
   Resolve action; "+ Raise Ticket" is Maintenance-page-only.
+- **Clicking a ticket opens a view/detail modal.** Confirmed requirement: the Maintenance list
+  (both the full `/maintenance` page and, if practical, the Dashboard panel) should let staff
+  click a ticket to open a read-only detail view showing everything about it — room, concern,
+  full remarks, who raised it (tenant or staff), date raised, status, and — once resolved —
+  resolution notes, resolved-by, and resolved-at. Today only a truncated remarks preview is
+  visible in the table row; there's no way to see the full remarks or (for a resolved ticket) the
+  resolution details without re-opening the Resolve flow. This is a new read-only view, distinct
+  from the existing Raise/Resolve action modals. — **DONE** (`TicketDetailModal.jsx`).
 
 ## 9. Reporting
 - **New requirement: daily occupancy tracking.** The business needs occupancy rate computed on a
@@ -459,8 +559,8 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       (§6) — **done**.
 - [x] Build real room reconfiguration (bed count + rate change as one structural operation) (§4)
       — **done**.
-- [ ] Build admin-override email notifications for the approval workflow (§7) — needs an
-      email-sending mechanism decision first (no such capability exists today).
+- [x] Build admin-override email notifications for the approval workflow (§7) — **done**, see the
+      notification items at the end of this list.
 - [x] Build the Dashboard module: metrics/widgets (monthly move-in/out counts, lease extensions,
       MTD projected move-outs, occupancy YTD bar graph, move-in source breakdown, projected-vs-
       actual summary) + subheading text change (§10) — **done**. Tenant-search quick actions
@@ -517,3 +617,36 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
 - [x] Fix the search-bar icon/placeholder-text overlap across the app (§13) — **done**. Root
       cause was a CSS specificity bug (a global `.toolbar` rule silently overriding each input's
       padding), fixed via a shared `SearchInput` component across all 6 affected pages.
+- [x] Remove the "© {year} LKL Reports — All rights reserved" footer line from the Login page —
+      **done**.
+- [x] Add a view/detail modal to Maintenance tickets, showing full remarks and (once resolved)
+      resolution details — see §8 — **done**. Click a ticket row on `/maintenance` or the
+      Dashboard panel; browser-tested as admin.
+- [x] Build the Notification settings module (§7) — **done**. Admin-only `/notification-settings`
+      page (add/remove recipients, per-type opt-in), `notification_recipients` +
+      `notification_subscriptions` + `notification_log` tables with admin-only RLS via
+      `is_admin()`, and the project's first Edge Function (`notify-email`), called fire-and-forget
+      from `requestApproval()` and `addTicket()`.
+- [x] Switch notification delivery from Resend to a Google Apps Script mailer sending as
+      bedspacemkt@gmail.com, make notification types extensible (registry-driven, no per-type
+      columns), and add an admin "Send test email" action (§7) — **done**, live and owner-tested.
+      Resend is no longer used (it was never activated).
+- [x] Fix role-gated deep links so notification-email links land in the target module for
+      permitted roles (§7 "Login & role-gated routing") — **done**.
+- [x] Add a show/hide password toggle to the Login page (§7) — **done**.
+
+### Known follow-ups (not scheduled)
+- [ ] Mobile: the sidebar drawer stays open after tapping a nav link (unverified whether this
+      pre-dates the notification work).
+- [ ] Mobile: the "Send test email" button wraps on narrow screens.
+- [ ] `auth.jsx` (low): on a direct user switch without sign-out, there is a possible one-frame
+      window with the previous user's role.
+- [ ] `auth.jsx` (low): the role fetch has no timeout, and a transient failure demotes the session
+      to `viewer` until reload.
+- [ ] Tickets have no `created_by` column, so "Raised by" in notification emails is the JWT email
+      of the user who triggered the notification.
+- [ ] Vercel Hobby plan is for non-commercial use — check the terms against this business's use.
+- [ ] Gmail Apps Script daily recipient quota (~100/day for a consumer account) — unverified;
+      confirm before adding many recipients or notification types.
+- [x] Non-admin blocked check — **done**. The owner confirmed on 2026-09-21 that an admin's email
+      link lands in the correct module and a `user` is blocked from modules they have no access to.

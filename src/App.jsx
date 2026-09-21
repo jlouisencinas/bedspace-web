@@ -18,6 +18,7 @@ import PrintElectricity  from './pages/PrintElectricity'
 import Activity       from './pages/Activity'
 import Approvals      from './pages/Approvals'
 import Users          from './pages/Users'
+import NotificationSettings from './pages/NotificationSettings'
 import Maintenance    from './pages/Maintenance'
 import Property      from './pages/Property'
 import PaymentMonitoring from './pages/PaymentMonitoring'
@@ -72,6 +73,7 @@ function Layout() {
               <Route path="/print/electricity" element={<PrintElectricity />} />
               <Route path="/approvals"         element={<Approvals />}        />
               <Route path="/users"             element={<Users />}            />
+              <Route path="/notification-settings" element={<NotificationSettings />} />
             </>}
 
             <Route path="*" element={<Navigate to="/" replace />} />

@@ -8,7 +8,10 @@ export const useAuth = () => useContext(AuthCtx)
  * Tracks the Supabase session + the user's role (admin | user | viewer).
  *   session === undefined  → still loading
  *   session === null       → logged out
- *   role    === null       → role not resolved yet (only while session loading)
+ *   role    === null       → role not resolved yet, or logged out
+ *   loading stays true until the role resolves whenever a session exists, so
+ *   role-gated routes are never mounted (and deep links never redirected) early.
+ *   A failed profile lookup resolves to 'viewer' (least privilege).
  *
  * Role capabilities:
  *   viewer  → read-only (Dashboard, Bed Map, Reports)
@@ -42,10 +45,17 @@ export function AuthProvider({ children }) {
     let cancelled = false
     async function loadRole() {
       if (!session?.user) { setRole(null); return }
+      setRole(null)
       setRoleLoading(true)
-      const { data } = await supabase
-        .from('profiles').select('role').eq('id', session.user.id).single()
-      if (!cancelled) { setRole(data?.role || 'viewer'); setRoleLoading(false) }
+      let resolved = 'viewer'
+      try {
+        const { data } = await supabase
+          .from('profiles').select('role').eq('id', session.user.id).single()
+        resolved = data?.role || 'viewer'
+      } catch {
+        // fail closed: least privilege if the profile lookup throws
+      }
+      if (!cancelled) { setRole(resolved); setRoleLoading(false) }
     }
     loadRole()
     return () => { cancelled = true }
@@ -61,7 +71,7 @@ export function AuthProvider({ children }) {
     isAdmin:  role === 'admin',
     isUser:   role === 'user',
     isViewer: role === 'viewer',
-    loading: session === undefined || (!!session && roleLoading),
+    loading: session === undefined || (!!session && (roleLoading || role === null)),
     signIn, signOut,
   }
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>

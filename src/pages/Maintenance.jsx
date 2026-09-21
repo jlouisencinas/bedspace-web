@@ -4,6 +4,7 @@ import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
 import NewTicketModal     from '../components/NewTicketModal'
 import ResolveTicketModal from '../components/ResolveTicketModal'
+import TicketDetailModal  from '../components/TicketDetailModal'
 import SearchInput from '../components/SearchInput'
 import { Wrench, Plus, CheckCircle, Hammer } from 'lucide-react'
 
@@ -28,6 +29,7 @@ export default function Maintenance() {
   const [search,       setSearch]       = useState('')
   const [newModal,     setNewModal]     = useState(false)
   const [resolveT,     setResolveT]     = useState(null)
+  const [detailT,      setDetailT]      = useState(null)
   const { show, ToastEl } = useToast()
 
   const canWrite = isAdmin || isUser
@@ -129,7 +131,7 @@ export default function Maintenance() {
             </thead>
             <tbody>
               {filtered.map(t => (
-                <tr key={t.id}>
+                <tr key={t.id} className="cursor-pointer hover:bg-surface-2" onClick={() => setDetailT(t)}>
                   <td className="font-semibold text-ink whitespace-nowrap">
                     {t.rooms?.room_no ? `Room ${t.rooms.room_no}` : '—'}
                   </td>
@@ -165,7 +167,7 @@ export default function Maintenance() {
                   {canWrite && (
                     <td>
                       {t.status === 'PENDING' && (
-                        <button className="btn-xs green" onClick={() => setResolveT(t)}>
+                        <button className="btn-xs green" onClick={e => { e.stopPropagation(); setResolveT(t) }}>
                           <CheckCircle size={11} /> Resolve
                         </button>
                       )}
@@ -192,6 +194,15 @@ export default function Maintenance() {
           ticket={resolveT}
           onClose={() => setResolveT(null)}
           onSaved={() => { setResolveT(null); show('Ticket resolved.', 'success'); load() }}
+        />
+      )}
+
+      {detailT && (
+        <TicketDetailModal
+          ticket={detailT}
+          canWrite={canWrite}
+          onClose={() => setDetailT(null)}
+          onResolve={(t) => { setDetailT(null); setResolveT(t) }}
         />
       )}
     </div>

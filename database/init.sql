@@ -1327,6 +1327,120 @@ create policy approval_requests_update on public.approval_requests
   ));
 
 -- ════════════════════════════════════════════════════════════════
+-- Notification recipients + subscriptions + delivery log
+-- Recipients are not tied to public.profiles / app accounts — any inbox is valid.
+-- ════════════════════════════════════════════════════════════════
+create table if not exists public.notification_recipients (
+  id                  serial primary key,
+  email               text not null,
+  created_at          timestamptz not null default now(),
+  created_by          uuid references public.profiles(id)
+);
+
+alter table public.notification_recipients
+  drop constraint if exists notification_recipients_email_format_chk;
+alter table public.notification_recipients
+  add constraint notification_recipients_email_format_chk
+  check (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$');
+
+create unique index if not exists notification_recipients_email_lower_idx
+  on public.notification_recipients (lower(email));
+
+alter table public.notification_recipients enable row level security;
+
+-- Admin-only for every operation — pure config, not user-visible data.
+-- Reuses is_admin() (SECURITY DEFINER), the established pattern from the
+-- profiles-RLS fix earlier this project (a self-referential inline
+-- subquery on profiles caused a real production recursion incident —
+-- is_admin() is how that class of bug is avoided going forward).
+drop policy if exists notification_recipients_select on public.notification_recipients;
+create policy notification_recipients_select on public.notification_recipients
+  for select to authenticated using (public.is_admin());
+
+drop policy if exists notification_recipients_insert on public.notification_recipients;
+create policy notification_recipients_insert on public.notification_recipients
+  for insert to authenticated with check (public.is_admin());
+
+drop policy if exists notification_recipients_update on public.notification_recipients;
+create policy notification_recipients_update on public.notification_recipients
+  for update to authenticated using (public.is_admin()) with check (public.is_admin());
+
+drop policy if exists notification_recipients_delete on public.notification_recipients;
+create policy notification_recipients_delete on public.notification_recipients
+  for delete to authenticated using (public.is_admin());
+
+-- Which event types each recipient receives. event_type is an id from the code
+-- registry (supabase/functions/_shared/notification-types.ts). Deliberately NOT
+-- a CHECK against a fixed list: adding a type must not need a migration. The
+-- app ignores unknown/retired ids; only the id *format* is constrained here.
+create table if not exists public.notification_subscriptions (
+  recipient_id integer     not null references public.notification_recipients(id) on delete cascade,
+  event_type   text        not null,
+  created_at   timestamptz not null default now(),
+  primary key (recipient_id, event_type),
+  constraint notification_subscriptions_event_type_fmt_chk
+    check (event_type ~ '^[a-z][a-z0-9_]{0,63}$')
+);
+create index if not exists notification_subscriptions_event_idx
+  on public.notification_subscriptions (event_type);
+
+alter table public.notification_subscriptions enable row level security;
+
+drop policy if exists notification_subscriptions_select on public.notification_subscriptions;
+create policy notification_subscriptions_select on public.notification_subscriptions
+  for select to authenticated using (public.is_admin());
+drop policy if exists notification_subscriptions_insert on public.notification_subscriptions;
+create policy notification_subscriptions_insert on public.notification_subscriptions
+  for insert to authenticated with check (public.is_admin());
+drop policy if exists notification_subscriptions_update on public.notification_subscriptions;
+create policy notification_subscriptions_update on public.notification_subscriptions
+  for update to authenticated using (public.is_admin()) with check (public.is_admin());
+drop policy if exists notification_subscriptions_delete on public.notification_subscriptions;
+create policy notification_subscriptions_delete on public.notification_subscriptions
+  for delete to authenticated using (public.is_admin());
+
+-- One-time carry-over of the old boolean columns, then drop them.
+-- Dynamic SQL so re-runs (columns already gone) never fail.
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+             where table_schema='public' and table_name='notification_recipients'
+               and column_name='notify_on_approval') then
+    execute $q$insert into public.notification_subscriptions (recipient_id, event_type)
+               select id, 'approval_request' from public.notification_recipients
+               where notify_on_approval on conflict do nothing$q$;
+  end if;
+  if exists (select 1 from information_schema.columns
+             where table_schema='public' and table_name='notification_recipients'
+               and column_name='notify_on_ticket') then
+    execute $q$insert into public.notification_subscriptions (recipient_id, event_type)
+               select id, 'maintenance_ticket' from public.notification_recipients
+               where notify_on_ticket on conflict do nothing$q$;
+  end if;
+end $$;
+alter table public.notification_recipients drop column if exists notify_on_approval;
+alter table public.notification_recipients drop column if exists notify_on_ticket;
+
+-- Once-per-record guard + delivery audit. Written ONLY by the Edge Function
+-- (service role bypasses RLS). No insert/update/delete policies => denied to
+-- every client role. Admins may read it for diagnostics.
+create table if not exists public.notification_log (
+  id              bigserial primary key,
+  event_type      text        not null,
+  record_key      text        not null,   -- ticket id / approval request uuid, as text
+  status          text        not null default 'sending'
+                  check (status in ('sending','sent','failed')),
+  recipient_count integer,
+  error           text,                   -- short code only, never secrets/URL
+  created_at      timestamptz not null default now(),
+  unique (event_type, record_key)
+);
+alter table public.notification_log enable row level security;
+drop policy if exists notification_log_select on public.notification_log;
+create policy notification_log_select on public.notification_log
+  for select to authenticated using (public.is_admin());
+
+-- ════════════════════════════════════════════════════════════════
 -- 9. SEED DATA (as of July 28, 2026)
 -- TRUNCATE wipes all data — remove these lines to skip the reset.
 -- ════════════════════════════════════════════════════════════════
