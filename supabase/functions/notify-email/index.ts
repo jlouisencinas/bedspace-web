@@ -1,7 +1,8 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.43.5'
 import { NOTIFICATION_TYPES } from '../_shared/notification-types.ts'
-import { EVENT_HANDLERS, NotifyError, type Caller } from './events.ts'
-import { cleanSubject, esc, isConfigured, sendInChunks, type Message } from './email.ts'
+import { EVENT_HANDLERS, NotifyError, type Caller, type DirectMessage } from './events.ts'
+import { SAMPLE_KINDS, buildSampleEmail, type SampleKind } from './approval-fixtures.ts'
+import { APP_URL, cleanSubject, esc, isConfigured, sendInChunks, type Message } from './email.ts'
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -82,38 +83,68 @@ async function handleEvent(admin: any, caller: Caller, body: any) {
     await setLog({ status: 'failed', error: 'query_failed' })
     return json({ ok: false, error: 'query_failed' })
   }
-  const recipients = dedupe((subs ?? []).flatMap((s: any) => {
+  const subscribers = dedupe((subs ?? []).flatMap((s: any) => {
     const r = s.notification_recipients
     return (Array.isArray(r) ? r : [r]).map((x: any) => x?.email)
   }))
-  if (!recipients.length) {
-    await setLog({ status: 'sent', recipient_count: 0 })
-    return json({ ok: true, sent: 0 })
-  }
 
-  let msg: Message
+  let direct: DirectMessage[] = []
+  let recipients: string[] = []
+  let msg: Message | null = null
   try {
-    const built = handler.build(data)
-    msg = { ...built, subject: cleanSubject(built.subject) }
+    direct = dedupeDirect((handler.direct?.(data) ?? []).map(d => ({ email: d.email, message: { ...d.message, subject: cleanSubject(d.message.subject) } })))
+    // Someone who gets their own copy is dropped from the subscriber list so they aren't emailed twice.
+    const own = new Set(direct.map(d => d.email))
+    recipients = subscribers.filter(e => !own.has(e))
+    if (recipients.length) {
+      const built = handler.build(data)
+      msg = { ...built, subject: cleanSubject(built.subject) }
+    }
   } catch (e) {
     console.error('notify-email: build failed', { type }, e)
     await setLog({ status: 'failed', error: 'build_failed' })
     return json({ ok: false, error: 'build_failed' })
   }
-
-  const result = await sendInChunks(recipients, msg)
-  if (!result.ok) {
-    console.error('notify-email: send failed', { type, code: result.error, sent: result.sent, of: recipients.length })
-    await setLog({ status: 'failed', recipient_count: result.sent, error: result.error })
-    return json({ ok: false, error: result.error })
+  if (!recipients.length && !direct.length) {
+    await setLog({ status: 'sent', recipient_count: 0 })
+    return json({ ok: true, sent: 0 })
   }
-  await setLog({ status: 'sent', recipient_count: recipients.length })
-  warnLowQuota(result.quotaRemaining)
-  return json({ ok: true, sent: recipients.length })
+
+  // Direct copies go first: they are the ones a person is waiting on. Stops at the first failure.
+  let sent = 0
+  let quotaRemaining: number | undefined
+  let failure: string | undefined
+  for (const d of direct) {
+    const r = await sendInChunks([d.email], d.message)
+    quotaRemaining = r.quotaRemaining ?? quotaRemaining
+    if (!r.ok) { failure = r.error ?? 'send_failed'; break }
+    sent += r.sent
+  }
+  if (!failure && msg) {
+    const r = await sendInChunks(recipients, msg)
+    quotaRemaining = r.quotaRemaining ?? quotaRemaining
+    sent += r.sent
+    if (!r.ok) failure = r.error ?? 'send_failed'
+  }
+  if (failure) {
+    console.error('notify-email: send failed', { type, code: failure, sent, direct: direct.length, subscribers: recipients.length })
+    await setLog({ status: 'failed', recipient_count: sent, error: failure })
+    return json({ ok: false, error: failure })
+  }
+  await setLog({ status: 'sent', recipient_count: sent })
+  warnLowQuota(quotaRemaining)
+  return json({ ok: true, sent })
 }
 
 async function handleTest(admin: any, caller: Caller, body: any) {
   if (caller.role !== 'admin') throw new NotifyError('forbidden', 403)
+
+  // A sample is fixed fictitious content and only ever goes to one existing recipient row.
+  const sample = body.sample
+  if (sample !== undefined && sample !== null) {
+    if (typeof sample !== 'string' || !(SAMPLE_KINDS as readonly string[]).includes(sample)) throw new NotifyError('invalid_sample', 400)
+    if (!Number.isInteger(body.recipientId) || body.recipientId <= 0) throw new NotifyError('recipient_required', 400)
+  }
   if (!isConfigured()) return json({ ok: false, error: 'not_configured' })
 
   let q = admin.from('notification_recipients').select('email')
@@ -126,6 +157,17 @@ async function handleTest(admin: any, caller: Caller, body: any) {
   const recipients = dedupe((data ?? []).map((r: any) => r.email))
   if (!recipients.length) {
     return json({ ok: false, error: body.recipientId ? 'recipient_not_found' : 'no_recipients' })
+  }
+
+  if (sample) {
+    const built = buildSampleEmail(sample as SampleKind, APP_URL)
+    const sampleResult = await sendInChunks(recipients, { ...built, subject: cleanSubject(built.subject) })
+    if (!sampleResult.ok) {
+      console.error('notify-email: sample send failed', { code: sampleResult.error, sample })
+      return json({ ok: false, error: sampleResult.error })
+    }
+    warnLowQuota(sampleResult.quotaRemaining)
+    return json({ ok: true, sent: recipients.length, quotaRemaining: sampleResult.quotaRemaining })
   }
 
   const when = new Date().toISOString()
@@ -152,6 +194,18 @@ async function handleTest(admin: any, caller: Caller, body: any) {
   }
   warnLowQuota(result.quotaRemaining)
   return json({ ok: true, sent: recipients.length, quotaRemaining: result.quotaRemaining })
+}
+
+function dedupeDirect(list: DirectMessage[]): DirectMessage[] {
+  const seen = new Set<string>()
+  const out: DirectMessage[] = []
+  for (const d of list) {
+    const email = typeof d.email === 'string' ? d.email.trim().toLowerCase() : ''
+    if (!email || seen.has(email)) continue
+    seen.add(email)
+    out.push({ ...d, email })
+  }
+  return out
 }
 
 function dedupe(emails: unknown[]): string[] {

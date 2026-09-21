@@ -1,3 +1,8 @@
+// The pure helpers live in email-kit.ts (no Deno globals) so Node can import them; re-exported so
+// existing imports of this module keep working.
+import { esc, clip, cleanSubject } from './email-kit.ts'
+export { esc, clip, cleanSubject }
+
 export const APPS_SCRIPT_URL    = Deno.env.get('APPS_SCRIPT_URL')
 export const APPS_SCRIPT_SECRET = Deno.env.get('APPS_SCRIPT_SECRET')
 
@@ -6,30 +11,7 @@ export const APP_URL = /^(https:\/\/|http:\/\/localhost(:\d+)?(\/|$))/.test(RAW_
 
 export const isConfigured = () => !!(APPS_SCRIPT_URL && APPS_SCRIPT_SECRET)
 
-export function esc(s: unknown) {
-  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'} as Record<string,string>)[c]!)
-}
-
-export const clip = (s: unknown, max = 1000) => {
-  const v = String(s ?? '')
-  return v.length > max ? v.slice(0, max) + '…' : v
-}
-
 export type Message = { subject: string; html: string; text: string }
-
-export function layout(raisedBy: string, rows: Array<[string, string]>, link?: { url: string; label: string }) {
-  const items = rows.map(([k, v]) => `<li>${esc(k)}: ${esc(v)}</li>`).join('')
-  const cta = link ? `<p><a href="${esc(link.url)}">${esc(link.label)}</a></p>` : ''
-  const html = `<p>Raised by <strong>${esc(raisedBy)}</strong>.</p><ul>${items}</ul>${cta}`
-  const text = [
-    `Raised by ${raisedBy}.`,
-    ...rows.map(([k, v]) => `- ${k}: ${v}`),
-    ...(link ? ['', `${link.label}: ${link.url}`] : []),
-  ].join('\n')
-  return { html, text }
-}
-
-export const cleanSubject = (s: string) => s.replace(/[\r\n]+/g, ' ').trim().slice(0, 150)
 
 export type SendResult = { ok: boolean; error?: string; quotaRemaining?: number }
 

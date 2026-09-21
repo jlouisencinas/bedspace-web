@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { notifyAsync } from './notify'
+import { PROFILE_FIELD_LABELS } from '../../supabase/functions/_shared/approval-labels.ts'
 
 const url = import.meta.env.VITE_SUPABASE_URL
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -424,20 +425,7 @@ export async function logTenantMoveOutDateChange(tenant, newMoveOutDate) {
   })
 }
 
-export const PROFILE_FIELD_LABELS = {
-  name:                   'Name',
-  gender:                 'Gender',
-  source:                 'Source',
-  permanent_address:      'Permanent Address',
-  occupation:             'Occupation',
-  employer:               'Employer',
-  employer_address:       'Employer Address',
-  employer_contact_no:    'Employer Contact No',
-  location_of_work:       'Location of Work',
-  work_schedule:          'Work Schedule',
-  emergency_contact_name: 'Emergency Contact Name',
-  emergency_contact_no:   'Emergency Contact No',
-}
+export { PROFILE_FIELD_LABELS }
 
 function entryNoteParts(d) {
   if (!d) return []

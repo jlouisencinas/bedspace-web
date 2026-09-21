@@ -18,11 +18,21 @@ const TEST_ERRORS = {
   timeout:           "Couldn't reach the mailer.",
   unreachable:       "Couldn't reach the mailer.",
   recipient_not_found: 'That recipient no longer exists — refresh the list.',
+  invalid_sample:    'That sample type is not recognised.',
+  recipient_required: 'Samples can only be sent to a single recipient; use the Send button on a row.',
   bad_request:       'The mailer rejected the message (e.g. too many recipients).',
   forbidden:         'Only admins can send test emails.',
   unauthenticated:   'Session expired — sign in again.',
   unhandled:         'Unexpected server error; see Edge Function logs.',
 }
+const EMAIL_KINDS = [
+  { value: '',                           label: 'Plain test email' },
+  { value: 'approval_request',           label: 'Sample: approval request' },
+  { value: 'approval_decision_approved', label: 'Sample: approval approved' },
+  { value: 'approval_decision_rejected', label: 'Sample: approval rejected' },
+  { value: 'maintenance_ticket',         label: 'Sample: maintenance ticket' },
+]
+
 const testErrorMessage = code => TEST_ERRORS[code] ?? `Test failed (${code}); see Edge Function logs.`
 
 export default function NotificationSettings() {
@@ -34,6 +44,7 @@ export default function NotificationSettings() {
   const [addErr,     setAddErr]     = useState('')
   const [adding,     setAdding]     = useState(false)
   const [testing,    setTesting]    = useState(null)
+  const [kind,       setKind]       = useState('')
   const { show, ToastEl } = useToast()
 
   const load = useCallback(async () => {
@@ -111,9 +122,10 @@ export default function NotificationSettings() {
 
   async function runTest(recipientId) {
     setTesting(recipientId ?? 'all')
-    const res = await sendTestEmail(recipientId)
+    const sample = recipientId != null ? kind : ''
+    const res = await sendTestEmail(recipientId, sample || undefined)
     setTesting(null)
-    if (res.ok) show(`Test email sent to ${res.sent} recipient(s). Check the inbox and Spam.`, 'success', { duration: 6000 })
+    if (res.ok) show(`${sample ? 'Sample' : 'Test'} email sent to ${res.sent} recipient(s). Check the inbox and Spam.`, 'success', { duration: 6000 })
     else show(testErrorMessage(res.error), 'error', { duration: 8000 })
   }
 
@@ -165,6 +177,14 @@ export default function NotificationSettings() {
         ))}
       </ul>
 
+      <div className="flex flex-wrap items-center gap-2 mb-3 text-[12px] text-ink-muted">
+        <label htmlFor="email-kind">Email sent by each row's Send button:</label>
+        <select id="email-kind" className="w-auto" value={kind} onChange={e => setKind(e.target.value)} disabled={testing !== null}>
+          {EMAIL_KINDS.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}
+        </select>
+        <span>Samples use fictitious data and are never sent to everyone.</span>
+      </div>
+
       {loading ? (
         <div className="loading-screen"><div className="spinner" /></div>
       ) : recipients.length === 0 ? (
@@ -201,7 +221,7 @@ export default function NotificationSettings() {
                         className="btn-xs flex items-center gap-1"
                         disabled={testing !== null || savingId === r.id}
                         onClick={() => runTest(r.id)}
-                        title="Send a test email to this address"
+                        title={kind ? 'Send the selected sample email to this address' : 'Send a test email to this address'}
                       >
                         <Send size={10} /> {testing === r.id ? 'Sending…' : 'Send'}
                       </button>

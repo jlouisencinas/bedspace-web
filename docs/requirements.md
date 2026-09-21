@@ -288,7 +288,7 @@ of the four open questions raised when this was planned:
   columns/checkboxes. Adding a new type later should be a small code change (register the type
   and its email template) with no schema migration and no rewrite of the settings page — the page
   should render its subscription options from a single registry of types (id, label, description).
-  Today's two types: **Approval requests** and **Maintenance tickets**. — **DONE**: the registry is
+  Today's three types: **Approval requests**, **Approval decisions** and **Maintenance tickets**. — **DONE**: the registry is
   `supabase/functions/_shared/notification-types.ts` (imported by both the Vite client and the Edge
   Function); subscriptions live in `notification_subscriptions` (one row per recipient + type id),
   not per-type columns.
@@ -300,9 +300,11 @@ of the four open questions raised when this was planned:
   - A new `approval_requests` row is inserted (any `entity_type`/`field_name`) — matches the
     existing broad "any override requiring sign-off" scope, not just a subset.
   - A new `maintenance_tickets` row is inserted (raised, `status = 'PENDING'`).
-- **Not in scope for this pass:** notifying on ticket *resolution*, on approval *decision*
-  (approved/rejected), or any other event — only the two "something needs attention" triggers
-  above. A broader notification matrix is a possible future extension, not assumed here.
+- **Approval outcome (added later):** when an admin approves or rejects a request, the
+  `approval_decision` type emails (a) the staff member who raised it, always, in their own
+  single-recipient message (cannot be turned off on the settings page), and (b) admins subscribed
+  to "Approval decisions". Still **not** in scope: notifying on ticket *resolution*, on later
+  reversals of a decision, or any other event.
 - **Delivery mechanism:** the Supabase Edge Function (`notify-email`, called fire-and-forget from
   the client right after the triggering insert succeeds) loads the subscribed recipients, builds
   the email, and POSTs it to the Apps Script web app with a shared secret; the Apps Script sends
@@ -344,6 +346,49 @@ of the four open questions raised when this was planned:
 - **Guards:** once-per-record (unique `notification_log` claim), 5-minute freshness window
   (`FRESHNESS_MS` in `events.ts`), record must still be `PENDING`, and sends are chunked at 20
   recipients per Apps Script call.
+- **Approval emails (redesigned layout):** the request email and the outcome email share one
+  email-client-safe design (600px table layout, inline styles, dark-mode and mobile-stacking
+  progressive enhancement, status pill, changes table Field | Current | Requested, reason block,
+  decision block, one CTA button). Builders are pure modules — `notify-email/email-kit.ts`,
+  `approval-email.ts`, `approval-fixtures.ts` and `_shared/approval-labels.ts` (labels also used by
+  the Approvals page and activity log) — so a Node script can render them. The maintenance-ticket email
+  uses the same kit (`ticket-email.ts`, see §8); the plain test email is built inline in `index.ts`.
+  - **Spacing:** one padding scale (4/6/8/10/12/16/20/24/32 px), all as `<td>` padding so it survives Outlook (no margins
+    except `margin:0` on the h1 and `margin:0 auto` centering the button table); blocks
+    are stacked with `stack()` in `email-kit.ts` (16px between blocks, 20px before sections, 24px above the
+    centered CTA button); the footer strip sits inside the card's bottom edge; on narrow screens the
+    summary and decision cells, the timeline boxes and the changes table columns (with small
+    CURRENT/REQUESTED captions) stack with the gaps kept and nothing wider than the card (stacked
+    cells are `box-sizing:border-box`; timeline boxes are nested tables with the gap as outer-cell
+    padding). Labels break only between words; long values may break anywhere. The preview script checks these.
+  - **Requester address:** never taken from `approval_requests.requester_email` (client-supplied,
+    RLS only checks `requester_id = auth.uid()`). It comes from the auth admin API
+    (`getUserById(requester_id)`) and is validated with the mailer's address pattern. If it is missing,
+    or the requester is the decider, only the admin copy is sent. A requester who is also a
+    subscribed admin gets the requester version only.
+  - **When it fires:** `Approvals.jsx` `decide()` calls `notifyAsync('approval_decision', id)` after the
+    whole approve/apply/reject path succeeded (not inside `approveRequest()`/`rejectRequest()`, whose
+    ordering relative to applying the change differs by path). A failed apply sends nothing.
+  - **Edge Function guards for `approval_decision`:** caller is an admin; the row is `APPROVED` or
+    `REJECTED` (else `not_decided`); `decision_maker_id` equals the caller; `decided_at` within the
+    last 10 minutes, at most 2 minutes in the future (it is written by the deciding admin's browser
+    clock) and not before `created_at` (else `stale_record`). The claim is
+    `('approval_decision', request id)`, distinct from the request email's claim. The message
+    reflects the status at load time; a later reversal is not emailed. `approval_request` still
+    requires the caller to be the requester, `PENDING`, and created within 5 minutes.
+  - **PII masking:** phone-like values show only the last 4 digits and email addresses show the first
+    letter plus domain (`m•••@example.com`); if masking would hide a real change the cell says
+    "(changed)". Names, addresses, employer and work details are shown in full. No full record id
+    (only `AR-` + 8 hex characters), no internal `_` keys, no requester_email, no URL except the CTA.
+  - **Admin sample emails:** on `/notification-settings` an admin can choose "Sample: approval
+    request / approved / rejected / maintenance ticket" for a row's Send button. Samples use fixed fictitious data, are
+    subject-prefixed `[SAMPLE]`, go to exactly one existing recipient row (never everyone, never a raw
+    address), and are not logged or claimed. The header "Send test email" stays a plain test.
+  - **Preview:** `node scripts/preview-approval-email.mjs` renders fictitious fixtures (including
+    hostile input) to `.email-preview/` (git-ignored) and runs automated checks. It sends nothing.
+  - **Known limitations:** the CTA opens `/approvals` on its default Pending tab, so an already-decided
+    request is not shown there; the requester CTA goes to `/` because staff cannot open `/approvals`.
+    Delivery is best-effort: a failed send is not retried (the once-only claim stays burned).
 - **Secrets:** `APPS_SCRIPT_URL`, `APPS_SCRIPT_SECRET` and `APP_URL` exist only as Supabase
   secrets; `MAILER_SECRET` exists only in the Apps Script's Script Properties. None is in the repo.
   If the first two are unset the function no-ops with a logged warning.
@@ -375,6 +420,15 @@ of the four open questions raised when this was planned:
   visible in the table row; there's no way to see the full remarks or (for a resolved ticket) the
   resolution details without re-opening the Resolve flow. This is a new read-only view, distinct
   from the existing Raise/Resolve action modals. — **DONE** (`TicketDetailModal.jsx`).
+- **"New ticket raised" email is a designed layout (§7).** Built by `notify-email/ticket-email.ts` with
+  the same kit as the approval emails: header label "Maintenance", "● PENDING" pill with a `MT-<id>`
+  reference, summary card (Room, Tenant — "Staff-raised" when none, Concern, Raised by, Raised time in
+  Manila time), a Remarks block ("No remarks provided" when empty), a centered "View ticket" button to
+  `/maintenance` (omitted when `APP_URL` is unset), and a footer naming the "Maintenance tickets"
+  subscription. Subject `[New ticket] Room 702 · <concern>`. The loading, authorization (admin/user only),
+  `PENDING` and 5-minute freshness guards are unchanged; "Raised by" is the caller's JWT email. Admins can
+  send a fictitious "Sample: maintenance ticket" to one recipient from the notification settings page.
+  Follow-up idea (not built): a "ticket resolved" email to whoever raised the ticket.
 
 ## 9. Reporting
 - **New requirement: daily occupancy tracking.** The business needs occupancy rate computed on a

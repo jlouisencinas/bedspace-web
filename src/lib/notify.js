@@ -10,10 +10,12 @@ export function notifyAsync(type, recordId) {
 }
 
 // Admin UI. Resolves { ok, sent?, error?, quotaRemaining? } and never rejects.
-export async function sendTestEmail(recipientId) {
+// `sample` (with a recipientId) sends a fixed fictitious sample of an email type instead of the plain test.
+export async function sendTestEmail(recipientId, sample) {
   try {
     const body = { action: 'test' }
     if (recipientId != null) body.recipientId = recipientId
+    if (sample) body.sample = sample
     const { data, error } = await supabase.functions.invoke('notify-email', { body })
     if (error) {
       const parsed = await error.context?.json?.().catch(() => null)

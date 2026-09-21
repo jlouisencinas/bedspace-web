@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback } from 'react'
 import { fetchApprovals, approveRequest, rejectRequest } from '../lib/approvals'
 import { supabase, processTransfer, logTenantMoveOutDateChange, deleteInterimReading } from '../lib/supabase'
 import { applyTenantProfileChange, PROFILE_FIELD_LABELS } from '../lib/tenantProfile'
+import { notifyAsync } from '../lib/notify'
+import { FIELD_LABELS } from '../../supabase/functions/_shared/approval-labels.ts'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
 import { CheckCircle, XCircle, Clock, X, ClipboardList } from 'lucide-react'
@@ -153,22 +155,6 @@ function currentLabel(r) {
   return v != null ? String(v) : '—'
 }
 
-const FIELD_LABELS = {
-  move_out:       'Process Move-out',
-  move_out_date:  'Move-out Date',
-  tenant_details: 'Update Details',
-  tenant_profile: 'Edit Tenant Profile',
-  transfer:       'Room Transfer',
-  rate:           'Rate',
-  amount:         'Amount',
-  room_config:    'Room Configuration',
-  bed_rate:       'Bed Rate Change',
-  remove_bed:     'Remove Bed',
-  add_addon:      'Add Add-on',
-  delete_addon:   'Delete Add-on',
-  interim_reading_delete: 'Delete Interim Reading',
-}
-
 const STATUS_CONFIG = {
   PENDING:  { bg: 'bg-warning-bg',   text: 'text-warning-text',  icon: Clock,        dot: 'bg-amber-500'   },
   APPROVED: { bg: 'bg-success-bg', text: 'text-success-text',icon: CheckCircle,  dot: 'bg-emerald-500' },
@@ -275,6 +261,8 @@ function DecideModal({ request, onClose, onDone }) {
       } else {
         await rejectRequest(request.id, notes || null)
       }
+      // Only after the whole path succeeded; a `warning` (change applied, log write failed) still counts.
+      notifyAsync('approval_decision', request.id)
       onDone(d, warning)
     } catch (err) { setError(err.message); setBusy(false); setDecision(null) }
   }

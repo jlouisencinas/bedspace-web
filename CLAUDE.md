@@ -48,13 +48,27 @@ lookup falls back to `viewer`. `owner` was a legacy role, migrated away from —
 mentioned anywhere (old commits, old docs), treat it as stale.
 
 ## Notifications
-Email on new approval requests and maintenance tickets. Client calls `notifyAsync(type, recordId)`
-(`src/lib/notify.js`); the `notify-email` Edge Function loads the row, emails subscribed recipients
-via the Apps Script mailer.
+Email on new approval requests, approval decisions (approved/rejected) and maintenance tickets. Client
+calls `notifyAsync(type, recordId)` (`src/lib/notify.js`); the `notify-email` Edge Function loads the
+row, emails subscribed recipients via the Apps Script mailer.
+- `approval_decision` is fired from `Approvals.jsx` `decide()` after the whole path succeeded (never
+  from `approvals.js`). It also emails the requester on their own (single recipient) using the address
+  from the auth admin API, never `approval_requests.requester_email`; subscribed admins get the admin
+  copy. Its `load()` requires: admin caller, status `APPROVED`/`REJECTED`, `decision_maker_id` = caller,
+  fresh `decided_at` (10 min). Request-type handlers require `PENDING` + fresh instead.
+- Approval and maintenance-ticket emails are built by pure modules (`email-kit.ts`, `approval-email.ts`,
+  `ticket-email.ts`, `approval-fixtures.ts`, `_shared/approval-labels.ts`; no Deno globals, no imports of
+  `events.ts`/`email.ts`/`index.ts`); approval emails also mask PII. Layout spacing is `<td>` padding on a
+  4/6/8/10/12/16/20/24/32 scale via `stack()` in the kit; no margins except `margin:0` (h1) and `margin:0 auto`
+  (centering the button table). Never write `\u` escapes under
+  `supabase/functions/` (the deploy transport decodes them; use `String.fromCharCode`) — the preview script
+  scans for this. The plain test email is built inline in `index.ts`. After changing them run `node scripts/preview-approval-email.mjs` (sends nothing; writes
+  git-ignored `.email-preview/`). Admins can send fictitious samples per recipient from the settings page.
 - **Add a type:** add an entry to `NOTIFICATION_TYPES` in `_shared/notification-types.ts`, add its
   handler in `notify-email/events.ts`, call `notifyAsync` after the triggering insert, redeploy the
   function. No SQL, no settings-page change. The new handler's `load()` must authorize the caller,
-  require the record to be `PENDING` and fresh, like the existing two. Existing recipients are NOT
+  require the record to be in the right state (`PENDING` for "raised" events; `APPROVED`/`REJECTED` by
+  the caller for the decision event) and fresh, like the existing ones. Existing recipients are NOT
   subscribed to a new type until an admin ticks it on the settings page.
 - Secrets (`APPS_SCRIPT_URL`, `APPS_SCRIPT_SECRET`, `APP_URL`) live only in Supabase; `MAILER_SECRET`
   only in the Apps Script's Script Properties. Never put any of them in the repo.

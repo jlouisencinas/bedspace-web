@@ -23,3 +23,6 @@ Thumbs.db
 .claude/
 .agents/
 skills-lock.json
+
+# Local email previews (scripts/preview-approval-email.mjs)
+.email-preview/
