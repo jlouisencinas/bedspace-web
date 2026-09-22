@@ -704,3 +704,27 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       confirm before adding many recipients or notification types.
 - [x] Non-admin blocked check — **done**. The owner confirmed on 2026-09-21 that an admin's email
       link lands in the correct module and a `user` is blocked from modules they have no access to.
+
+## 16. Occupancy Simulator (isolated what-if module)
+- **Purpose.** Lets `admin`/`user` roles model potential rent at 100% (or a scaled) occupancy
+  against an editable, standalone copy of room/bed rates seeded from the owner's CSV, plus an
+  admin-only bulk CSV re-import.
+- **Isolation guarantee.** `sim_rooms`/`sim_beds` (`database/init.sql`) have no foreign key to
+  `rooms`, `beds`, `tenants`, `bills`, or `payments`, and no code path in `src/lib/simCsv.js`,
+  the `sim_*` functions in `src/lib/supabase.js`, `OccupancySimulator.jsx`, or `SimImportModal.jsx`
+  reads or writes those tables. Verifiable directly:
+  `grep -n "references public.rooms\|references public.beds" database/init.sql` has no hits inside
+  the `sim_rooms`/`sim_beds` block. Because nothing real is touched, **§14's non-negotiables do not
+  apply to this module** — there is no balance to reconcile, no metered consumption to match, no bed
+  to double-book, and edits may be hard-updated in place (no void/audit-trail requirement).
+- **Occupancy slider is a coarse pro-rata estimate**, not a per-bed occupied/vacant simulation — it
+  simply scales the sum of active (non-out-of-order) bed rates by `occupancyRate/100`. The UI states
+  this explicitly.
+- **CSV re-import is admin-only** and atomic (`sim_replace_all`, one Postgres function = one
+  transaction — any internal error rolls back the whole replace, so there is no partial-write
+  state). A duplicate `room_no,bed_letter` pair within one re-import file is a hard validation
+  error: the whole file is rejected and nothing is written, before any RPC call.
+- **Concurrency.** Last-write-wins via `updated_at`/`updated_by`, no locking — acceptable for a
+  low-stakes sandbox with no financial consequence.
+- **Out of scope for v1.** A "reset to CSV baseline" affordance (would need an import-history
+  table).

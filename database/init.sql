@@ -1441,6 +1441,257 @@ create policy notification_log_select on public.notification_log
   for select to authenticated using (public.is_admin());
 
 -- ════════════════════════════════════════════════════════════════
+-- 8b. OCCUPANCY SIMULATOR (fully isolated — no FK to rooms/beds/tenants/bills/
+-- payments; see docs/requirements.md for the isolation guarantee)
+-- ════════════════════════════════════════════════════════════════
+
+create table if not exists public.sim_rooms (
+  id          bigint generated always as identity primary key,
+  room_no     text not null unique,
+  room_type   text not null,          -- free text, NOT constrained to live ROOM_TYPES enum
+  floor       int,                    -- display-only, derived from leading digit of room_no at import time
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  updated_by  uuid references auth.users(id)
+);
+
+create table if not exists public.sim_beds (
+  id              bigint generated always as identity primary key,
+  sim_room_id     bigint not null references public.sim_rooms(id) on delete cascade,
+  bed_letter      text not null,
+  rate            numeric(10,2),      -- null when is_out_of_order = true
+  is_out_of_order boolean not null default false,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  updated_by      uuid references auth.users(id),
+  unique (sim_room_id, bed_letter)
+);
+
+alter table public.sim_rooms enable row level security;
+alter table public.sim_beds  enable row level security;
+
+-- SELECT + UPDATE: admin or user (single-cell edits: rate, toggle out-of-order)
+drop policy if exists sim_rooms_select on public.sim_rooms;
+create policy sim_rooms_select on public.sim_rooms
+  for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+drop policy if exists sim_rooms_update on public.sim_rooms;
+create policy sim_rooms_update on public.sim_rooms
+  for update to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')))
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+-- INSERT + DELETE: admin only (defense-in-depth; the only insert/delete path is CSV bulk-replace,
+-- which must be admin-only per the requirement — enforced here, not just hidden in the UI)
+drop policy if exists sim_rooms_insert on public.sim_rooms;
+create policy sim_rooms_insert on public.sim_rooms
+  for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+
+drop policy if exists sim_rooms_delete on public.sim_rooms;
+create policy sim_rooms_delete on public.sim_rooms
+  for delete to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+
+-- Mirror all four policies on sim_beds
+drop policy if exists sim_beds_select on public.sim_beds;
+create policy sim_beds_select on public.sim_beds
+  for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+drop policy if exists sim_beds_update on public.sim_beds;
+create policy sim_beds_update on public.sim_beds
+  for update to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')))
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+
+drop policy if exists sim_beds_insert on public.sim_beds;
+create policy sim_beds_insert on public.sim_beds
+  for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+
+drop policy if exists sim_beds_delete on public.sim_beds;
+create policy sim_beds_delete on public.sim_beds
+  for delete to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+
+-- Atomic bulk replace, used only by the admin-only CSV importer. SECURITY DEFINER + explicit
+-- is_admin() check (mirrors the is_admin() helper convention) so a non-admin gets a clean error
+-- instead of an opaque RLS violation. One function body = one implicit transaction: a mid-function
+-- error rolls back everything, so there is no partial-write state.
+create or replace function public.sim_replace_all(p_rooms jsonb)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not is_admin() then
+    raise exception 'admin role required' using errcode = '42501';
+  end if;
+
+  if coalesce(jsonb_array_length(p_rooms), 0) = 0 then
+    raise exception 'p_rooms must be a non-empty array' using errcode = '22023';
+  end if;
+
+  delete from public.sim_rooms;  -- cascades to sim_beds
+
+  insert into public.sim_rooms (room_no, room_type, floor, updated_by)
+  select r->>'room_no', r->>'room_type', (r->>'floor')::int, auth.uid()
+  from jsonb_array_elements(p_rooms) r;
+
+  insert into public.sim_beds (sim_room_id, bed_letter, rate, is_out_of_order, updated_by)
+  select sr.id, b->>'bed_letter',
+         nullif(b->>'rate','')::numeric(10,2),
+         coalesce((b->>'is_out_of_order')::boolean, false),
+         auth.uid()
+  from jsonb_array_elements(p_rooms) r
+  join public.sim_rooms sr on sr.room_no = r->>'room_no'
+  cross join lateral jsonb_array_elements(r->'beds') b;
+end;
+$$;
+
+-- Mirrors the is_admin() precedent above (~line 863): functions grant EXECUTE to
+-- PUBLIC by default, so without this an anon request could call this RPC directly.
+-- is_admin() already blocks anon/non-admin callers inside the function body — this
+-- is defense-in-depth only, for consistency with the rest of the codebase.
+revoke execute on function public.sim_replace_all(jsonb) from public, anon;
+grant execute on function public.sim_replace_all(jsonb) to authenticated;
+
+-- ── Seed: exact snapshot of the owner's CSV (31 rooms / 87 beds), generated by a throwaway
+--    Node script that parsed the source CSV and emitted the INSERT statements below.
+--    Verified: 31 rooms, 87 beds, 5 out-of-order, sum(rate) where not is_out_of_order =
+--    468250.00 exactly.
+insert into public.sim_rooms (room_no, room_type, floor) values
+  ('301', '6 - Bed Sharing', 3),
+  ('302', '2 - Bed Sharing', 3),
+  ('303', '4 - Bed Sharing', 3),
+  ('304', '4 - Bed Sharing', 3),
+  ('305', '2 - Bed Sharing', 3),
+  ('306', '4 - Bed Sharing', 3),
+  ('401', '6 - Bed Sharing', 4),
+  ('402', '2 - Bed Sharing', 4),
+  ('403', '4 - Bed Sharing', 4),
+  ('404', '2 - Bed Sharing', 4),
+  ('405', '2 - Bed Sharing', 4),
+  ('406', 'Solo Room', 4),
+  ('501 A', '1 - Bed Loft-Type', 5),
+  ('501 B', '1 - Bed Loft-Type', 5),
+  ('502', '4 - Bed Sharing', 5),
+  ('503', 'Solo Room', 5),
+  ('504', '4 - Bed Sharing', 5),
+  ('505', '2 - Bed Sharing', 5),
+  ('506', '4 - Bed Sharing', 5),
+  ('601', '6 - Bed Sharing', 6),
+  ('602', '2 - Bed Sharing', 6),
+  ('603', 'Solo Room', 6),
+  ('604', 'Solo Room', 6),
+  ('605', '2 - Bed Sharing', 6),
+  ('606', 'Solo Room', 6),
+  ('701', '6 - Bed Sharing', 7),
+  ('702', 'Solo Room', 7),
+  ('703', 'Solo Room', 7),
+  ('704', '4 - Bed Sharing', 7),
+  ('705', '2 - Bed Sharing', 7),
+  ('706', '4 - Bed Sharing', 7)
+on conflict (room_no) do nothing;
+
+insert into public.sim_beds (sim_room_id, bed_letter, rate, is_out_of_order)
+select sr.id, v.bed_letter, v.rate, v.is_out_of_order
+from (values
+  ('301', 'A', 4750.00, false),
+  ('301', 'B', 4750.00, false),
+  ('301', 'D', 4750.00, false),
+  ('301', 'C', 4500.00, false),
+  ('301', 'E', 4500.00, false),
+  ('301', 'F', 4500.00, false),
+  ('302', 'A', 6750.00, false),
+  ('302', 'B', 6500.00, false),
+  ('303', 'A', 5000.00, false),
+  ('303', 'B', 5000.00, false),
+  ('303', 'C', 5000.00, false),
+  ('303', 'D', 5000.00, false),
+  ('304', 'A', 5000.00, false),
+  ('304', 'B', 5000.00, false),
+  ('304', 'C', 5000.00, false),
+  ('304', 'D', 5000.00, false),
+  ('305', 'A', 6750.00, false),
+  ('305', 'B', 6500.00, false),
+  ('306', 'A', 5000.00, false),
+  ('306', 'B', 5000.00, false),
+  ('306', 'C', 5000.00, false),
+  ('306', 'D', 5000.00, false),
+  ('401', 'A', 4750.00, false),
+  ('401', 'B', 4750.00, false),
+  ('401', 'C', 4750.00, false),
+  ('401', 'D', 4500.00, false),
+  ('401', 'E', 4500.00, false),
+  ('401', 'F', 4500.00, false),
+  ('402', 'A', 6750.00, false),
+  ('402', 'B', 6500.00, false),
+  ('403', 'A', 5000.00, false),
+  ('403', 'B', 5000.00, false),
+  ('403', 'C', 5000.00, false),
+  ('403', 'D', 5000.00, false),
+  ('404', 'A', 6750.00, false),
+  ('404', 'B', 6500.00, false),
+  ('405', 'A', 6750.00, false),
+  ('405', 'B', 6500.00, false),
+  ('406', 'A', 10000.00, false),
+  ('501 A', 'A', 9000.00, false),
+  ('501 B', 'B', 9000.00, false),
+  ('502', 'A', 5000.00, false),
+  ('502', 'B', 5000.00, false),
+  ('502', 'C', 5000.00, false),
+  ('502', 'D', 5000.00, false),
+  ('503', 'A', 10000.00, false),
+  ('504', 'A', 5000.00, false),
+  ('504', 'B', 5000.00, false),
+  ('504', 'C', 5000.00, false),
+  ('504', 'D', 5000.00, false),
+  ('505', 'A', 6750.00, false),
+  ('505', 'B', 6500.00, false),
+  ('506', 'A', 5000.00, false),
+  ('506', 'B', 5000.00, false),
+  ('506', 'C', 5000.00, false),
+  ('506', 'D', 5000.00, false),
+  ('601', 'A', 4750.00, false),
+  ('601', 'B', 4750.00, false),
+  ('601', 'C', 4750.00, false),
+  ('601', 'D', 4500.00, false),
+  ('601', 'E', 4500.00, false),
+  ('601', 'F', 4500.00, false),
+  ('602', 'A', 6750.00, false),
+  ('602', 'B', 6500.00, false),
+  ('603', 'A', 10000.00, false),
+  ('604', 'A', 10000.00, false),
+  ('605', 'A', 6750.00, false),
+  ('605', 'B', 6500.00, false),
+  ('606', 'A', 10000.00, false),
+  ('701', 'A', 4750.00, false),
+  ('701', 'B', 4750.00, false),
+  ('701', 'C', 4750.00, false),
+  ('701', 'D', 4500.00, false),
+  ('701', 'E', 4500.00, false),
+  ('701', 'F', 4500.00, false),
+  ('702', 'A', null, true),
+  ('703', 'A', 10000.00, false),
+  ('704', 'A', 5000.00, false),
+  ('704', 'B', 5000.00, false),
+  ('704', 'C', 5000.00, false),
+  ('704', 'D', 5000.00, false),
+  ('705', 'A', 6750.00, false),
+  ('705', 'B', 6500.00, false),
+  ('706', 'A', null, true),
+  ('706', 'B', null, true),
+  ('706', 'C', null, true),
+  ('706', 'D', null, true)
+) as v(room_no, bed_letter, rate, is_out_of_order)
+join public.sim_rooms sr on sr.room_no = v.room_no
+on conflict (sim_room_id, bed_letter) do nothing;
+
+-- ════════════════════════════════════════════════════════════════
 -- 9. SEED DATA (as of July 28, 2026)
 -- TRUNCATE wipes all data — remove these lines to skip the reset.
 -- ════════════════════════════════════════════════════════════════

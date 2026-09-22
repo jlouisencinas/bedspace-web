@@ -22,6 +22,7 @@ import NotificationSettings from './pages/NotificationSettings'
 import Maintenance    from './pages/Maintenance'
 import Property      from './pages/Property'
 import PaymentMonitoring from './pages/PaymentMonitoring'
+import OccupancySimulator from './pages/OccupancySimulator'
 
 function SetupScreen() {
   return (
@@ -65,6 +66,7 @@ function Layout() {
               <Route path="/billing"     element={<Billing />}     />
               <Route path="/activity"    element={<Activity />}    />
               <Route path="/property"   element={<Property />}    />
+              <Route path="/occupancy-simulator" element={<OccupancySimulator />} />
             </>}
 
             {/* admin only */}

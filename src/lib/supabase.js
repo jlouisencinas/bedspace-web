@@ -1334,3 +1334,37 @@ export async function removeTenantAddon(addonId, actorId) {
       : `Add-on #${addonId} deleted.`,
   })
 }
+
+// ── Occupancy Simulator ─────────────────────────────────────────────────────
+// Fully isolated: sim_rooms/sim_beds have no FK to rooms/beds/tenants/bills/
+// payments, and nothing below ever reads or writes those tables.
+
+export async function fetchSimSummary() {
+  const { data, error } = await supabase
+    .from('sim_rooms')
+    .select('*, sim_beds(*)')
+    .order('floor', { ascending: true })
+    .order('room_no', { ascending: true })
+  if (error) throw error
+  return data
+}
+
+export async function updateSimBedRate(bedId, rate, actorId) {
+  const { error } = await supabase
+    .from('sim_beds')
+    .update({ rate, updated_by: actorId })
+    .eq('id', bedId)
+  if (error) throw error
+}
+
+export async function updateSimBedOutOfOrder(bedId, isOutOfOrder, actorId) {
+  const patch = { is_out_of_order: isOutOfOrder, updated_by: actorId }
+  if (isOutOfOrder) patch.rate = null
+  const { error } = await supabase.from('sim_beds').update(patch).eq('id', bedId)
+  if (error) throw error
+}
+
+export async function replaceSimDataset(payload) {
+  const { error } = await supabase.rpc('sim_replace_all', { p_rooms: payload })
+  if (error) throw error
+}

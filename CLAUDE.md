@@ -22,12 +22,12 @@ npm run preview
 ## Layout
 - `src/pages/` — one file per route (Dashboard, BedMap, Tenants, EditTenantProfile, Billing,
   Utilities, Collections, PaymentMonitoring, Maintenance, Approvals, Reports, Property, Activity,
-  Users, NotificationSettings, PrintElectricity, PrintRentWater, Login)
+  Users, NotificationSettings, PrintElectricity, PrintRentWater, Login, OccupancySimulator)
 - `src/components/` — shared UI (MoveInModal, MoveOutModal, TransferModal, Statement, MultiEntryInput,
   SearchInput, TicketDetailModal, Sidebar, Toast, …)
 - `src/lib/` — data layer: `supabase.js`, `billing.js`, `pnl.js`, `snapshot.js`, `auth.jsx`,
   `approvals.js` (approval requests), `tenantProfile.js`, `notify.js` (client side of email
-  notifications), `theme.jsx`
+  notifications), `theme.jsx`, `simCsv.js` (Occupancy Simulator CSV parsing/validation)
 - `supabase/functions/notify-email/` + `supabase/functions/_shared/notification-types.ts` — the
   notification Edge Function and its type registry. Deployed via the Supabase MCP/CLI, **not** by
   Vercel.
