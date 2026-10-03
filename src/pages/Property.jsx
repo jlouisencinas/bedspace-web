@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import {
   Building2, Settings2, DollarSign, Tag, RefreshCw,
   ChevronDown, ChevronRight, Plus, Trash2, Edit2, Check, X,
-  RotateCcw, AlertTriangle, Clock, Wrench,
+  RotateCcw, AlertTriangle, Clock, Wrench, PowerOff,
 } from 'lucide-react'
 import {
   fetchPropertySummary, updateRoomConfig, updateBedRate, removeBed, restoreBed,
@@ -12,6 +13,8 @@ import { requestApproval } from '../lib/approvals'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
 import RoomReconfigureModal from '../components/RoomReconfigureModal'
+import AddRoomModal from '../components/AddRoomModal'
+import RetireRoomModal from '../components/RetireRoomModal'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -164,6 +167,8 @@ function RoomConfigTab({ summary, onDone }) {
   const [reason,     setReason]     = useState('')
   const [saving,     setSaving]     = useState(false)
   const [pendingIds, setPendingIds] = useState(new Set())
+  const [addingRoom, setAddingRoom] = useState(false)
+  const [retireRoomTarget, setRetireRoomTarget] = useState(null)
 
   if (!summary) return null
 
@@ -217,6 +222,16 @@ function RoomConfigTab({ summary, onDone }) {
 
   return (
     <div>
+      {isAdmin && (
+        <div className="flex items-center justify-end mb-3">
+          <button
+            onClick={() => setAddingRoom(true)}
+            className="btn primary flex items-center gap-1.5 text-[12px] py-1.5 px-3"
+          >
+            <Plus size={13} /> Add Room
+          </button>
+        </div>
+      )}
       {!isAdmin && (
         <div className="mb-4 flex items-start gap-2 bg-warning-bg border border-warning-border rounded-xl px-4 py-3 text-[12px] text-warning-text">
           <AlertTriangle size={13} className="shrink-0 mt-0.5 text-amber-500" />
@@ -232,7 +247,7 @@ function RoomConfigTab({ summary, onDone }) {
               <th>Status</th>
               <th>Original Beds</th>
               <th>Management</th>
-              <th className="w-[160px]"></th>
+              <th className="w-[220px]"></th>
             </tr>
           </thead>
           <tbody>
@@ -322,19 +337,30 @@ function RoomConfigTab({ summary, onDone }) {
                           : <span className="text-ink-faint text-[12px]">—</span>}
                       </td>
                       <td>
-                        {isPending ? (
-                          <span className="flex items-center gap-1 text-[11px] text-warning-text font-medium">
-                            <Clock size={11} /> Pending
-                          </span>
-                        ) : (
-                          <button
-                            onClick={() => startEdit(room)}
-                            disabled={!!editing}
-                            className="btn-xs gray flex items-center gap-1"
-                          >
-                            <Edit2 size={11} /> Edit
-                          </button>
-                        )}
+                        <div className="flex gap-1">
+                          {isPending ? (
+                            <span className="flex items-center gap-1 text-[11px] text-warning-text font-medium">
+                              <Clock size={11} /> Pending
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => startEdit(room)}
+                              disabled={!!editing}
+                              className="btn-xs gray flex items-center gap-1"
+                            >
+                              <Edit2 size={11} /> Edit
+                            </button>
+                          )}
+                          {isAdmin && !isPending && room.room_status !== 'CONVERTED' && (
+                            <button
+                              onClick={() => setRetireRoomTarget(room)}
+                              disabled={!!editing}
+                              className="btn-xs red flex items-center gap-1"
+                            >
+                              <PowerOff size={11} /> Retire
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </>
                   )}
@@ -344,6 +370,19 @@ function RoomConfigTab({ summary, onDone }) {
           </tbody>
         </table>
       </div>
+      {addingRoom && (
+        <AddRoomModal
+          onClose={() => setAddingRoom(false)}
+          onDone={() => { setAddingRoom(false); onDone() }}
+        />
+      )}
+      {retireRoomTarget && (
+        <RetireRoomModal
+          room={retireRoomTarget}
+          onClose={() => setRetireRoomTarget(null)}
+          onDone={() => { setRetireRoomTarget(null); onDone() }}
+        />
+      )}
       {ToastEl}
     </div>
   )
@@ -351,7 +390,7 @@ function RoomConfigTab({ summary, onDone }) {
 
 // ── Bed Rates Tab ─────────────────────────────────────────────────────────────
 
-function BedRatesTab({ summary, onDone }) {
+function BedRatesTab({ summary, onDone, focusRoomId }) {
   const { isAdmin } = useAuth()
   const { show: showToast, ToastEl } = useToast()
   const [collapsed,   setCollapsed]   = useState({})
@@ -362,6 +401,12 @@ function BedRatesTab({ summary, onDone }) {
   const [pendingBeds, setPendingBeds] = useState({})
   const [confirm,     setConfirm]     = useState(null)
   const [reconfigRoom, setReconfigRoom] = useState(null)
+
+  useEffect(() => {
+    if (focusRoomId == null) return
+    setCollapsed(c => ({ ...c, [focusRoomId]: false }))
+    document.getElementById(`room-${focusRoomId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [focusRoomId])
 
   if (!summary) return null
 
@@ -463,7 +508,7 @@ function BedRatesTab({ summary, onDone }) {
         const activeCnt = allBeds.filter(b => b.status !== 'REMOVED').length
 
         return (
-          <div key={room.id} className="border border-line rounded-xl overflow-hidden">
+          <div key={room.id} id={`room-${room.id}`} className="border border-line rounded-xl overflow-hidden">
             <div className="w-full flex items-center justify-between px-4 py-3 bg-surface-2 hover:bg-surface-3 transition-colors">
               <button
                 type="button"
@@ -851,11 +896,16 @@ const TABS = [
 ]
 
 export default function Property() {
+  const location = useLocation()
   const [tab,        setTab]       = useState('summary')
   const [summary,    setSummary]   = useState(null)
   const [addonTypes, setAddonTypes] = useState([])
   const [loading,    setLoading]   = useState(true)
   const [error,      setError]     = useState('')
+
+  useEffect(() => {
+    if (location.state?.tab) setTab(location.state.tab)
+  }, [location.state])
 
   async function load() {
     setLoading(true); setError('')
@@ -915,7 +965,7 @@ export default function Property() {
 
       {tab === 'summary' && <SummaryTab summary={summary} />}
       {tab === 'config'  && <RoomConfigTab summary={summary} onDone={load} />}
-      {tab === 'rates'   && <BedRatesTab   summary={summary} onDone={load} />}
+      {tab === 'rates'   && <BedRatesTab   summary={summary} onDone={load} focusRoomId={location.state?.focusRoomId} />}
       {tab === 'addons'  && <AddonsTab addonTypes={addonTypes} onDone={load} />}
     </div>
   )

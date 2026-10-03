@@ -71,6 +71,12 @@ const bedRate = row(ID(4), {
   new_value: { default_rate: 3750.25, _room_no: '306', _bed_letter: 'B' },
 })
 
+const tenantRate = row(ID(26), {
+  entity_type: 'TENANT', entity_id: '1042', field_name: 'tenant_rate',
+  old_value: { rate: 3500 },
+  new_value: { rate: 3800, _tenant_name: 'Juan Dela Cruz', _room_no: '306', _bed_letter: 'B' },
+})
+
 const interim = row(ID(5), {
   entity_type: 'INTERIM_READING', entity_id: '55', field_name: 'interim_reading_delete',
   old_value: { room_id: 12, room_no: '306', utility: 'ELECTRIC', reading_date: '2026-09-20', reading_value: 1234.5 },
@@ -196,6 +202,7 @@ request('request-move-out', moveOut, REQ, { topic: 'Process Move-out', present: 
 request('request-transfer', transfer, REQ, { topic: 'Room Transfer', present: ['Room 405 · Bed A', '₱4,000/mo'] })
 request('request-room-config', roomConfig, REQ, { topic: 'Room Configuration' })
 request('request-bed-rate', bedRate, REQ, { topic: 'Bed Rate Change', present: ['₱3,750.25'] })
+request('request-tenant-rate', tenantRate, REQ, { topic: 'Rate Correction', present: ['₱3,500', '₱3,800'] })
 request('request-interim-reading-delete', interim, REQ, { topic: 'Delete Interim Reading', present: ['Delete', 'Exists'] })
 request('request-remove-bed', removeBed, REQ, { topic: 'Remove Bed' })
 request('request-emails-only', profileEmailsOnly, REQ, { topic: 'Email addresses change', expect: { present: ['j•••@example.com'], absent: ['juan.delacruz@example.com', 'juan.d@example.com'] } })

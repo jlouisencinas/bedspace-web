@@ -196,6 +196,8 @@ export function describeRequest(row: ApprovalRow, lookups: Lookups = {}, lim: Li
     for (const k of publicKeys(nv)) add(labelFor(ROOM_CONFIG_LABELS, k), sv(ov[k]), sv(nv[k]))
   } else if (f === 'bed_rate') {
     add('Default rate', has(ov.default_rate) ? peso(ov.default_rate) : '—', has(nv.default_rate) ? peso(nv.default_rate) : '—')
+  } else if (f === 'tenant_rate') {
+    add('Rate', has(ov.rate) ? peso(ov.rate) : '—', has(nv.rate) ? peso(nv.rate) : '—')
   } else if (f === 'remove_bed') {
     add('Bed status', sv(ov.status), sv(nv.status ?? 'REMOVED'))
   } else if (f === 'interim_reading_delete') {

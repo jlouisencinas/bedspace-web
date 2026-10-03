@@ -30,7 +30,13 @@ requests, and owner-facing occupancy/collections/P&L reporting.
 ### Move-in
 - Lease term is typically monthly; a fixed move-in/move-out date is captured at move-in
   (matches current `MoveInModal` behavior — both dates required).
-- Required documents: **2 valid government-issued IDs** (any type accepted) + a **scanned signed
+- **Move In form: only six fields are required** — vacant bed, rate, full name, gender, move-in
+  date, move-out date. Everything else (contacts, emails, address, source, work/employer details,
+  emergency contact, document uploads) is optional so tenants migrated from the old spreadsheet,
+  which only carries name, gender, room/bed, rate and the two dates, can be added without
+  fabricated values. Empty contact/email rows and missing files are simply not saved. The list
+  under "Tenant profile" below is the intended full record, not a move-in gate.
+- Intended documents: **2 valid government-issued IDs** (any type accepted) + a **scanned signed
   copy** of the lease contract (fixed template). Confirmed implemented — uploaded to Google Drive
   (one folder per tenant) and tracked in `tenant_documents`, viewable/manageable anytime from the
   tenant profile's Documents tab, not just at move-in.
@@ -38,7 +44,7 @@ requests, and owner-facing occupancy/collections/P&L reporting.
   — day-exact proration, confirmed correct as currently implemented.
 
 ### Tenant profile — required fields
-Confirmed field list (all required at move-in, all editable afterward from the tenant profile).
+Confirmed field list (originally all required at move-in — now optional at move-in, see above; all editable afterward from the tenant profile).
 Confirmed implemented and matches this spec exactly:
 - Name
 - Contact number(s) — **multiple**, not a single phone field (tracked in `tenant_contacts`, one
@@ -76,15 +82,25 @@ and **Move Out** only (Edit Details moved to its own module — see below).
   - Gender
   - How did they find us? (`source` — Referral / Facebook / TikTok / Instagram / Walk-In)
   - Permanent address
-  - Contact number(s) (and emails — same multi-entry model as move-in). On edit, full name and
-    at least one contact number are required; **email is optional**, so older tenants with no
-    email on file can still have their other details updated.
+  - Contact number(s) (and emails — same multi-entry model as move-in). On edit, only full name is
+    required; **contact number and email are both optional**, since a large share of tenants
+    migrated from the old spreadsheet have no phone number on file at all, and that shouldn't block
+    correcting their other details (e.g. move-out date).
   - Emergency contact (name + number)
   - Work & Employment — occupation, employer, employer address, employer contact number, location
     of work, work schedule
   - Planned move-out date (carried over from the old Edit Details)
 - **Not editable here:** rate, bed/room assignment, move-in date, active status — those change
-  only through their own flows (Transfer, Property bed rates, Move-out).
+  only through their own flows (Transfer, Property bed rates, Move-out, and the admin-only
+  "Correct move-in date" action below).
+- **Correct move-in date (admin-only, direct):** Tenants > View > Overview shows a "Correct" button
+  next to Move In for **active** tenants, visible to admins only. It sets `tenants.move_in_date`
+  directly (no approval request, no email) with a required reason, rejects a date on/after the
+  move-out date, and logs a `Tenant Move-in Date Corrected` activity entry (old → new + reason).
+  **Retroactive-billing caveat:** billing and occupancy recompute live from `move_in_date` (there
+  is no historical lock), so correcting it changes the tenant's first-period rent and occupancy,
+  including for statements of already-closed periods if they are reopened or reprinted. Check
+  recorded payments against the recomputed balance after correcting.
 - **Permissions:** visible to `admin` and `user`, not `viewer` (same as the Tenants page).
   - **Admin:** saves directly.
   - **Non-admin (`user`): every change on this page requires admin approval** — personal details,
@@ -156,6 +172,18 @@ of the four open questions raised when this was planned:
 4. **Approval-workflow routing** — resolved as **admin-only, no approval routing**, per the
    original request that this "can be done in backend" — consistent with `beds` INSERT already
    being admin-only at the RLS layer.
+
+### Room creation / retirement — DONE
+An admin can also create a brand-new room (room number, optional type/floor, and its initial beds)
+or retire an existing room (marks every active bed `REMOVED` and the room `CONVERTED`), via
+"+ Add Room" and per-room "Retire" actions on the Property page (Room Config tab). These are two
+separate general-purpose actions, not a fused "split room" wizard — used in sequence to split one
+room into two (e.g. retiring a 6-bed room and creating two new 1-bed rooms from it). Implemented as
+`create_room()` / `retire_room()`, both admin-only at the RLS layer (same `SECURITY INVOKER`
+pattern as `reconfigure_room()` — no dedicated `SECURITY DEFINER` check, since the only client
+entry point is already `isAdmin`-gated). `retire_room()` hard-blocks retiring a room with any
+`LEASED` bed, mirroring `reconfigure_room()`'s removal guard, and is idempotent on an
+already-`CONVERTED` room. No approval-request fallback, consistent with the reconfigure precedent.
 
 ## 5. Billing & rent
 - **Cutoff windows:** Rent + Water = 1st to end-of-month. Electricity = 10th to 10th.
@@ -431,14 +459,62 @@ of the four open questions raised when this was planned:
   Follow-up idea (not built): a "ticket resolved" email to whoever raised the ticket.
 
 ## 9. Reporting
-- **New requirement: daily occupancy tracking.** The business needs occupancy rate computed on a
-  **daily** basis (not just once per cutoff as today), then averaged across all days in the month
-  (1st through the 30th/31st) to produce the end-of-month occupancy % used in monthly/quarterly
-  reports. Today's snapshot mechanism only fires once, when a cutoff opens — it does not sample
-  daily. *(Implementation task — new feature; needs a design decision on how daily samples are
-  captured: a scheduled job, or reconstructed after the fact from move-in/move-out/transfer dates
-  already in the data.)* The occupancy-rate-YTD bar graph below depends on this existing at
-  monthly granularity, at minimum.
+- **Day-weighted occupancy — DONE.** `monthly_reports.occupancy_pct` (and the sibling
+  `occupied_beds`/`active_tenants`/`occupied_rooms` columns) used to be point-in-time: computed from
+  whichever beds happened to be `LEASED` at the moment the snapshot ran, so a tenant who moved out
+  mid-month contributed 0 for that month instead of the fraction of the month they actually
+  occupied. Reworked to a day-weighted average, computed once by
+  `supabase/functions/_shared/occupancy.ts`'s `computeOccupancySnapshot()` (pure, no Deno/browser
+  globals — imported unmodified by both `src/lib/snapshot.js`/`src/pages/Dashboard.jsx` and, in
+  principle, any future Edge Function):
+  - **Numerator.** For each `tenants` row with a `bed_id` (whole-room tenancy is N one-per-bed rows
+    sharing a name, not a special structure, so no whole-room-specific logic is needed), the
+    effective occupied interval is `[move_in_date, (actual_move_out_date || move_out_date) + 1 day)`
+    — open-ended if neither move-out field is set — clamped to the reporting period. This is the
+    **same rule for a closed historical month as for the still-open current one** (only the period's
+    end date differs), so editing `move_out_date` weeks after a month has closed self-corrects that
+    month's occupancy on the next recompute, not just going forward. Same-day move-in/move-out counts
+    as 1 day (same inclusive-last-day/exclusive-period-end convention as `billing.js`'s `dayNum()`).
+    A transfer mid-period updates the same tenant row's `bed_id` in place (no second row); the
+    aggregate day-weighted numerator only ever sees one continuous `[start, end)` span per tenant so
+    it naturally can't double-count or drop a day across a transfer. For the Dashboard's "Occupancy
+    This Month" drill-down detail rows (§10) only, `computeOccupancySnapshot()` additionally splits
+    that span into two rows at `transfer_date` — pre-transfer days attributed to `previous_bed_id`,
+    post-transfer days to the current `bed_id` — purely for display; the split doesn't change the
+    aggregate. This reconstructs only **one hop back**: a tenant transferred twice within the same
+    period still shows their earliest days attributed to the wrong (2nd) bed, since `previous_bed_id`
+    is a single column, not a full transfer history.
+  - **Denominator.** Current sellable-bed count (excludes `OUT OF ORDER` and `REMOVED`) × days in
+    the period — a **documented approximation**: it uses today's bed inventory as the historical
+    denominator too, not a reconstruction of the bed count as it stood during that period (bed-status
+    history isn't reliably reconstructable from `activity_log` — seed/migrated data predates that
+    discipline). `total_beds`/`sellable`/`total_rooms` stay simple current-inventory integer counts
+    (property structure, not tenancy-driven — day-weighting doesn't apply to them);
+    `occupied_beds`/`active_tenants`/`occupied_rooms` are `numeric(6,2)` fractional averages now
+    (`database/migrations/occupancy_daily_weighting.sql`).
+  - **Audit trail.** Every write to a non-manual `monthly_reports` row's occupancy/collections/P&L
+    fields logs one `activity_log` row (`entity_type: 'MONTHLY_REPORT'`) with an old→new diff in
+    `metadata.changes`, attributed to the acting user — the automatic snapshot on cutoff-open, the
+    manual "Snapshot now" button, and the admin-only "Recompute occupancy %" button on Reports (which
+    retroactively re-derives the 4 occupancy fields for every saved non-manual month from current
+    data) all go through this. Rows created via "+ Manual month" (`manual = true`) are a deliberate
+    admin override and are never touched by any of the above.
+  - **Snapshot timing does not affect any live Dashboard number** — worth stating explicitly since it
+    was a real point of confusion during implementation. The existing point-in-time occupancy tiles
+    and the new live "Occupancy this month (so far)" widget (below) all compute directly from live
+    `beds`/`tenants`, never from stored `monthly_reports` rows. Only the historical "Occupancy Rate
+    YTD" bar chart reads stored snapshots, so it only reflects a month once that month has actually
+    been snapshotted.
+  - **When the snapshot is captured — DONE, embedded (not a scheduled job).** A cutoff's `water_*`
+    and `electric_*` windows both open together, in one `cutoffs` row, via a single "Open Cutoff"
+    action on the Utilities page (there is no separate water-only vs. electric-only cutoff-open
+    flow) — `buildAndSaveSnapshot(prior)` already fires on that action, snapshotting the outgoing
+    cutoff with both utilities' final data. A pg_cron-scheduled Edge Function was considered and
+    explicitly **rejected** by the owner in favor of this embedded, app-triggered mechanism (no
+    scheduler, no extra Edge Function, no `pg_cron`/`pg_net` dependency).
+- **Bonus bug fixed while auditing the above:** `Dashboard.jsx`'s inline sellable/total bed-count
+  calc (like `snapshot.js`'s, before the rework) didn't exclude `REMOVED` beds — every other place in
+  the app (`BedMap.jsx`, `Property.jsx`, `RoomReconfigureModal.jsx`, `supabase.js`) does. Fixed.
 - **Projected vs. actual rent collection, side by side — DONE.** See §5. Visible at two levels: a
   summary widget on the Dashboard (§10) and a full per-tenant drill-down in the Tenant Payment
   Monitoring module (§11). Both derive from the same calculation — no duplicate/divergent logic
@@ -459,9 +535,13 @@ of the four open questions raised when this was planned:
 - **Occupancy rate year-to-date, as a bar graph — DONE.** Added `recharts` as a charting-library
   dependency (none existed before) and a monthly occupancy-rate bar chart on the Dashboard (§10),
   fed by the existing per-cutoff `monthly_reports` snapshots (grouped by month for the current
-  year; months with no snapshot render as a gap, not a fabricated zero bar) — this didn't end up
-  needing daily occupancy tracking to exist first, since monthly granularity was already being
-  captured by the existing snapshot mechanism.
+  year; months with no snapshot render as a gap, not a fabricated zero bar). At the time this was
+  built, monthly granularity from the existing (point-in-time) snapshot mechanism was judged
+  sufficient and day-weighting was thought unnecessary — **that call was reversed**: point-in-time
+  snapshots silently zeroed out mid-month move-outs (see the day-weighted occupancy rework above),
+  so day-weighting was needed after all, just not a literal daily-sampling job — the per-cutoff
+  snapshot now computes a day-weighted average across the whole period in one pass instead of
+  sampling once per day.
 
 ## 10. Dashboard module
 The Dashboard is the property's home screen, showing at-a-glance metrics and a couple of
@@ -487,14 +567,35 @@ in another module.**
   - Lease extensions (this month, later-date edits only)
   - Month-to-date projected move-outs
   - Occupancy rate YTD (bar graph)
+  - Occupancy this month (so far) — live, day-weighted month-to-date average (§9); a distinct KPI
+    card shown alongside, not merged into, the existing point-in-time "Occupied Beds" tile
   - Move-in source breakdown
   - Projected vs. actual rent collection summary (links into §11 for full drill-down)
 - **Icon convention. — DONE.** The Monthly Revenue KPI card uses `lucide-react`'s `PhilippinePeso`
   icon (it does exist in the installed version — an earlier note here assuming otherwise was
   wrong), not a dollar sign.
 - **Existing Dashboard elements to keep, unchanged:** Upcoming Move-outs (rolling 30-day) list,
-  Recent Activity feed, today's occupancy segmented bar (this is a *different, complementary*
-  widget from the YTD bar graph above, not a replacement for it).
+  Recent Activity feed, today's occupancy segmented bar. There are now **three** distinct occupancy
+  displays on the Dashboard, each answering a different question: the point-in-time segmented bar/
+  "Occupied Beds" tile (right now), the live "Occupancy this month (so far)" tile (day-weighted
+  month-to-date average, §9), and the YTD bar graph (day-weighted per-month history from stored
+  snapshots). None replaces another.
+- **KPI tile drill-downs — DONE.** All 9 KPI tiles (Occupied Beds, Vacant, Reserved, Monthly
+  Revenue, Occupancy This Month (So Far), Moving Out This Month, Move-ins This Month, Lease
+  Extensions, MTD Projected Move-outs) are clickable, opening a shared `DrillDownModal`
+  (`src/components/DrillDownModal.jsx`) built from data already in the Dashboard's memory (no new
+  network calls, except "Occupancy This Month" which reuses the existing `computeOccupancySnapshot`
+  call's new `detail` field). Two shapes: **table** (Occupied Beds/Vacant/Reserved/Monthly
+  Revenue/Occupancy This Month — search bar, row cap with "···N more", optional "Open full list in
+  …" footer link) and **list** (the other four — reuses `.upcoming-item` styling, no search/cap).
+  Occupied Beds / Occupancy This Month / the four monthly-metric tiles navigate a clicked row to
+  `/tenants` and auto-open that tenant's profile (works even if the tenant has since moved out);
+  Vacant/Reserved navigate to `/property`'s Bed Rates tab with the room auto-expanded and scrolled
+  into view. Monthly Revenue's rows are aggregate (by room type) and not clickable. **Viewer
+  role:** every drill-down still opens with full, correct data — only row-click navigation and the
+  footer link are hidden (routes `/tenants`/`/property` are admin/user only, same `canAct` gate as
+  the Room Maintenance panel above). "Occupancy This Month" isn't clickable at all when there's no
+  active cutoff (`occupancyMTD` is null), matching its existing "—" display.
 
 ## 11. Tenant Payment Monitoring module — DONE
 A new, dedicated page (`/payment-monitoring`, admin+user only) — property-wide, not per-tenant —
@@ -602,7 +703,9 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       — **done**.
 - [ ] Resolve the "(pending)" commercial-tenant utility billing marker in `Utilities.jsx`/`pnl.js`
       (§6).
-- [ ] Design + build daily occupancy tracking feeding the EOM average (§9).
+- [x] Design + build day-weighted occupancy tracking feeding the EOM average (§9) — **done**, via a
+      day-weighted formula computed per cutoff (not literal daily sampling); see
+      `supabase/functions/_shared/occupancy.ts`.
 - [ ] Build deposit/refund/running-balance tracking per §5 (advance + deposit structure, in-app
       proof-of-payment verification, forfeiture rules — full advance forfeited on early
       termination, deductions for unpaid balance — bank-transfer refund within a few days of

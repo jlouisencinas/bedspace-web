@@ -10,6 +10,7 @@ export const FIELD_LABELS: Record<string, string> = {
   amount:         'Amount',
   room_config:    'Room Configuration',
   bed_rate:       'Bed Rate Change',
+  tenant_rate:    'Rate Correction',
   remove_bed:     'Remove Bed',
   add_addon:      'Add Add-on',
   delete_addon:   'Delete Add-on',

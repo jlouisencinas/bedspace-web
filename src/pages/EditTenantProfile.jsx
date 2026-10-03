@@ -167,7 +167,6 @@ export default function EditTenantProfile() {
     if (!name) { setError('Full name is required.'); return }
     const cd = diffEntries(baseline.contacts, contacts)
     const ed = diffEntries(baseline.emails, emails)
-    if (!cd.clean.length) { setError('Please enter at least one contact number.'); return }
     const oldMoveOut     = orig.move_out_date?.slice(0, 10) || ''
     const newMoveOut     = form.move_out_date || ''
     const moveOutChanged = newMoveOut !== oldMoveOut
@@ -397,14 +396,13 @@ export default function EditTenantProfile() {
                 </div>
 
                 {/* ── Contact Numbers ── */}
-                <div className="form-section">Contact Numbers *</div>
+                <div className="form-section">Contact Numbers</div>
                 <div className="fg full">
                   <MultiEntryInput
                     entries={contacts}
                     onChange={v => { setError(''); setContacts(v) }}
                     placeholder="09xx-xxx-xxxx"
                     type="tel"
-                    required
                     showLabel={false}
                   />
                 </div>

@@ -1,12 +1,17 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Camera, BarChart2, X } from 'lucide-react'
-import { fetchMonthlyReports, fetchCutoffs, saveManualReport, deleteMonthlyReport } from '../lib/supabase'
+import { Camera, BarChart2, X, RefreshCw } from 'lucide-react'
+import {
+  fetchMonthlyReports, fetchCutoffs, fetchBeds, fetchTenants,
+  saveManualReport, deleteMonthlyReport, recomputeOccupancyForReports,
+} from '../lib/supabase'
 import { buildAndSaveSnapshot } from '../lib/snapshot'
+import { computeOccupancySnapshot } from '../../supabase/functions/_shared/occupancy.ts'
 import { useToast } from '../components/Toast'
 import { useAuth } from '../lib/auth'
 
 const peso = n => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+const OCC_FIELDS = ['occupancy_pct', 'occupied_beds', 'active_tenants', 'occupied_rooms']
 
 const ROWS = [
   { label: 'Occupancy %',       get: r => r.occupancy_pct != null ? `${r.occupancy_pct}%` : '—' },
@@ -33,8 +38,9 @@ export default function Reports() {
   const [busy, setBusy] = useState(false)
   const [quarter, setQuarter] = useState(null)
   const [editRow, setEditRow] = useState(undefined)   // undefined = closed, null = new, obj = edit
+  const [recomputing, setRecomputing] = useState(false)
   const { show, ToastEl } = useToast()
-  const { isAdmin } = useAuth()
+  const { isAdmin, user } = useAuth()
 
   async function load() {
     setLoading(true)
@@ -59,9 +65,44 @@ export default function Reports() {
     const active = cutoffs.find(c => c.is_active) || cutoffs[0]
     if (!active) { show('No cutoff to snapshot.', 'error'); return }
     setBusy(true)
-    try { await buildAndSaveSnapshot(active); await load(); show(`Snapshot saved for ${active.name}.`, 'success') }
+    try { await buildAndSaveSnapshot(active, user?.id); await load(); show(`Snapshot saved for ${active.name}.`, 'success') }
     catch (e) { show(e.message, 'error') }
     setBusy(false)
+  }
+
+  // Retroactively re-derives the day-weighted occupancy fields on every saved
+  // (non-manual) month from current bed/tenant data — self-corrects months
+  // where a move-out date was edited after the month closed.
+  async function recomputeOccupancy() {
+    if (!window.confirm('Recompute day-weighted occupancy % for all saved months from current tenant/bed data? Manual months are skipped.')) return
+    setRecomputing(true)
+    try {
+      const [beds, allTenants] = await Promise.all([fetchBeds(), fetchTenants()])
+      const changed = []
+      for (const r of reports) {
+        if (r.manual || r.cutoff_id == null) continue
+        const rc = cutoffs.find(c => c.id === r.cutoff_id)
+        if (!rc) continue
+        const occ = computeOccupancySnapshot(rc.water_start, rc.water_end, beds, allTenants)
+        const next = {
+          occupancy_pct: occ.occupancyPct, occupied_beds: occ.occupiedBedsAvg,
+          active_tenants: occ.activeTenantsAvg, occupied_rooms: occ.occupiedRoomsAvg,
+        }
+        // Null-aware equality (matches recomputeOccupancyForReports's own diff check) —
+        // null and 0 are different values, not interchangeable defaults.
+        const same = OCC_FIELDS.every(k => {
+          const ov = r[k] == null ? null : Number(r[k])
+          const nv = next[k] == null ? null : Number(next[k])
+          return ov === nv
+        })
+        if (!same) changed.push({ id: r.id, cutoff_id: r.cutoff_id, period_name: r.period_name, old: r, new: next })
+      }
+      if (!changed.length) { show('Already up to date — no changes.', 'success'); setRecomputing(false); return }
+      await recomputeOccupancyForReports(changed, user?.id)
+      await load()
+      show(`Recomputed ${changed.length} month(s).`, 'success')
+    } catch (e) { show(e.message, 'error') }
+    setRecomputing(false)
   }
 
   if (loading) return <div className="loading-screen"><div className="spinner" /></div>
@@ -86,6 +127,9 @@ export default function Reports() {
         {isAdmin && (
           <div className="flex gap-2">
             <button className="btn secondary" onClick={() => setEditRow(null)}>+ Manual month</button>
+            <button className="btn secondary" disabled={recomputing} onClick={recomputeOccupancy}>
+              {recomputing ? 'Recomputing…' : <><RefreshCw size={14} /> Recompute occupancy %</>}
+            </button>
             <button className="btn primary" disabled={busy} onClick={snapshotNow}>
               {busy ? 'Saving…' : <><Camera size={14} /> Snapshot now</>}
             </button>
@@ -155,6 +199,7 @@ export default function Reports() {
               <div className="flex-1">
                 <strong className="text-ink">{r.period_name || r.period_date?.slice(0, 7)}</strong>
                 {r.manual && <span className="badge oor ml-1.5">manual</span>}
+                {r.col_total == null && <span className="badge oor ml-1.5">pending collections data</span>}
                 <span className="text-ink-faint ml-2">Total {peso(r.col_total)} · Variance {peso(r.total_variance)}</span>
               </div>
               <button className="btn-xs blue" onClick={() => setEditRow(r)}>Edit</button>

@@ -347,9 +347,9 @@ create table if not exists monthly_reports (
   period_date date,
   total_beds     int,
   sellable       int,
-  occupied_beds  int,
-  active_tenants int,
-  occupied_rooms int,
+  occupied_beds  numeric(6,2),
+  active_tenants numeric(6,2),
+  occupied_rooms numeric(6,2),
   total_rooms    int,
   occupancy_pct  numeric(6,2),
   col_rent       numeric(14,2),
@@ -819,6 +819,111 @@ begin
   update rooms set room_type = p_room_type where id = p_room_id;
 end;
 $$;
+
+-- create_room(): admin-only, creates one room with its initial beds atomically.
+-- SECURITY INVOKER (default) — mirrors reconfigure_room's pattern: relies on
+-- rooms_insert / beds_insert RLS (both already admin-only) rather than a
+-- redundant SECURITY DEFINER + is_admin() check. The only client entry point
+-- (Property.jsx) is already isAdmin-gated; a non-admin calling the RPC
+-- directly gets RLS's standard "new row violates row-level security policy".
+create or replace function create_room(
+  p_room_no   text,
+  p_room_type text,
+  p_floor     int,
+  p_beds      jsonb   -- [{bed_letter, bed_location?, default_rate}, ...]
+) returns int
+language plpgsql
+as $$
+declare
+  v_room_id     int;
+  v_spec        jsonb;
+  v_letter      text;
+  v_rate        numeric;
+  v_seen        text[] := '{}';
+  v_bed_count   int;
+begin
+  if p_room_no is null or trim(p_room_no) = '' then
+    raise exception 'Room number is required.';
+  end if;
+  if exists (select 1 from rooms where room_no = trim(p_room_no)) then
+    raise exception 'Room "%" already exists.', trim(p_room_no);
+  end if;
+
+  v_bed_count := coalesce(jsonb_array_length(p_beds), 0);
+  if v_bed_count = 0 then
+    raise exception 'A new room must have at least one bed.';
+  end if;
+
+  for v_spec in select * from jsonb_array_elements(p_beds) loop
+    v_letter := upper(trim(v_spec->>'bed_letter'));
+    v_rate   := (v_spec->>'default_rate')::numeric;
+    if v_letter is null or v_letter = '' then
+      raise exception 'Bed letter is required for every bed.';
+    end if;
+    if v_rate is null or v_rate < 0 then
+      raise exception 'Invalid rate for Bed %.', v_letter;
+    end if;
+    if v_letter = any(v_seen) then
+      raise exception 'Duplicate bed letter "%" in the new room.', v_letter;
+    end if;
+    v_seen := array_append(v_seen, v_letter);
+  end loop;
+
+  insert into rooms (room_no, room_type, floor, room_status, original_bed_count)
+  values (trim(p_room_no), nullif(trim(p_room_type), ''), p_floor, 'ACTIVE', v_bed_count)
+  returning id into v_room_id;
+
+  insert into beds (room_id, bed_letter, bed_location, default_rate, status)
+  select v_room_id, upper(trim(b->>'bed_letter')), nullif(b->>'bed_location', ''),
+         (b->>'default_rate')::numeric, 'VACANT'
+  from jsonb_array_elements(p_beds) b;
+
+  return v_room_id;
+end;
+$$;
+
+revoke execute on function create_room(text, text, int, jsonb) from public, anon;
+grant execute on function create_room(text, text, int, jsonb) to authenticated;
+
+-- retire_room(): admin-only, marks every non-REMOVED bed in a room REMOVED
+-- and the room CONVERTED (or p_new_status), atomically. SECURITY INVOKER —
+-- same rationale as create_room. Hard-blocks any LEASED bed (mirrors
+-- reconfigure_room's identical removal guard) — a room can never be retired
+-- out from under an active tenant.
+create or replace function retire_room(
+  p_room_id    int,
+  p_new_status text default 'CONVERTED'
+) returns void
+language plpgsql
+as $$
+declare
+  v_bed record;
+begin
+  if not exists (select 1 from rooms where id = p_room_id) then
+    raise exception 'Room % not found.', p_room_id;
+  end if;
+  if p_new_status not in ('ACTIVE','CONVERTED','MAINTENANCE','RESERVED') then
+    raise exception 'Invalid room status "%".', p_new_status;
+  end if;
+
+  for v_bed in
+    select id, status, bed_letter from beds
+    where room_id = p_room_id and status <> 'REMOVED'
+  loop
+    if v_bed.status = 'LEASED' then
+      raise exception 'Cannot retire room — Bed % is currently LEASED. Move out or transfer the tenant first.', v_bed.bed_letter;
+    end if;
+  end loop;
+
+  update beds set status = 'REMOVED'
+    where room_id = p_room_id and status <> 'REMOVED';
+
+  update rooms set room_status = p_new_status where id = p_room_id;
+end;
+$$;
+
+revoke execute on function retire_room(int, text) from public, anon;
+grant execute on function retire_room(int, text) to authenticated;
 
 -- ════════════════════════════════════════════════════════════════
 -- 8. ROW LEVEL SECURITY

@@ -6,6 +6,7 @@ import {
 import { computePnL } from '../lib/pnl'
 import { buildAndSaveSnapshot } from '../lib/snapshot'
 import { useToast } from '../components/Toast'
+import { useAuth } from '../lib/auth'
 import { Save, Trash2, Lock, Droplets, Zap, X } from 'lucide-react'
 
 const peso = n => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -45,6 +46,7 @@ export default function Utilities() {
   const [areas, setAreas] = useState({})           // `${name}|${utility}` → {previous_reading,current_reading}
   const [showOpen, setShowOpen] = useState(false)
   const { show, ToastEl } = useToast()
+  const { user } = useAuth()
 
   const cutoff = cutoffs.find(c => c.id === cutoffId)
   const readOnly = !!cutoff && !cutoff.is_active
@@ -189,7 +191,7 @@ export default function Utilities() {
       {showOpen && <OpenCutoffModal cutoffs={cutoffs} onClose={() => setShowOpen(false)}
         onDone={async id => {
           const prior = cutoffs.find(c => c.is_active)
-          if (prior && prior.id !== id) { try { await buildAndSaveSnapshot(prior) } catch (e) { console.error('snapshot failed', e) } }
+          if (prior && prior.id !== id) { try { await buildAndSaveSnapshot(prior, user?.id) } catch (e) { console.error('snapshot failed', e) } }
           const cs = await fetchCutoffs(); setCutoffs(cs); setCutoffId(id); setShowOpen(false)
           show(prior ? 'Cutoff opened — prior month snapshotted.' : 'Cutoff opened.', 'success')
         }} show={show} />}
@@ -348,7 +350,7 @@ export default function Utilities() {
       {showOpen && <OpenCutoffModal cutoffs={cutoffs} onClose={() => setShowOpen(false)}
         onDone={async id => {
           const prior = cutoffs.find(c => c.is_active)
-          if (prior && prior.id !== id) { try { await buildAndSaveSnapshot(prior) } catch (e) { console.error('snapshot failed', e) } }
+          if (prior && prior.id !== id) { try { await buildAndSaveSnapshot(prior, user?.id) } catch (e) { console.error('snapshot failed', e) } }
           const cs = await fetchCutoffs(); setCutoffs(cs); setCutoffId(id); setShowOpen(false)
           show(prior ? 'Cutoff opened — prior month snapshotted.' : 'Cutoff opened.', 'success')
         }} show={show} />}

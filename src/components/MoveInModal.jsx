@@ -80,13 +80,6 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
     e.preventDefault()
     setFormError('')
 
-    // All 3 document slots are required
-    const missingDocs = docs.filter(d => !d.file).map(d => d.label)
-    if (missingDocs.length) {
-      setFormError(`Please attach: ${missingDocs.join(', ')}`)
-      return
-    }
-
     onSubmit({ ...form, duration: calcDuration(form.move_in_date, form.move_out_date), contacts, emails, docs })
   }
 
@@ -157,41 +150,39 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
                 </select>
               </div>
               <div className="fg">
-                <label>How did they find us? *</label>
-                <select value={form.source} onChange={e => set('source', e.target.value)} required>
-                  <option value="" disabled>Select source…</option>
+                <label>How did they find us?</label>
+                <select value={form.source} onChange={e => set('source', e.target.value)}>
+                  <option value="">Select source…</option>
                   {SOURCE_OPTIONS.map(o => (
                     <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </select>
               </div>
               <div className="fg full">
-                <label>Permanent Address *</label>
-                <input type="text" value={form.permanent_address} onChange={e => set('permanent_address', e.target.value)} required placeholder="Street, Barangay, City, Province" />
+                <label>Permanent Address</label>
+                <input type="text" value={form.permanent_address} onChange={e => set('permanent_address', e.target.value)} placeholder="Street, Barangay, City, Province" />
               </div>
 
               {/* ── Contact Numbers ── */}
-              <div className="form-section">Contact Numbers *</div>
+              <div className="form-section">Contact Numbers</div>
               <div className="fg full">
                 <MultiEntryInput
                   entries={contacts}
                   onChange={v => { setFormError(''); setContacts(v) }}
                   placeholder="09xx-xxx-xxxx"
                   type="tel"
-                  required
                   showLabel={false}
                 />
               </div>
 
               {/* ── Emails ── */}
-              <div className="form-section">Email Addresses *</div>
+              <div className="form-section">Email Addresses</div>
               <div className="fg full">
                 <MultiEntryInput
                   entries={emails}
                   onChange={v => { setFormError(''); setEmails(v) }}
                   placeholder="name@email.com"
                   type="email"
-                  required
                   showLabel={false}
                 />
               </div>
@@ -220,32 +211,32 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
               <div className="form-section">Work & Employment</div>
 
               <div className="fg">
-                <label>Occupation *</label>
-                <input type="text" value={form.occupation} onChange={e => set('occupation', e.target.value)} required placeholder="e.g. Software Engineer" />
+                <label>Occupation</label>
+                <input type="text" value={form.occupation} onChange={e => set('occupation', e.target.value)} placeholder="e.g. Software Engineer" />
               </div>
               <div className="fg">
-                <label>Work Schedule *</label>
-                <input type="text" placeholder="Day / Night" value={form.work_schedule} onChange={e => set('work_schedule', e.target.value)} required />
+                <label>Work Schedule</label>
+                <input type="text" placeholder="Day / Night" value={form.work_schedule} onChange={e => set('work_schedule', e.target.value)} />
               </div>
               <div className="fg">
-                <label>Employer / Company *</label>
-                <input type="text" value={form.employer} onChange={e => set('employer', e.target.value)} required placeholder="e.g. Acme Corp" />
+                <label>Employer / Company</label>
+                <input type="text" value={form.employer} onChange={e => set('employer', e.target.value)} placeholder="e.g. Acme Corp" />
               </div>
               <div className="fg">
-                <label>Employer Contact No *</label>
-                <input type="text" value={form.employer_contact_no} onChange={e => set('employer_contact_no', e.target.value)} required />
+                <label>Employer Contact No</label>
+                <input type="text" value={form.employer_contact_no} onChange={e => set('employer_contact_no', e.target.value)} />
               </div>
               <div className="fg full">
-                <label>Location of Work *</label>
-                <input type="text" value={form.location_of_work} onChange={e => set('location_of_work', e.target.value)} required placeholder="Office address or area" />
+                <label>Location of Work</label>
+                <input type="text" value={form.location_of_work} onChange={e => set('location_of_work', e.target.value)} placeholder="Office address or area" />
               </div>
               <div className="fg full">
-                <label>Employer Address *</label>
-                <input type="text" value={form.employer_address} onChange={e => set('employer_address', e.target.value)} required placeholder="Company address" />
+                <label>Employer Address</label>
+                <input type="text" value={form.employer_address} onChange={e => set('employer_address', e.target.value)} placeholder="Company address" />
               </div>
 
               {/* ── Government IDs & Contract ── */}
-              <div className="form-section">Government IDs & Contract *</div>
+              <div className="form-section">Government IDs & Contract</div>
 
               {isDriveConfigured() && (
                 <div className="fg full">
@@ -277,7 +268,7 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
 
               {docs.map((d, i) => (
                 <div key={i} className="fg">
-                  <label>{d.label} *</label>
+                  <label>{d.label}</label>
                   <div className="flex items-center gap-1.5">
                     <label className={`flex-1 flex items-center gap-2 px-2.5 py-1.5 text-[13px] rounded-lg border cursor-pointer transition-colors min-w-0 ${
                       d.file
@@ -312,12 +303,12 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
               <div className="form-section">Emergency Contact</div>
 
               <div className="fg">
-                <label>Name *</label>
-                <input type="text" value={form.emergency_contact_name} onChange={e => set('emergency_contact_name', e.target.value)} required />
+                <label>Name</label>
+                <input type="text" value={form.emergency_contact_name} onChange={e => set('emergency_contact_name', e.target.value)} />
               </div>
               <div className="fg">
-                <label>Contact No *</label>
-                <input type="text" value={form.emergency_contact_no} onChange={e => set('emergency_contact_no', e.target.value)} required />
+                <label>Contact No</label>
+                <input type="text" value={form.emergency_contact_no} onChange={e => set('emergency_contact_no', e.target.value)} />
               </div>
 
               <div className="fg full">

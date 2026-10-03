@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   fetchBeds, fetchTenants, addTenant, processMoveOut, addTenantDocument,
   supabase,
@@ -10,6 +11,8 @@ import MoveInModal          from '../components/MoveInModal'
 import MoveOutModal         from '../components/MoveOutModal'
 import TransferModal        from '../components/TransferModal'
 import TenantProfileModal   from '../components/TenantProfileModal'
+import CorrectRateModal     from '../components/CorrectRateModal'
+import CorrectMoveInModal   from '../components/CorrectMoveInModal'
 import SearchInput          from '../components/SearchInput'
 import {
   UserPlus, Eye, LogOut, SearchX,
@@ -27,6 +30,8 @@ function fmtDate(d)  {
 
 export default function Tenants() {
   const { isAdmin } = useAuth()
+  const location = useLocation()
+  const navigate = useNavigate()
 
   const [beds,       setBeds]       = useState([])
   const [tenants,    setTenants]    = useState([])
@@ -43,6 +48,8 @@ export default function Tenants() {
   const [moveInBed,  setMoveInBed]  = useState(null)
   const [moveOutT,   setMoveOutT]   = useState(null)
   const [transferT,  setTransferT]  = useState(null)
+  const [correctRateT, setCorrectRateT] = useState(null)
+  const [correctMoveInT, setCorrectMoveInT] = useState(null)
   const [saving,    setSaving]    = useState(false)
 
   const { show, ToastEl } = useToast()
@@ -61,8 +68,8 @@ export default function Tenants() {
     [...new Set(beds.map(b => b.room_no).filter(Boolean))].sort((a, b) => parseInt(a) - parseInt(b)),
   [beds])
 
-  const enriched = useMemo(() =>
-    tenants.filter(t => t.is_active).map(t => ({
+  const allEnriched = useMemo(() =>
+    tenants.map(t => ({
       ...t,
       room_no:      t.beds?.rooms?.room_no   || '',
       room_type:    t.beds?.rooms?.room_type || '',
@@ -71,6 +78,23 @@ export default function Tenants() {
       bed_location: t.beds?.bed_location     || '',
     })),
   [tenants])
+
+  const enriched = useMemo(() => allEnriched.filter(t => t.is_active), [allEnriched])
+
+  // Deep-link from Dashboard drill-down modals — resolves the tenant whether
+  // currently active or since moved out (allEnriched is unfiltered). Consumes
+  // location.state once (replace-navigates it away) so a later, unrelated
+  // reload/refetch doesn't re-trigger this effect and pop the modal back open
+  // after the user has explicitly closed it.
+  useEffect(() => {
+    const id = location.state?.openTenantId
+    if (id == null || loading) return
+    const t = allEnriched.find(t => t.id === id)
+    if (t) {
+      setDetail(t)
+      navigate(location.pathname, { replace: true, state: null })
+    }
+  }, [location.state, allEnriched, loading, location.pathname, navigate])
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase()
@@ -301,6 +325,8 @@ export default function Tenants() {
           onClose={() => setDetail(null)}
           onTransfer={t => { setDetail(null); setTransferT(t) }}
           onMoveOut={t => { setDetail(null); setMoveOutT(t) }}
+          onCorrectRate={t => { setDetail(null); setCorrectRateT(t) }}
+          onCorrectMoveIn={t => { setDetail(null); setCorrectMoveInT(t) }}
         />
       )}
 
@@ -331,6 +357,29 @@ export default function Tenants() {
           onDone={() => {
             setTransferT(null)
             show('Tenant transferred successfully.', 'success')
+            load()
+          }}
+        />
+      )}
+      {correctRateT && (
+        <CorrectRateModal
+          tenant={correctRateT}
+          onClose={() => setCorrectRateT(null)}
+          onDone={() => {
+            setCorrectRateT(null)
+            show('Tenant rate corrected.', 'success')
+            load()
+          }}
+        />
+      )}
+
+      {correctMoveInT && (
+        <CorrectMoveInModal
+          tenant={correctMoveInT}
+          onClose={() => setCorrectMoveInT(null)}
+          onDone={() => {
+            setCorrectMoveInT(null)
+            show('Tenant move-in date corrected.', 'success')
             load()
           }}
         />

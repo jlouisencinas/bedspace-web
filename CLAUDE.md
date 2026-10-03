@@ -24,7 +24,11 @@ npm run preview
   Utilities, Collections, PaymentMonitoring, Maintenance, Approvals, Reports, Property, Activity,
   Users, NotificationSettings, PrintElectricity, PrintRentWater, Login, OccupancySimulator)
 - `src/components/` — shared UI (MoveInModal, MoveOutModal, TransferModal, Statement, MultiEntryInput,
-  SearchInput, TicketDetailModal, Sidebar, Toast, …)
+  SearchInput, TicketDetailModal, Sidebar, Toast, RoomReconfigureModal, AddRoomModal, RetireRoomModal,
+  DrillDownModal, …).
+  Property.jsx has room reconfiguration split across two tabs: "Reconfigure" (rebalance bed count/
+  rates) is in the Bed Rates tab; "+ Add Room" / "Retire" (create/retire a room entirely) are in the
+  Room Config tab.
 - `src/lib/` — data layer: `supabase.js`, `billing.js`, `pnl.js`, `snapshot.js`, `auth.jsx`,
   `approvals.js` (approval requests), `tenantProfile.js`, `notify.js` (client side of email
   notifications), `theme.jsx`, `simCsv.js` (Occupancy Simulator CSV parsing/validation)
@@ -103,8 +107,28 @@ row, emails subscribed recipients via the Apps Script mailer.
   - No two active tenants may occupy the same bed at the same time.
   - Never delete billing/payment records — void/adjust only, for audit trail.
 - Known gaps awaiting fixes — see `docs/requirements.md` §15 for the full backlog (move-out
-  approval flow, dynamic due-date labels, late-fee toggle, daily occupancy tracking,
-  deposit/refund tracking). Don't assume current behavior in these areas is the intended target state.
+  approval flow, dynamic due-date labels, late-fee toggle, deposit/refund tracking). Don't assume
+  current behavior in these areas is the intended target state.
+- **Day-weighted occupancy** (`docs/requirements.md` §9): `supabase/functions/_shared/occupancy.ts`
+  is the single pure formula module, imported unmodified by both `src/lib/snapshot.js` and
+  `src/pages/Dashboard.jsx` (same `_shared/` → `src/` cross-runtime import precedent as
+  `PROFILE_FIELD_LABELS` in `src/lib/supabase.js`). Snapshots are captured on cutoff-open
+  (`src/pages/Utilities.jsx`, one combined water+electric "Open Cutoff" action — there's no
+  separate per-utility cutoff-open flow) and via the manual "Snapshot now" / admin-only "Recompute
+  occupancy %" buttons on Reports — **not** by a scheduled job; a pg_cron/pg_net Edge Function was
+  considered and rejected in favor of this embedded mechanism. Snapshot timing never affects any
+  live Dashboard number (those read live `beds`/`tenants` directly) — only the historical
+  "Occupancy Rate YTD" chart depends on `monthly_reports` having been snapshotted.
+- **Dashboard KPI drill-downs** (`docs/requirements.md` §10): all 9 Dashboard KPI tiles open a
+  shared `src/components/DrillDownModal.jsx` (table shape with search/row-cap/footer-link, or list
+  shape reusing `.upcoming-item`), built from data already in `Dashboard.jsx`'s memory — no new
+  fetches. Row clicks pass `location.state.{openTenantId}` to `/tenants` (auto-opens
+  `TenantProfileModal`, resolved via a `Tenants.jsx` `allEnriched` memo that isn't filtered to
+  `is_active` so it still finds tenants who've since moved out) or `location.state.{tab,
+  focusRoomId}` to `/property` (auto-switches to the Bed Rates tab and scrolls/expands that room).
+  Row-click and footer-link navigation are gated on the same `canAct` (`isAdmin || isUser`) boolean
+  the Room Maintenance panel uses — viewers see full modal data but no clickable rows/links, since
+  `/tenants` and `/property` are admin/user-only routes.
 - This repo also runs a build pipeline (`.claude/agents/`: solution-architect, fullstack-engineer,
   qa-engineer, tester, database-admin) orchestrated by the `dev-pipeline` skill
   (`.claude/skills/dev-pipeline/`) — invoke it for end-to-end feature work.

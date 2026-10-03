@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
+import DrillDownModal from '../components/DrillDownModal'
 import {
   fetchBeds, fetchActivityLog, fetchCutoffs, fetchUtilityBill,
   fetchInterimReadings, fetchTenants, fetchAreaReadings,
@@ -13,11 +14,12 @@ import { buildPaymentMonitoring, summarizeCollections } from '../lib/collections
 import { useAuth } from '../lib/auth'
 import RoomMaintenancePanel  from '../components/RoomMaintenancePanel'
 import OccupancyYtdChart     from '../components/OccupancyYtdChart'
+import { computeOccupancySnapshot } from '../../supabase/functions/_shared/occupancy.ts'
 import {
   BedDouble, Users, PhilippinePeso, Clock,
   CheckCircle2, AlertTriangle, Zap, FileText, Droplets, History,
   TrendingUp, Wallet, LogIn, LogOut as LogOutIcon,
-  CalendarClock, BarChart3, PieChart,
+  CalendarClock, BarChart3, PieChart, Percent, ChevronRight,
 } from 'lucide-react'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -63,7 +65,7 @@ function inRange(dateStr, start, end) {
 
 // ── sub-components ─────────────────────────────────────────────────────────────
 
-function KpiCard({ label, value, sub, icon: Icon, color }) {
+function KpiCard({ label, value, sub, icon: Icon, color, onClick }) {
   const colors = {
     blue:   { ring: 'bg-info-bg',    icon: 'text-info-text',    bar: 'bg-blue-500'    },
     green:  { ring: 'bg-success-bg', icon: 'text-success-text', bar: 'bg-emerald-500' },
@@ -72,7 +74,10 @@ function KpiCard({ label, value, sub, icon: Icon, color }) {
   }
   const c = colors[color] || colors.navy
   return (
-    <div className="card p-4 transition-all hover:-translate-y-0.5 hover:shadow-card-lg">
+    <div
+      className={`card p-4 transition-all hover:-translate-y-0.5 hover:shadow-card-lg relative group/kpi ${onClick ? 'cursor-pointer' : ''}`}
+      onClick={onClick}
+    >
       <div className="flex items-start justify-between mb-3">
         <span className="text-[11px] font-semibold text-ink-faint uppercase tracking-wider">{label}</span>
         <div className={`p-1.5 rounded-lg ${c.ring}`}>
@@ -81,6 +86,12 @@ function KpiCard({ label, value, sub, icon: Icon, color }) {
       </div>
       <div className="text-[26px] font-bold text-ink leading-none">{value}</div>
       {sub && <div className="text-[11px] text-ink-faint mt-1.5">{sub}</div>}
+      {onClick && (
+        <ChevronRight
+          size={12}
+          className="absolute bottom-4 right-4 text-ink-faint opacity-60 group-hover/kpi:opacity-100 transition-opacity"
+        />
+      )}
     </div>
   )
 }
@@ -102,6 +113,7 @@ function PnLMini({ label, v }) {
 export default function Dashboard() {
   const { isAdmin, isUser } = useAuth()
   const canAct = isAdmin || isUser
+  const navigate = useNavigate()
 
   const [beds,    setBeds]    = useState([])
   const [logs,    setLogs]    = useState([])
@@ -114,6 +126,7 @@ export default function Dashboard() {
   const [billingPerTenant, setBillingPerTenant] = useState([])
   const [cutoffPayments,   setCutoffPayments]   = useState([])
   const [loading, setLoading] = useState(true)
+  const [drillDown, setDrillDown] = useState(null)
 
   async function load() {
     setLoading(true)
@@ -162,6 +175,37 @@ export default function Dashboard() {
     return summarizeCollections(rows)
   }, [activeCutoff, tenants, billingPerTenant, cutoffPayments])
 
+  // Live, day-weighted "month so far" occupancy — distinct from the point-in-time
+  // tiles below (which reflect only right-now bed status). Snapshot timing (when
+  // buildAndSaveSnapshot last ran) has no effect on this: it's computed directly
+  // from live beds/tenants, same as the point-in-time tiles.
+  const occupancyMTD = useMemo(() => {
+    if (!activeCutoff) return null
+    // Business runs in Asia/Manila — derive "today" in that zone explicitly (not
+    // the browser/server's local timezone) via Intl, then step forward one day
+    // with pure-UTC arithmetic, matching PrintElectricity.jsx/PrintRentWater.jsx's
+    // addDays() convention. Mixing local Date fields with toISOString() (as an
+    // earlier version of this did) silently lands back on today's date for any
+    // positive UTC offset, permanently excluding today from the average.
+    const todayManilaISO = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date())
+    const tomorrowISO = new Date(Date.parse(todayManilaISO + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10)
+    const periodEnd = activeCutoff.water_end && activeCutoff.water_end < tomorrowISO ? activeCutoff.water_end : tomorrowISO
+    return computeOccupancySnapshot(activeCutoff.water_start, periodEnd, beds, tenants)
+  }, [activeCutoff, beds, tenants])
+
+  // Occupancy This Month drill-down rows — join detail's bedId against beds
+  // (same join style as typeMap below) for room_no/bed_letter display.
+  const occupancyMTDDetail = useMemo(() => {
+    if (!occupancyMTD) return []
+    const bedMap = new Map(beds.map(b => [b.bed_id, b]))
+    return occupancyMTD.detail.map(row => {
+      const bed = bedMap.get(row.bedId)
+      return { ...row, room_no: bed?.room_no || '', bed_letter: bed?.bed_letter || '' }
+    })
+  }, [occupancyMTD, beds])
+
   if (loading) return (
     <div className="loading-screen">
       <div className="spinner" />
@@ -169,11 +213,14 @@ export default function Dashboard() {
     </div>
   )
 
-  const leased   = beds.filter(b => b.status === 'LEASED').length
-  const vacant   = beds.filter(b => b.status === 'VACANT').length
-  const reserved = beds.filter(b => b.status === 'RESERVED').length
+  const occupiedBeds = beds.filter(b => b.status === 'LEASED')
+  const vacantBeds   = beds.filter(b => b.status === 'VACANT')
+  const reservedBeds = beds.filter(b => b.status === 'RESERVED')
+  const leased   = occupiedBeds.length
+  const vacant   = vacantBeds.length
+  const reserved = reservedBeds.length
   const oor      = beds.filter(b => b.status === 'OUT OF ORDER').length
-  const total    = beds.length
+  const total    = beds.filter(b => b.status !== 'REMOVED').length
   const sellable = total - oor
   const revenue  = beds.filter(b => b.status === 'LEASED').reduce((s, b) => s + (parseFloat(b.rate||b.default_rate)||0), 0)
   const occPct   = sellable > 0 ? Math.round((leased / sellable) * 100) : 0
@@ -184,12 +231,12 @@ export default function Dashboard() {
         .map(b => `${b.room_id}|${String(b.tenant_name).trim().toUpperCase()}`)
   )
   const activeTenants = tenantKeys.size
-  const roomIds       = new Set(beds.map(b => b.room_id))
+  const roomIds       = new Set(beds.filter(b => b.status !== 'REMOVED').map(b => b.room_id))
   const occupiedRooms = new Set(beds.filter(b => b.status === 'LEASED').map(b => b.room_id)).size
   const totalRooms    = roomIds.size
 
   const typeMap = {}
-  beds.forEach(b => {
+  beds.filter(b => b.status !== 'REMOVED').forEach(b => {
     const t = b.room_type || 'Other'
     const e = (typeMap[t] ||= { type: t, total: 0, leased: 0, revenue: 0, tnames: new Set() })
     e.total++
@@ -214,21 +261,25 @@ export default function Dashboard() {
   const { start: moStart, end: moEnd } = monthBounds()
   const today = new Date(); today.setHours(0, 0, 0, 0)
 
-  const movingOutThisMonth = beds.filter(b =>
+  const movingOutThisMonthList = beds.filter(b =>
     b.status === 'LEASED' && inRange(b.move_out_date, moStart, moEnd)
-  ).length
+  )
+  const movingOutThisMonth = movingOutThisMonthList.length
 
-  const moveInsThisMonth = tenants.filter(t => inRange(t.move_in_date, moStart, moEnd)).length
+  const moveInsThisMonthList = tenants.filter(t => inRange(t.move_in_date, moStart, moEnd))
+  const moveInsThisMonth = moveInsThisMonthList.length
 
-  const mtdProjectedMoveOuts = beds.filter(b =>
+  const mtdProjectedMoveOutsList = beds.filter(b =>
     b.status === 'LEASED' && b.move_out_date && new Date(b.move_out_date) >= today && new Date(b.move_out_date) <= moEnd
-  ).length
+  )
+  const mtdProjectedMoveOuts = mtdProjectedMoveOutsList.length
 
   // Only later-pushing edits count as "extensions" (§9 default assumption).
-  const leaseExtensions = moveOutChanges.filter(e => {
+  const leaseExtensionsList = moveOutChanges.filter(e => {
     const meta = e.metadata || {}
     return meta.new_move_out_date && meta.old_move_out_date && meta.new_move_out_date > meta.old_move_out_date
-  }).length
+  })
+  const leaseExtensions = leaseExtensionsList.length
 
   // Move-in source breakdown (all tenants, not just currently active — source
   // is assigned at move-in and doesn't change).
@@ -246,6 +297,211 @@ export default function Dashboard() {
     .sort((a, b) => a.period_date.localeCompare(b.period_date))
     .map(r => ({ month: MO[new Date(r.period_date).getMonth()], occupancy_pct: Number(r.occupancy_pct) }))
 
+  // ── KPI tile drill-down handlers ──────────────────────────────────────────
+  const roomBed = b => `${b.room_no} · ${b.bed_letter}`
+
+  function openOccupiedBeds() {
+    setDrillDown({
+      shape: 'table',
+      icon: BedDouble,
+      title: 'Occupied Beds',
+      subtitle: `${leased} of ${sellable} sellable`,
+      rows: occupiedBeds,
+      rowKey: b => b.bed_id,
+      searchFields: ['tenant_name', 'room_no', 'bed_letter'],
+      emptyMessage: 'No occupied beds.',
+      columns: [
+        { key: 'room_bed', label: 'Room · Bed', render: roomBed },
+        { key: 'tenant_name', label: 'Tenant', render: b => <span className="max-w-[160px] truncate inline-block align-bottom">{b.tenant_name}</span> },
+        { key: 'move_in_date', label: 'Move-in', render: b => fmtDate(b.move_in_date) },
+        { key: 'rate', label: 'Rate', align: 'right', render: b => `₱${fmt(Number(b.rate || b.default_rate) || 0)}` },
+      ],
+      onRowClick: b => navigate('/tenants', { state: { openTenantId: b.tenant_id } }),
+      footerLink: { label: 'Open full list in Tenants →', to: '/tenants' },
+    })
+  }
+
+  function openVacant() {
+    setDrillDown({
+      shape: 'table',
+      icon: CheckCircle2,
+      title: 'Vacant',
+      subtitle: `${vacant} available now`,
+      rows: vacantBeds,
+      rowKey: b => b.bed_id,
+      searchFields: ['room_no', 'bed_letter'],
+      emptyMessage: 'No vacant beds.',
+      columns: [
+        { key: 'room_bed', label: 'Room · Bed', render: roomBed },
+        { key: 'rate', label: 'Rate', align: 'right', render: b => `₱${fmt(Number(b.default_rate) || 0)}` },
+      ],
+      onRowClick: b => navigate('/property', { state: { tab: 'rates', focusRoomId: b.room_id } }),
+      footerLink: { label: 'Open full list in Property →', to: '/property' },
+    })
+  }
+
+  function openReserved() {
+    setDrillDown({
+      shape: 'table',
+      icon: Clock,
+      title: 'Reserved',
+      subtitle: `${reserved} pending move-in`,
+      rows: reservedBeds,
+      rowKey: b => b.bed_id,
+      searchFields: ['room_no', 'bed_letter', 'reserved_name'],
+      emptyMessage: 'No reserved beds.',
+      columns: [
+        { key: 'room_bed', label: 'Room · Bed', render: roomBed },
+        { key: 'reserved_name', label: 'Reserved for', render: b => <span className="max-w-[160px] truncate inline-block align-bottom">{b.reserved_name || '—'}</span> },
+        { key: 'rate', label: 'Rate', align: 'right', render: b => `₱${fmt(Number(b.default_rate) || 0)}` },
+      ],
+      onRowClick: b => navigate('/property', { state: { tab: 'rates', focusRoomId: b.room_id } }),
+      footerLink: { label: 'Open full list in Property →', to: '/property' },
+    })
+  }
+
+  function openMonthlyRevenue() {
+    setDrillDown({
+      shape: 'table',
+      icon: PhilippinePeso,
+      title: 'Monthly Revenue',
+      subtitle: `₱${fmt(revenue)} · ${occPct}% occupancy`,
+      rows: byType,
+      rowKey: t => t.type,
+      emptyMessage: 'No room types configured.',
+      columns: [
+        { key: 'type', label: 'Room Type' },
+        { key: 'occ', label: 'Occupied/Total', render: t => `${t.leased}/${t.total}` },
+        { key: 'revenue', label: 'Revenue', align: 'right', render: t => `₱${fmt(t.revenue)}` },
+      ],
+      footerLink: { label: 'Open full list in Property →', to: '/property' },
+    })
+  }
+
+  function openOccupancyMTD() {
+    if (!occupancyMTD) return
+    setDrillDown({
+      shape: 'table',
+      icon: Percent,
+      title: 'Occupancy This Month (So Far)',
+      subtitle: `${occupancyMTD.occupancyPct}% day-weighted average`,
+      rows: occupancyMTDDetail,
+      rowKey: row => `${row.tenantId}-${row.bedId}-${row.startISO}`,
+      emptyMessage: 'No occupancy intervals this period.',
+      columns: [
+        { key: 'tenantName', label: 'Tenant', render: row => <span className="max-w-[160px] truncate inline-block align-bottom">{row.tenantName}</span> },
+        { key: 'room_bed', label: 'Room · Bed', render: row => `${row.room_no} · ${row.bed_letter}` },
+        { key: 'days', label: 'Days counted', align: 'right' },
+        { key: 'period', label: 'Period', render: row => `${fmtDate(row.startISO)} – ${fmtDate(row.endISO)}` },
+      ],
+      onRowClick: row => navigate('/tenants', { state: { openTenantId: row.tenantId } }),
+    })
+  }
+
+  function openMovingOutThisMonth() {
+    setDrillDown({
+      shape: 'list',
+      icon: LogOutIcon,
+      title: 'Moving Out This Month',
+      subtitle: `${movingOutThisMonth} active tenants`,
+      rows: movingOutThisMonthList,
+      rowKey: b => b.bed_id,
+      emptyMessage: 'No tenants moving out this month.',
+      renderItem: b => {
+        const d = daysUntil(b.move_out_date)
+        return (
+          <>
+            <div className="upcoming-info">
+              <div className="upcoming-name truncate">{b.tenant_name}</div>
+              <div className="upcoming-room">Room {b.room_no} · Bed {b.bed_letter}</div>
+            </div>
+            <div className="upcoming-date">
+              {d === 0 ? <span className="text-danger-text">TODAY</span> : `in ${d}d`}
+              <div className="text-ink-faint font-normal mt-0.5">{fmtDate(b.move_out_date)}</div>
+            </div>
+          </>
+        )
+      },
+      onRowClick: b => navigate('/tenants', { state: { openTenantId: b.tenant_id } }),
+    })
+  }
+
+  function openMoveInsThisMonth() {
+    setDrillDown({
+      shape: 'list',
+      icon: LogIn,
+      title: 'Move-ins This Month',
+      subtitle: `${moveInsThisMonth} all move-ins`,
+      rows: moveInsThisMonthList,
+      rowKey: t => t.id,
+      emptyMessage: 'No move-ins this month.',
+      renderItem: t => (
+        <>
+          <div className="upcoming-info">
+            <div className="upcoming-name truncate">{t.name}</div>
+            <div className="upcoming-room">
+              Room {t.beds?.rooms?.room_no} · Bed {t.beds?.bed_letter} · {SOURCE_LABELS[t.source] || '—'}
+            </div>
+          </div>
+          <div className="upcoming-date">{fmtDate(t.move_in_date)}</div>
+        </>
+      ),
+      onRowClick: t => navigate('/tenants', { state: { openTenantId: t.id } }),
+    })
+  }
+
+  function openLeaseExtensions() {
+    setDrillDown({
+      shape: 'list',
+      icon: CalendarClock,
+      title: 'Lease Extensions',
+      subtitle: `${leaseExtensions} this month`,
+      rows: leaseExtensionsList,
+      rowKey: e => e.id,
+      emptyMessage: 'No lease extensions this month.',
+      renderItem: e => (
+        <>
+          <div className="upcoming-info">
+            <div className="upcoming-name truncate">{e.tenant_name}</div>
+            <div className="upcoming-room">Room {e.room_no} · Bed {e.bed_letter}</div>
+          </div>
+          <div className="upcoming-date">
+            {fmtDate(e.metadata?.old_move_out_date)} → {fmtDate(e.metadata?.new_move_out_date)}
+          </div>
+        </>
+      ),
+      onRowClick: e => navigate('/tenants', { state: { openTenantId: e.tenant_id } }),
+    })
+  }
+
+  function openMtdProjectedMoveOuts() {
+    setDrillDown({
+      shape: 'list',
+      icon: AlertTriangle,
+      title: 'MTD Projected Move-outs',
+      subtitle: `${mtdProjectedMoveOuts} remainder of month`,
+      rows: mtdProjectedMoveOutsList,
+      rowKey: b => b.bed_id,
+      emptyMessage: 'No projected move-outs for the remainder of this month.',
+      renderItem: b => {
+        const d = daysUntil(b.move_out_date)
+        return (
+          <>
+            <div className="upcoming-info">
+              <div className="upcoming-name truncate">{b.tenant_name}</div>
+              <div className="upcoming-room">Room {b.room_no} · Bed {b.bed_letter}</div>
+            </div>
+            <div className="upcoming-date">
+              {d === 0 ? <span className="text-danger-text">TODAY</span> : `in ${d}d`}
+              <div className="text-ink-faint font-normal mt-0.5">{fmtDate(b.move_out_date)}</div>
+            </div>
+          </>
+        )
+      },
+      onRowClick: b => navigate('/tenants', { state: { openTenantId: b.tenant_id } }),
+    })
+  }
+
   return (
     <div className="page">
       {/* ── Header ── */}
@@ -255,19 +511,30 @@ export default function Dashboard() {
       </div>
 
       {/* ── KPI Cards ── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
-        <KpiCard label="Occupied Beds"   value={leased}              sub={`of ${sellable} sellable`}      icon={BedDouble}   color="blue"  />
-        <KpiCard label="Vacant"          value={vacant}              sub="available now"                  icon={CheckCircle2} color="green" />
-        <KpiCard label="Reserved"        value={reserved}            sub="pending move-in"                icon={Clock}       color="amber" />
-        <KpiCard label="Monthly Revenue" value={`₱${fmt(revenue)}`} sub={`${occPct}% occupancy`}         icon={PhilippinePeso}  color="navy"  />
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-5">
+        <KpiCard label="Occupied Beds"   value={leased}              sub={`of ${sellable} sellable`}      icon={BedDouble}   color="blue"  onClick={openOccupiedBeds} />
+        <KpiCard label="Vacant"          value={vacant}              sub="available now"                  icon={CheckCircle2} color="green" onClick={openVacant} />
+        <KpiCard label="Reserved"        value={reserved}            sub="pending move-in"                icon={Clock}       color="amber" onClick={openReserved} />
+        <KpiCard label="Monthly Revenue" value={`₱${fmt(revenue)}`} sub={`${occPct}% occupancy`}         icon={PhilippinePeso}  color="navy"  onClick={openMonthlyRevenue} />
+        {/* Live, day-weighted month-to-date average — distinct from the
+            point-in-time "Occupied Beds" tile above, not a replacement for it.
+            Snapshot timing has no effect on this: it reads live beds/tenants. */}
+        <KpiCard
+          label="Occupancy This Month (So Far)"
+          value={occupancyMTD ? `${occupancyMTD.occupancyPct}%` : '—'}
+          sub={activeCutoff ? 'day-weighted month-to-date average' : 'no active cutoff'}
+          icon={Percent}
+          color="blue"
+          onClick={occupancyMTD ? openOccupancyMTD : undefined}
+        />
       </div>
 
       {/* ── Monthly metrics (§9/§10) ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
-        <KpiCard label="Moving Out This Month"    value={movingOutThisMonth}    sub="active tenants"          icon={LogOutIcon}    color="amber" />
-        <KpiCard label="Move-ins This Month"      value={moveInsThisMonth}      sub="all move-ins"            icon={LogIn}         color="blue"  />
-        <KpiCard label="Lease Extensions"         value={leaseExtensions}       sub="this month"              icon={CalendarClock} color="green" />
-        <KpiCard label="MTD Projected Move-outs"  value={mtdProjectedMoveOuts}  sub="remainder of month"      icon={AlertTriangle} color="navy"  />
+        <KpiCard label="Moving Out This Month"    value={movingOutThisMonth}    sub="active tenants"          icon={LogOutIcon}    color="amber" onClick={openMovingOutThisMonth} />
+        <KpiCard label="Move-ins This Month"      value={moveInsThisMonth}      sub="all move-ins"            icon={LogIn}         color="blue"  onClick={openMoveInsThisMonth} />
+        <KpiCard label="Lease Extensions"         value={leaseExtensions}       sub="this month"              icon={CalendarClock} color="green" onClick={openLeaseExtensions} />
+        <KpiCard label="MTD Projected Move-outs"  value={mtdProjectedMoveOuts}  sub="remainder of month"      icon={AlertTriangle} color="navy"  onClick={openMtdProjectedMoveOuts} />
       </div>
 
       {/* ── Occupancy Bar ── */}
@@ -506,6 +773,13 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      <DrillDownModal
+        open={!!drillDown}
+        onClose={() => setDrillDown(null)}
+        canNavigate={canAct}
+        {...drillDown}
+      />
     </div>
   )
 }

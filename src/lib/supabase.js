@@ -729,6 +729,75 @@ export async function processTransfer(tenant, transferData, actorId) {
   return xfer
 }
 
+export async function updateTenantRate(tenantId, newRate, reason, meta, actorId) {
+  const { data: current, error: cErr } = await supabase
+    .from('tenants')
+    .select('rate, is_active')
+    .eq('id', tenantId)
+    .single()
+  if (cErr) throw cErr
+  if (!current.is_active) throw new Error('Tenant is not active.')
+
+  const { error } = await supabase.from('tenants').update({ rate: newRate }).eq('id', tenantId)
+  if (error) throw error
+
+  await logActivity({
+    activity_type: 'Tenant Rate Corrected',
+    entity_type:   'TENANT', entity_id: tenantId,
+    tenant_id:     tenantId,
+    tenant_name:   meta?.tenant_name,
+    room_no:       meta?.room_no,
+    bed_letter:    meta?.bed_letter,
+    actor_id:      actorId,
+    notes:         `${meta?.tenant_name || 'Tenant'} rate corrected: ₱${Number(current.rate).toLocaleString('en-PH')} → ₱${Number(newRate).toLocaleString('en-PH')}. Reason: ${reason}`,
+    metadata: {
+      changes: { rate: { old: current.rate, new: newRate } },
+      reason,
+    },
+  })
+}
+
+// Admin-only direct correction (no approval path). Callers gate on isAdmin;
+// RLS on tenants is the real enforcement.
+export async function updateTenantMoveInDate(tenantId, newDate, reason, meta, actorId) {
+  const { data: current, error: cErr } = await supabase
+    .from('tenants')
+    .select('move_in_date, move_out_date, is_active')
+    .eq('id', tenantId)
+    .single()
+  if (cErr) throw cErr
+  if (!current.is_active) throw new Error('Tenant is not active.')
+
+  const valid = typeof newDate === 'string'
+    && /^\d{4}-\d{2}-\d{2}$/.test(newDate)
+    && !Number.isNaN(Date.parse(newDate))
+    && new Date(newDate).toISOString().slice(0, 10) === newDate
+  if (!valid) throw new Error('Please enter a valid move-in date.')
+
+  const oldDate = current.move_in_date ? current.move_in_date.slice(0, 10) : null
+  const moveOut = current.move_out_date ? current.move_out_date.slice(0, 10) : null
+  if (moveOut && newDate >= moveOut) throw new Error('Move-in date must be before the move-out date.')
+  if (newDate === oldDate) throw new Error('New move-in date must be different from the current one.')
+
+  const { error } = await supabase.from('tenants').update({ move_in_date: newDate }).eq('id', tenantId)
+  if (error) throw error
+
+  await logActivity({
+    activity_type: 'Tenant Move-in Date Corrected',
+    entity_type:   'TENANT', entity_id: tenantId,
+    tenant_id:     tenantId,
+    tenant_name:   meta?.tenant_name,
+    room_no:       meta?.room_no,
+    bed_letter:    meta?.bed_letter,
+    actor_id:      actorId,
+    notes:         `${meta?.tenant_name || 'Tenant'} move-in date corrected: ${oldDate || '—'} → ${newDate}. Reason: ${reason}`,
+    metadata: {
+      changes: { move_in_date: { old: oldDate, new: newDate } },
+      reason,
+    },
+  })
+}
+
 // ── Summary stats ─────────────────────────────────────────────────────────────
 export async function fetchSummary() {
   const { data, error } = await supabase
@@ -908,6 +977,34 @@ export async function upsertAreaReadings(rows) {
 
 // ── Monthly report snapshots ──────────────────────────────────────────────────
 
+const MONTHLY_REPORT_FIELD_LABELS = {
+  occupancy_pct: 'Occupancy %', occupied_beds: 'Occupied beds', active_tenants: 'Active tenants',
+  occupied_rooms: 'Occupied rooms', col_rent: 'Rent', col_water: 'Water', col_electric: 'Electricity',
+  col_addons: 'Add-ons', col_total: 'Total collections', water_cost: 'Water cost',
+  water_collections: 'Water collections', water_variance: 'Water variance', electric_cost: 'Electric cost',
+  electric_collections: 'Electric collections', electric_variance: 'Electric variance', total_variance: 'Total variance',
+}
+const MONTHLY_REPORT_LOG_FIELDS = Object.keys(MONTHLY_REPORT_FIELD_LABELS)
+const OCCUPANCY_LOG_FIELDS = ['occupancy_pct', 'occupied_beds', 'active_tenants', 'occupied_rooms']
+
+function diffMonthlyReport(oldRow, newRow, fields) {
+  const changes = {}
+  fields.forEach(k => {
+    const ov = oldRow?.[k] ?? null
+    const nv = newRow?.[k] ?? null
+    const oN = ov == null ? null : Number(ov)
+    const nN = nv == null ? null : Number(nv)
+    if (oN !== nN) changes[k] = { old: oN, new: nN }
+  })
+  return changes
+}
+
+function monthlyReportDiffNotes(periodName, changes) {
+  const parts = Object.entries(changes).map(([k, c]) =>
+    `${MONTHLY_REPORT_FIELD_LABELS[k] || k}: ${c.old ?? '—'} → ${c.new ?? '—'}`)
+  return `${periodName || 'Monthly report'}: ${parts.join('; ')}`
+}
+
 export async function fetchMonthlyReports() {
   const { data, error } = await supabase
     .from('monthly_reports')
@@ -917,11 +1014,26 @@ export async function fetchMonthlyReports() {
   return data
 }
 
-export async function saveMonthlyReport(row) {
-  const { error } = await supabase
-    .from('monthly_reports')
-    .upsert(row, { onConflict: 'cutoff_id' })
+// actorId: pass the acting user's id (cutoff-open in Utilities.jsx, or the
+// manual "Snapshot now" button in Reports.jsx) to record an activity_log diff
+// of whichever fields this save actually changed.
+export async function saveMonthlyReport(row, actorId = null) {
+  const { data: existing } = await supabase
+    .from('monthly_reports').select('*').eq('cutoff_id', row.cutoff_id).maybeSingle()
+  const { data: saved, error } = await supabase
+    .from('monthly_reports').upsert(row, { onConflict: 'cutoff_id' }).select('id').single()
   if (error) throw error
+  if (!actorId) return
+  const changes = diffMonthlyReport(existing, row, MONTHLY_REPORT_LOG_FIELDS)
+  if (!Object.keys(changes).length) return
+  await logActivity({
+    activity_type: existing ? 'Monthly Report Snapshotted' : 'Monthly Report Created',
+    entity_type:   'MONTHLY_REPORT',
+    entity_id:     saved.id,
+    actor_id:      actorId,
+    notes:         monthlyReportDiffNotes(row.period_name, changes),
+    metadata:      { cutoff_id: row.cutoff_id, period_name: row.period_name, changes },
+  })
 }
 
 // Manual create/edit of a snapshot (backfill or override). Update by id, else insert.
@@ -939,6 +1051,32 @@ export async function saveManualReport(row) {
 export async function deleteMonthlyReport(id) {
   const { error } = await supabase.from('monthly_reports').delete().eq('id', id)
   if (error) throw error
+}
+
+// Admin-triggered retroactive fix for day-weighted occupancy figures on past,
+// non-manual months (Reports.jsx "Recompute occupancy %"). Callers must have
+// already excluded manual=true rows and rows with no cutoff_id.
+// rows: [{ id, cutoff_id, period_name, old: {...4 fields}, new: {...4 fields} }]
+export async function recomputeOccupancyForReports(rows, actorId) {
+  for (const r of rows) {
+    const changes = diffMonthlyReport(r.old, r.new, OCCUPANCY_LOG_FIELDS)
+    if (!Object.keys(changes).length) continue
+    const { error } = await supabase.from('monthly_reports').update({
+      occupancy_pct:  r.new.occupancy_pct,
+      occupied_beds:  r.new.occupied_beds,
+      active_tenants: r.new.active_tenants,
+      occupied_rooms: r.new.occupied_rooms,
+    }).eq('id', r.id)
+    if (error) throw error
+    await logActivity({
+      activity_type: 'Monthly Report Recomputed',
+      entity_type:   'MONTHLY_REPORT',
+      entity_id:     r.id,
+      actor_id:      actorId,
+      notes:         monthlyReportDiffNotes(r.period_name, changes),
+      metadata:      { cutoff_id: r.cutoff_id, period_name: r.period_name, changes },
+    })
+  }
 }
 
 // ── Add-ons / extra charges ───────────────────────────────────────────────────
@@ -1257,6 +1395,70 @@ export async function reconfigureRoom(roomId, { roomType, addBeds, removeBedIds,
       beds_added:   addBeds?.length || 0,
       beds_removed: removeBedIds?.length || 0,
       rate_updates: rateUpdates?.length || 0,
+    },
+  })
+}
+
+// meta: { summary } — same convention as reconfigureRoom(): the confirm-step
+// summary the admin saw is reused verbatim for room_logs/activity_log.
+export async function createRoom(roomNo, roomType, floor, beds, meta, actorId) {
+  const { data: roomId, error } = await supabase.rpc('create_room', {
+    p_room_no:   roomNo,
+    p_room_type: roomType || null,
+    p_floor:     floor ?? null,
+    p_beds:      beds,
+  })
+  if (error) throw error
+
+  const summary = meta?.summary || `Room ${roomNo} created.`
+
+  await supabase.from('room_logs').insert({
+    room_id:     roomId,
+    event_type:  'CONFIG_CHANGE',
+    description: summary,
+  })
+
+  await logActivity({
+    activity_type: 'Room Created',
+    entity_type: 'ROOM', entity_id: roomId,
+    room_no: roomNo,
+    actor_id: actorId,
+    notes: summary,
+    metadata: {
+      room_no:   roomNo,
+      room_type: roomType || null,
+      floor:     floor ?? null,
+      bed_count: beds?.length || 0,
+    },
+  })
+
+  return roomId
+}
+
+export async function retireRoom(roomId, newStatus, meta, actorId) {
+  const { error } = await supabase.rpc('retire_room', {
+    p_room_id:    roomId,
+    p_new_status: newStatus || 'CONVERTED',
+  })
+  if (error) throw error
+
+  const summary = meta?.summary || `Room ${meta?.room_no || roomId} retired.`
+
+  await supabase.from('room_logs').insert({
+    room_id:     roomId,
+    event_type:  'STATUS_CHANGE',
+    description: summary,
+  })
+
+  await logActivity({
+    activity_type: 'Room Retired',
+    entity_type: 'ROOM', entity_id: roomId,
+    room_no: meta?.room_no,
+    actor_id: actorId,
+    notes: summary,
+    metadata: {
+      room_no:    meta?.room_no,
+      new_status: newStatus || 'CONVERTED',
     },
   })
 }

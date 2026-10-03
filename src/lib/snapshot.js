@@ -11,20 +11,14 @@ import {
 } from './supabase'
 import { computeBilling } from './billing'
 import { computePnL } from './pnl'
+import { computeOccupancySnapshot } from '../../supabase/functions/_shared/occupancy.ts'
 
 const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n }
 
 export function computeSnapshot(cutoff, beds, bill, interims, tenants, areas, splits, addons) {
-  // Property summary (whole-room aware)
-  const leased   = beds.filter(b => b.status === 'LEASED').length
-  const oor      = beds.filter(b => b.status === 'OUT OF ORDER').length
-  const total    = beds.length
-  const sellable = total - oor
-  const tkeys = new Set(beds.filter(b => b.status === 'LEASED' && b.tenant_name)
-    .map(b => `${b.room_id}|${String(b.tenant_name).trim().toUpperCase()}`))
-  const totalRooms    = new Set(beds.map(b => b.room_id)).size
-  const occupiedRooms = new Set(beds.filter(b => b.status === 'LEASED').map(b => b.room_id)).size
-  const occPct = sellable > 0 ? Math.round((leased / sellable) * 1000) / 10 : 0
+  // Property summary (whole-room aware, day-weighted across the cutoff's window)
+  const occ = computeOccupancySnapshot(cutoff.water_start, cutoff.water_end, beds, tenants)
+  const totalRooms = new Set(beds.map(b => b.room_id)).size
 
   // Collections
   const { perTenant } = computeBilling(cutoff, bill, interims, tenants, splits, addons, areas)
@@ -38,8 +32,9 @@ export function computeSnapshot(cutoff, beds, bill, interims, tenants, areas, sp
 
   return {
     cutoff_id: cutoff.id, period_name: cutoff.name, period_date: cutoff.water_start,
-    total_beds: total, sellable, occupied_beds: leased, active_tenants: tkeys.size,
-    occupied_rooms: occupiedRooms, total_rooms: totalRooms, occupancy_pct: occPct,
+    total_beds: occ.totalBeds, sellable: occ.sellableBeds,
+    occupied_beds: occ.occupiedBedsAvg, active_tenants: occ.activeTenantsAvg,
+    occupied_rooms: occ.occupiedRoomsAvg, total_rooms: totalRooms, occupancy_pct: occ.occupancyPct,
     col_rent: col.rent, col_water: col.water, col_electric: col.elec,
     col_addons: col.addons, col_total: col.total,
     water_cost: pnl.WATER.cost, water_collections: pnl.WATER.roomCollections, water_variance: pnl.WATER.variance,
@@ -48,13 +43,16 @@ export function computeSnapshot(cutoff, beds, bill, interims, tenants, areas, sp
   }
 }
 
-export async function buildAndSaveSnapshot(cutoff) {
+// actorId: the user opening the cutoff (Utilities.jsx) or clicking "Snapshot
+// now" (Reports.jsx) — passed through so saveMonthlyReport can attribute the
+// activity_log diff to them.
+export async function buildAndSaveSnapshot(cutoff, actorId = null) {
   if (!cutoff) return null
   const [beds, bill, interims, tenants, areas, splits, addons] = await Promise.all([
     fetchBeds(), fetchUtilityBill(cutoff.id), fetchInterimReadings(cutoff.id),
     fetchTenants(), fetchAreaReadings(cutoff.id), fetchSplits(cutoff.id), fetchAddons(cutoff.id),
   ])
   const row = computeSnapshot(cutoff, beds, bill, interims, tenants, areas, splits, addons)
-  await saveMonthlyReport(row)
+  await saveMonthlyReport(row, actorId)
   return row
 }

@@ -211,6 +211,7 @@
            animate-slide-up;
   }
   .modal-sm { @apply max-w-[440px]; }
+  .modal-lg { @apply max-w-[720px]; }
   .modal-head {
     @apply px-6 py-4 flex items-center justify-between sticky top-0 z-10;
     border-bottom: 1px solid var(--border-lite);

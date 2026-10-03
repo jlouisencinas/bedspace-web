@@ -106,9 +106,6 @@ async function reconcile(tenantId, requested, fetchCurrent, api, done) {
 export async function applyTenantProfileChange(tenant, { fields = {}, moveOutDate, contacts = null, emails = null }) {
   const bad = Object.keys(fields).find(k => !PROFILE_FIELDS.includes(k))
   if (bad) return { wrote: false, saveError: `Field "${bad}" can't be changed from the tenant profile.`, logError: null }
-  if (contacts && !contacts.some(r => (r.value || '').trim())) {
-    return { wrote: false, saveError: 'At least one contact number is required.', logError: null }
-  }
 
   const fieldChanges = {}
   for (const [k, v] of Object.entries(fields)) {

@@ -99,6 +99,9 @@ function proposedLabel(r) {
   if (r.field_name === 'bed_rate') {
     return nv.default_rate != null ? `Rate → ₱${Number(nv.default_rate).toLocaleString('en-PH')}` : '—'
   }
+  if (r.field_name === 'tenant_rate') {
+    return nv.rate != null ? `Rate → ₱${Number(nv.rate).toLocaleString('en-PH')}` : '—'
+  }
   if (r.field_name === 'remove_bed') {
     return 'Remove bed (soft-delete → REMOVED)'
   }
@@ -150,6 +153,20 @@ function currentLabel(r) {
       ov.bed_letter  && `Bed ${ov.bed_letter}`,
       ov.rate        && `₱${Number(ov.rate).toLocaleString('en-PH')}/mo`,
     ].filter(Boolean).join(' · ') || 'Current bed'
+  }
+  if (r.field_name === 'room_config') {
+    return [
+      ov.room_type         && `Type: ${ov.room_type}`,
+      ov.room_status       && `Status: ${ov.room_status}`,
+      ov.original_bed_count != null && `Orig Beds: ${ov.original_bed_count}`,
+      ov.is_management     && 'Management Room: Yes',
+    ].filter(Boolean).join(' · ') || '—'
+  }
+  if (r.field_name === 'bed_rate') {
+    return ov.default_rate != null ? `Rate: ₱${Number(ov.default_rate).toLocaleString('en-PH')}` : '—'
+  }
+  if (r.field_name === 'tenant_rate') {
+    return ov.rate != null ? `Rate: ₱${Number(ov.rate).toLocaleString('en-PH')}` : '—'
   }
   const v = ov[r.field_name]
   return v != null ? String(v) : '—'
@@ -371,6 +388,19 @@ function DecideModal({ request, onClose, onDone }) {
           newDate,
         )
       }
+      return
+    }
+
+    if (approved.entity_type === 'TENANT' && approved.field_name === 'tenant_rate') {
+      // Tenant may have moved out between request submission and approval — the request
+      // is already marked APPROVED (see caller) since it was legitimately reviewed, but
+      // the rate write itself must not land on a closed tenancy (requirements §14).
+      const tenant = await fetchTenantForApply(approved.entity_id)
+      if (!tenant.is_active) {
+        throw new Error('Request approved, but the rate was NOT applied: this tenant is no longer active.')
+      }
+      const { error } = await supabase.from('tenants').update({ rate: nv.rate }).eq('id', tenant.id)
+      if (error) throw error
       return
     }
 

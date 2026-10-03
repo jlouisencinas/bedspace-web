@@ -9,7 +9,7 @@ import { useToast } from './Toast'
 import { GENDER_OPTIONS, SOURCE_OPTIONS } from './MoveInModal'
 import {
   CreditCard, LogOut, AlertTriangle, X,
-  Phone, Mail, Trash2, FileUp, ExternalLink, FileText, ArrowRightLeft, History,
+  Phone, Mail, Trash2, FileUp, ExternalLink, FileText, ArrowRightLeft, History, Pencil,
 } from 'lucide-react'
 
 const PROFILE_TABS = [
@@ -33,6 +33,7 @@ const HISTORY_COLORS = {
   'Approval Rejected':       'bg-red-400',
   'Tenant Profile Updated':  'bg-blue-400',
   'Move-out Date Changed':   'bg-amber-300',
+  'Tenant Move-in Date Corrected': 'bg-amber-300',
 }
 
 const DOC_TYPES = [
@@ -61,7 +62,7 @@ function fmtSize(b)  {
 
 // Parent owns what happens when each footer button is clicked (opens its own
 // modal state) — this component just calls the callback.
-export default function TenantProfileModal({ tenant, onClose, onTransfer, onMoveOut }) {
+export default function TenantProfileModal({ tenant, onClose, onTransfer, onMoveOut, onCorrectRate, onCorrectMoveIn }) {
   const { isAdmin } = useAuth()
   const docFileRef = useRef(null)
   const { show, ToastEl } = useToast()
@@ -220,7 +221,25 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
               ].filter(([, v]) => v).map(([l, v]) => (
                 <div key={l} className="detail-row">
                   <div className="detail-label">{l}</div>
-                  <div className="detail-value">{v}</div>
+                  <div className="detail-value flex items-center gap-2">
+                    {v}
+                    {l === 'Rate' && tenant.is_active && onCorrectRate && (
+                      <button
+                        className="btn-xs blue inline-flex items-center gap-1"
+                        onClick={() => onCorrectRate(tenant)}
+                      >
+                        <Pencil size={10} /> Correct
+                      </button>
+                    )}
+                    {l === 'Move In' && tenant.is_active && isAdmin && onCorrectMoveIn && (
+                      <button
+                        className="btn-xs blue inline-flex items-center gap-1"
+                        onClick={() => onCorrectMoveIn(tenant)}
+                      >
+                        <Pencil size={10} /> Correct
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
               {/* Quick contact summary if available */}
