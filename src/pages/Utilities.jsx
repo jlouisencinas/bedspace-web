@@ -41,7 +41,7 @@ export default function Utilities() {
   const [utility, setUtility] = useState('WATER')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [edits, setEdits] = useState({})           // room_id → current_reading
+  const [edits, setEdits] = useState({})           // `${utility}|${room_id}` → { prev?, curr? }
   const [cfg, setCfg] = useState({})               // cutoff provider/markup/rate fields
   const [areas, setAreas] = useState({})           // `${name}|${utility}` → {previous_reading,current_reading}
   const [showOpen, setShowOpen] = useState(false)
@@ -121,13 +121,22 @@ export default function Utilities() {
   }, [liveCutoff, bill, interims, tenants, areaArray])
 
   // ── Room rows for the active utility ────────────────────────────────────────
-  const rows = useMemo(() => bill.map(rr => {
-    const prev = utility === 'WATER' ? rr.water_prev : rr.elec_prev
-    const saved = utility === 'WATER' ? rr.water_curr : rr.elec_curr
-    const curr = edits[rr.room_id] !== undefined ? edits[rr.room_id] : (saved ?? '')
-    const cons = curr === '' ? null : (Number(curr) - (Number(prev) || 0))
-    return { ...rr, prev: Number(prev) || 0, curr, cons, amount: cons == null ? null : cons * bedRate }
-  }), [bill, edits, utility, bedRate])
+  // Edits are keyed `${utility}|${room_id}` -> { prev?, curr? } so a water edit never leaks into electric.
+  const buildRows = (u, rate) => bill.map(rr => {
+    const e = edits[`${u}|${rr.room_id}`] || {}
+    const savedPrev = u === 'WATER' ? rr.water_prev : rr.elec_prev
+    const savedCurr = u === 'WATER' ? rr.water_curr : rr.elec_curr
+    const prevRaw = e.prev !== undefined ? e.prev : (savedPrev ?? '')
+    const curr = e.curr !== undefined ? e.curr : (savedCurr ?? '')
+    const prev = Number(prevRaw) || 0
+    const cons = curr === '' ? null : (Number(curr) - prev)
+    return { ...rr, prev, prevRaw, curr, cons, amount: cons == null ? null : cons * rate }
+  })
+  const rows = useMemo(() => buildRows(utility, bedRate), [bill, edits, utility, bedRate])
+  const setEdit = (roomId, field, v) => setEdits(ed => {
+    const k = `${utility}|${roomId}`
+    return { ...ed, [k]: { ...ed[k], [field]: v } }
+  })
 
   const totals = useMemo(() => rows.reduce((t, r) => ({
     cons: t.cons + (r.cons || 0), amount: t.amount + (r.amount || 0),
@@ -148,11 +157,15 @@ export default function Utilities() {
         electric_markup_pct: Number(cfg.electric_markup_pct) || 0, electric_rate_override: !!cfg.electric_rate_override,
         electric_meralco_rate: e.std, electric_bedspace_rate: e.bed,
       })
-      // room readings for the active utility (rate = bedspace)
-      await saveReadings(rows.map(r => ({
-        cutoff_id: cutoffId, room_id: r.room_id, utility,
-        previous_reading: r.prev, current_reading: r.curr === '' ? r.prev : Number(r.curr), rate: bedRate,
-      })))
+      // room readings for BOTH utilities (rate = that utility's bedspace rate), so edits made on
+      // the other tab aren't lost when saving from this one.
+      for (const [u, calcKey] of [['WATER', 'water'], ['ELECTRIC', 'electric']]) {
+        const rate = calc(calcKey).bed
+        await saveReadings(buildRows(u, rate).map(r => ({
+          cutoff_id: cutoffId, room_id: r.room_id, utility: u,
+          previous_reading: r.prev, current_reading: r.curr === '' ? r.prev : Number(r.curr), rate,
+        })))
+      }
       // common-area readings (both utilities)
       await upsertAreaReadings(Object.entries(areas).map(([k, v]) => {
         const [area_name, util] = k.split('|')
@@ -325,10 +338,14 @@ export default function Utilities() {
               <tr key={r.room_id}>
                 <td className="font-bold text-ink">{r.room_no}</td>
                 <td className="text-[11px] text-ink-faint">{r.room_type}</td>
-                <td>{Math.round(r.prev)}</td>
+                <td>{readOnly
+                  ? <span>{Math.round(r.prev)}</span>
+                  : <input type="number" step="0.01" value={r.prevRaw} onChange={e => setEdit(r.room_id, 'prev', e.target.value)}
+                      className="w-24 px-2 py-1 border border-line rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" />}
+                </td>
                 <td>{readOnly
                   ? <span className="font-semibold">{r.curr === '' ? '—' : r.curr}</span>
-                  : <input type="number" step="0.01" value={r.curr} onChange={e => setEdits(ed => ({ ...ed, [r.room_id]: e.target.value }))}
+                  : <input type="number" step="0.01" value={r.curr} onChange={e => setEdit(r.room_id, 'curr', e.target.value)}
                       className="w-24 px-2 py-1 border border-line rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" />}
                 </td>
                 <td className={`font-semibold ${r.cons < 0 ? 'text-danger-text' : 'text-ink'}`}>{r.cons == null ? '—' : r.cons}</td>
