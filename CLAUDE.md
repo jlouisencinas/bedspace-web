@@ -21,8 +21,10 @@ npm run preview
 
 ## Layout
 - `src/pages/` — one file per route (Dashboard, BedMap, Tenants, EditTenantProfile, Billing,
-  Utilities, Collections, PaymentMonitoring, Maintenance, Approvals, Reports, Property, Activity,
-  Users, NotificationSettings, PrintElectricity, PrintRentWater, Login, OccupancySimulator)
+  Utilities, Collections, PaymentMonitoring, Maintenance, Approvals, Reports, Occupancy, Property, Activity,
+  Users, NotificationSettings, PrintElectricity, PrintRentWater, Login, OccupancySimulator).
+  `Occupancy.jsx` is the per-month daily-weighted occupancy module (`requirements.md` §9), all roles,
+  built on `computeDailyOccupancy()` in `_shared/occupancy.ts`.
 - `src/components/` — shared UI (MoveInModal, MoveOutModal, TransferModal, Statement, MultiEntryInput,
   SearchInput, TicketDetailModal, Sidebar, Toast, RoomReconfigureModal, AddRoomModal, RetireRoomModal,
   DrillDownModal, …).

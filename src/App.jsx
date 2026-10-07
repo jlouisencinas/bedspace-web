@@ -23,6 +23,7 @@ import Maintenance    from './pages/Maintenance'
 import Property      from './pages/Property'
 import PaymentMonitoring from './pages/PaymentMonitoring'
 import OccupancySimulator from './pages/OccupancySimulator'
+import Occupancy      from './pages/Occupancy'
 
 function SetupScreen() {
   return (
@@ -53,6 +54,7 @@ function Layout() {
             {/* All roles */}
             <Route path="/"        element={<Dashboard />} />
             <Route path="/reports" element={<Reports />}   />
+            <Route path="/occupancy" element={<Occupancy />} />
             <Route path="/beds"    element={<BedMap />}    />
 
             {/* user + admin */}

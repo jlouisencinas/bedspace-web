@@ -82,7 +82,7 @@ export default function CorrectMoveInModal({ tenant, onClose, onDone }) {
                 <input
                   type="date"
                   value={newDate}
-                  max={moveOutDate || undefined}
+                  max={moveOutDate ? new Date(Date.parse(moveOutDate.slice(0, 10) + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10) : undefined}
                   onChange={e => { setNewDate(e.target.value); setError('') }}
                   required
                   autoFocus

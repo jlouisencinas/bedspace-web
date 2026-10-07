@@ -542,6 +542,28 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   so day-weighting was needed after all, just not a literal daily-sampling job — the per-cutoff
   snapshot now computes a day-weighted average across the whole period in one pass instead of
   sampling once per day.
+- **Occupancy module (`/occupancy`, `src/pages/Occupancy.jsx`) — DONE.** Replaces the owner's Google
+  Sheet "current occupancy" (which counted every `LEASED` row with no dates, overcounting people who
+  already left / hadn't moved in yet and ignoring mid-month movers). Same access as Reports (all roles).
+  - **Definition.** The monthly occupancy rate is the **weighted average of the daily occupancy across
+    all days of the month**, not the month-end reading: a tenant leaving on the 29th of a 30-day month
+    only reduces the last 2 days (the move-out day itself counts as occupied — same inclusive-last-day
+    rule as above). Computed by `computeDailyOccupancy()` in `_shared/occupancy.ts`, which shares one
+    interval builder (`buildIntervals`) with `computeOccupancySnapshot()`, so the Occupancy page and the
+    stored `monthly_reports` snapshots use identical tenant-interval rules.
+  - **Months shown.** September 2026 onward only (`MIN_MONTH = '2026-09'`; no earlier months), newest
+    first, through the current month. The current month is "Month to date", computed through today
+    inclusive.
+  - **Two value columns per month card:** "Month-end (last day)" (labelled "Today" for the current
+    month) and "Weighted daily average". Rows: total beds (current setup), sellable beds, available
+    (vacant) beds = sellable - occupied, rooms occupied, distinct tenants (people, keyed by room + name
+    as elsewhere), beds occupied, revenue from beds leased, occupancy rate = beds occupied / sellable.
+    Revenue per day = sum of each present tenant row's `tenants.rate`; the weighted column is the
+    average daily revenue. Each card also has a collapsible daily detail table + bar strip.
+  - **Approximations.** Denominators (total/sellable beds) are **today's** bed inventory applied to
+    every month (same documented approximation as the snapshot denominator — bed-status history isn't
+    reconstructable). Tenants fed in include **inactive / moved-out** tenants (`fetchTenants()` has no
+    `is_active` filter), which is what makes historical months correct. No new tables or DB changes.
 
 ## 10. Dashboard module
 The Dashboard is the property's home screen, showing at-a-glance metrics and a couple of
