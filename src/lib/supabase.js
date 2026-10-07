@@ -829,12 +829,15 @@ export async function fetchUtilityBill(cutoffId) {
 
 // rows: [{ cutoff_id, room_id, utility, previous_reading, current_reading, rate }]
 // consumption & amount are generated server-side.
-export async function saveReadings(rows) {
+// opts.log = false skips the activity-log line (used by field-level auto-save so it doesn't
+// write one entry per edited field; only the explicit "Save All" logs).
+export async function saveReadings(rows, opts = {}) {
   if (!rows.length) return
   const { error } = await supabase
     .from('meter_readings')
     .upsert(rows, { onConflict: 'cutoff_id,room_id,utility' })
   if (error) throw error
+  if (opts.log === false) return
   const roomCount = new Set(rows.map(r => r.room_id)).size
   await logActivity({
     activity_type: 'Meter Readings Saved',

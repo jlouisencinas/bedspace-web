@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   fetchCutoffs, fetchUtilityBill, saveReadings, openCutoff, updateCutoff, deleteCutoff,
   fetchInterimReadings, fetchTenants, fetchAreaReadings, upsertAreaReadings,
@@ -44,6 +44,10 @@ export default function Utilities() {
   const [edits, setEdits] = useState({})           // `${utility}|${room_id}` → { prev?, curr? }
   const [cfg, setCfg] = useState({})               // cutoff provider/markup/rate fields
   const [areas, setAreas] = useState({})           // `${name}|${utility}` → {previous_reading,current_reading}
+  const [areaDirty, setAreaDirty] = useState({})   // `${name}|${utility}` → true, pending auto-save
+  const [autoState, setAutoState] = useState('')   // '' | 'saving' | 'saved'
+  const inflight = useRef(false)
+  const pendingFlush = useRef(false)
   const [showOpen, setShowOpen] = useState(false)
   const { show, ToastEl } = useToast()
   const { user } = useAuth()
@@ -66,7 +70,7 @@ export default function Utilities() {
       fetchUtilityBill(cutoffId), fetchInterimReadings(cutoffId), fetchTenants(), fetchAreaReadings(cutoffId),
     ]).then(([b, ir, t, ar]) => {
       b.sort((a, c) => (parseInt(a.room_no) || 0) - (parseInt(c.room_no) || 0))
-      setBill(b); setInterims(ir); setTenants(t); setEdits({})
+      setBill(b); setInterims(ir); setTenants(t); setEdits({}); setAreaDirty({}); setAutoState('')
       const c = cutoffs.find(x => x.id === cutoffId) || {}
       setCfg({ ...c })
       const am = {}
@@ -141,6 +145,63 @@ export default function Utilities() {
   const totals = useMemo(() => rows.reduce((t, r) => ({
     cons: t.cons + (r.cons || 0), amount: t.amount + (r.amount || 0),
   }), { cons: 0, amount: 0 }), [rows])
+
+  // ── Auto-save ───────────────────────────────────────────────────────────────
+  // Room Prev/Actual and common-area readings save when the field loses focus, writing only
+  // the rows that were edited at the rate already stored on that row. Rates / main-line fields
+  // still go through "Save All". A field left blank is held back until it has a value.
+  // flushRef always points at the latest render's closure, so onBlur sees the committed edits.
+  const flushRef = useRef(() => {})
+  flushRef.current = async () => {
+    if (readOnly || !cutoffId || saving) return
+    const editKeys = Object.keys(edits), areaKeys = Object.keys(areaDirty)
+    if (!editKeys.length && !areaKeys.length) return
+    if (inflight.current) { pendingFlush.current = true; return }
+    {
+      inflight.current = true
+      setAutoState('saving')
+      try {
+        const savedEdits = {}
+        const byUtility = { WATER: [], ELECTRIC: [] }
+        for (const k of editKeys) {
+          const [u, rid] = k.split('|'); const e = edits[k]
+          if (e.prev === '' || e.curr === '') continue
+          const rr = bill.find(x => String(x.room_id) === rid); if (!rr) continue
+          const prev = Number(e.prev !== undefined ? e.prev : (u === 'WATER' ? rr.water_prev : rr.elec_prev)) || 0
+          const currRaw = e.curr !== undefined ? e.curr : (u === 'WATER' ? rr.water_curr : rr.elec_curr)
+          const savedRate = u === 'WATER' ? rr.water_rate : rr.elec_rate
+          byUtility[u].push({
+            cutoff_id: cutoffId, room_id: rr.room_id, utility: u, previous_reading: prev,
+            current_reading: currRaw === '' || currRaw == null ? prev : Number(currRaw),
+            rate: savedRate != null ? Number(savedRate) : calc(u === 'WATER' ? 'water' : 'electric').bed,
+          })
+          savedEdits[k] = e
+        }
+        // Auto-save never writes an activity-log line; only the "Save All" button logs.
+        for (const u of ['WATER', 'ELECTRIC']) if (byUtility[u].length) await saveReadings(byUtility[u], { log: false })
+        const dirtyAreas = areaKeys.filter(k => areas[k])
+        const wrote = Object.keys(savedEdits).length > 0 || dirtyAreas.length > 0
+        if (dirtyAreas.length) {
+          await upsertAreaReadings(dirtyAreas.map(k => {
+            const [area_name, util] = k.split('|'); const v = areas[k]
+            return { cutoff_id: cutoffId, area_name, utility: util, rate_type: v.rate_type,
+                     previous_reading: Number(v.previous_reading) || 0, current_reading: Number(v.current_reading) || 0 }
+          }))
+        }
+        if (Object.keys(savedEdits).length) {
+          const fresh = await fetchUtilityBill(cutoffId)
+          fresh.sort((a, c) => (parseInt(a.room_no) || 0) - (parseInt(c.room_no) || 0))
+          setBill(fresh)
+          setEdits(ed => { const n = { ...ed }; for (const k in savedEdits) if (n[k] === savedEdits[k]) delete n[k]; return n })
+        }
+        if (dirtyAreas.length) setAreaDirty(d => { const n = { ...d }; dirtyAreas.forEach(k => delete n[k]); return n })
+        setAutoState(wrote ? 'saved' : '')
+      } catch (e) { setAutoState(''); show(`Auto-save failed: ${e.message}`, 'error') }
+      inflight.current = false
+      if (pendingFlush.current) { pendingFlush.current = false; setTimeout(() => flushRef.current(), 0) }
+    }
+  }
+  const autoSave = () => flushRef.current()
 
   // ── Save ────────────────────────────────────────────────────────────────────
   async function handleSave() {
@@ -224,6 +285,11 @@ export default function Utilities() {
           {win && <p className="page-sub">{win}{readOnly && <span className="badge oor ml-2 inline-flex items-center gap-1"><Lock size={10} />read-only</span>}</p>}
         </div>
         <div className="flex gap-2 flex-wrap">
+          {!readOnly && autoState && (
+            <span className="self-center text-[12px] text-ink-faint">
+              {autoState === 'saving' ? 'Auto-saving…' : 'Readings saved'}
+            </span>
+          )}
           {!readOnly && <button className="btn primary" disabled={saving} onClick={handleSave}>{saving ? 'Saving…' : <><Save size={14} /> Save All</>}</button>}
           {cutoffs.length > 1 && <button className="btn danger" onClick={handleDeleteCutoff}><Trash2 size={14} /> Delete</button>}
           <button className="btn secondary" onClick={() => setShowOpen(true)}>+ Open Cutoff</button>
@@ -306,7 +372,10 @@ export default function Utilities() {
               const key = `${name}|${utility}`; const a = areas[key] || {}
               const cons = (Number(a.current_reading) || 0) - (Number(a.previous_reading) || 0)
               const rate = rt === 'BEDSPACE' ? bedRate : stdRate
-              const setA = (f, v) => setAreas(s => ({ ...s, [key]: { ...s[key], rate_type: rt, [f]: v } }))
+              const setA = (f, v) => {
+                setAreas(s => ({ ...s, [key]: { ...s[key], rate_type: rt, [f]: v } }))
+                setAreaDirty(d => ({ ...d, [key]: true }))
+              }
               return (
                 <tr key={name}>
                   <td><strong>{name}</strong></td>
@@ -315,8 +384,8 @@ export default function Utilities() {
                       {rt === 'BEDSPACE' ? 'Bedspace' : 'Standard'}
                     </span>
                   </td>
-                  <td><input type="number" step="0.01" value={a.previous_reading ?? 0} disabled={readOnly} onChange={e => setA('previous_reading', e.target.value)} className="w-24 px-2 py-1 border border-line rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" /></td>
-                  <td><input type="number" step="0.01" value={a.current_reading ?? 0} disabled={readOnly} onChange={e => setA('current_reading', e.target.value)} className="w-24 px-2 py-1 border border-line rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" /></td>
+                  <td><input type="number" step="0.01" value={a.previous_reading ?? 0} disabled={readOnly} onChange={e => setA('previous_reading', e.target.value)} onBlur={autoSave} className="w-24 px-2 py-1 border border-line rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" /></td>
+                  <td><input type="number" step="0.01" value={a.current_reading ?? 0} disabled={readOnly} onChange={e => setA('current_reading', e.target.value)} onBlur={autoSave} className="w-24 px-2 py-1 border border-line rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" /></td>
                   <td className="text-right">{cons}</td>
                   <td className="td-rate text-right">{peso(cons * rate)}</td>
                 </tr>
@@ -340,12 +409,12 @@ export default function Utilities() {
                 <td className="text-[11px] text-ink-faint">{r.room_type}</td>
                 <td>{readOnly
                   ? <span>{Math.round(r.prev)}</span>
-                  : <input type="number" step="0.01" value={r.prevRaw} onChange={e => setEdit(r.room_id, 'prev', e.target.value)}
+                  : <input type="number" step="0.01" value={r.prevRaw} onChange={e => setEdit(r.room_id, 'prev', e.target.value)} onBlur={autoSave}
                       className="w-24 px-2 py-1 border border-line rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" />}
                 </td>
                 <td>{readOnly
                   ? <span className="font-semibold">{r.curr === '' ? '—' : r.curr}</span>
-                  : <input type="number" step="0.01" value={r.curr} onChange={e => setEdit(r.room_id, 'curr', e.target.value)}
+                  : <input type="number" step="0.01" value={r.curr} onChange={e => setEdit(r.room_id, 'curr', e.target.value)} onBlur={autoSave}
                       className="w-24 px-2 py-1 border border-line rounded-md text-[13px] focus:outline-none focus:ring-1 focus:ring-navy-700/25" />}
                 </td>
                 <td className={`font-semibold ${r.cons < 0 ? 'text-danger-text' : 'text-ink'}`}>{r.cons == null ? '—' : r.cons}</td>
