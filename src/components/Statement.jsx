@@ -6,8 +6,12 @@
  *   company   { address, bankName, bankAcct, bankBranch }
  *   copyLabel "Tenant's Copy" | "Owner's Copy"
  *   name, room, asOf, due, billNo, preparedBy
- *   charges   [{ label, mid, amount }]
+ *   charges   [{ label, mid, amount, rateText?, amountText?, italic? }]
+ *             rateText adds a rate column (shown when any row has one); amountText overrides
+ *             the formatted amount (e.g. "-₱4,500.00"); italic renders the row in italics
  *   total     number
+ *   totalLabel  label of the total row (default "Total amount due")
+ *   totalColor  CSS colour of the total row (e.g. green for an amount to be returned)
  *   details   { header: [...], rows: [[...]] }
  *   asOfNote  string
  *   peso      formatter fn
@@ -15,7 +19,9 @@
 export default function Statement({
   company, copyLabel, name, room, asOf, due, billNo, preparedBy,
   charges, total, details, asOfNote, splitNote, peso,
+  totalLabel = 'Total amount due', totalColor,
 }) {
+  const hasRate = charges.some(c => c.rateText)
   return (
     <div className="stmt-copy">
       {copyLabel && <div className="copy-label">{copyLabel}</div>}
@@ -48,15 +54,25 @@ export default function Statement({
         <td style={{ verticalAlign: 'top', width: '58%', paddingRight: 12 }}>
           <table className="soa-charges"><tbody>
             {charges.map((c, i) => (
-              <tr key={i}>
+              <tr key={i} style={c.italic ? { fontStyle: 'italic' } : undefined}>
                 <td>{c.label}</td>
                 <td style={{ textAlign: 'center' }}>{c.mid}</td>
-                <td style={{ textAlign: 'right' }}>{peso(c.amount)}</td>
+                {hasRate && <td style={{ textAlign: 'center' }}>{c.rateText || ''}</td>}
+                <td style={{ textAlign: 'right' }}>{c.amountText ?? (Number(c.amount) < 0 ? '-' + peso(-c.amount) : peso(c.amount))}</td>
               </tr>
             ))}
+            {/* The table's own td colour rule beats a colour set on the <tr>, so the highlight
+                (green fill for an amount to be returned) is applied on the cells themselves. */}
             <tr style={{ fontWeight: 800 }}>
-              <td>Total amount due</td><td></td>
-              <td style={{ textAlign: 'right' }}>{peso(total)}</td>
+              {(() => {
+                const hl = totalColor
+                  ? { color: '#14532d', background: '#b7f5c0', WebkitPrintColorAdjust: 'exact', printColorAdjust: 'exact' }
+                  : {}
+                return (<>
+                  <td style={hl}>{totalLabel}</td><td style={hl}></td>{hasRate && <td style={hl}></td>}
+                  <td style={{ textAlign: 'right', ...hl }}>{peso(total)}</td>
+                </>)
+              })()}
             </tr>
           </tbody></table>
         </td>

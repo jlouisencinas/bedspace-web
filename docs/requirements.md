@@ -36,10 +36,22 @@ requests, and owner-facing occupancy/collections/P&L reporting.
   which only carries name, gender, room/bed, rate and the two dates, can be added without
   fabricated values. Empty contact/email rows and missing files are simply not saved. The list
   under "Tenant profile" below is the intended full record, not a move-in gate.
+- **Upfront payments at move-in:** the form also records the 1-month **advance** (S.I#) and
+  1-month **deposit** (T.R#) — amounts default to the entered Rate and are required (≥ 0); the
+  S.I#/T.R# text is optional. See §5. If saving the receipts fails after the tenant was created,
+  the user is told explicitly (the tenant exists; an admin can add receipts from the profile).
 - Intended documents: **2 valid government-issued IDs** (any type accepted) + a **scanned signed
   copy** of the lease contract (fixed template). Confirmed implemented — uploaded to Google Drive
   (one folder per tenant) and tracked in `tenant_documents`, viewable/manageable anytime from the
   tenant profile's Documents tab, not just at move-in.
+- **Bed eligibility:** a tenant can be moved directly into a VACANT **or RESERVED** bed (the reserved
+  person arrives; Full Name is pre-filled from the reservation and stays editable; the bed becomes
+  LEASED and the reservation name is cleared). A bed that already has an active tenant is always shown
+  as LEASED (derived in `fetchBeds()` regardless of the stored `beds.status`) and is never offered for
+  move-in (`moveInEligibleBeds` in `src/lib/bedEligibility.js`). The one-active-tenant-per-bed rule is
+  enforced by the DB (`uniq_active_tenant_per_bed`, a partial unique index on `tenants(bed_id)` where
+  `is_active`) and `addTenant` surfaces a violation as a clear message naming the room/bed (and the
+  current tenant) instead of the raw Postgres error; the Move In modal stays open.
 - Billing starts immediately at move-in, prorated against the rent/water cutoff window (see §5)
   — day-exact proration, confirmed correct as currently implemented.
 
@@ -129,6 +141,10 @@ and **Move Out** only (Edit Details moved to its own module — see below).
   also get added to the direct-admin path, or does admin-direct move-out keep working exactly as
   it does today, one-step? Owner said the two-step flow applies to the approval path — confirm
   before touching the direct-admin path.)*
+- **Update (Phase 2):** a request raised from the new Move Out flow carries the full final bill, and an
+  admin approving it now executes the whole move-out (tenant inactive, bed vacated, readings, final bill,
+  receipts settled) in one step — see §5 "Phase 2 as built". Requests raised by the old modal (no
+  `_bill` in the payload) still only update the dates when approved.
 - **Move-out date edits (lease extensions/shortenings) must be logged. — DONE.** Any change to a
   tenant's `move_out_date` — including a plain admin edit via the tenant profile, not just a
   formal move-out — writes an `activity_log` entry (`activity_type: 'Move-out Date Changed'`).
@@ -207,21 +223,136 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
     sent to accounting. **Confirmed: this moves in-app** — proof-of-payment should be an in-app
     upload + staff-verification step, mirroring the current external process, not just a bare
     amount field.
-  - **Structure (classic PH rental convention): 1 month advance + 1 month deposit**, both
-    equivalent to the tenant's rate at move-in, both collected **in full at move-in** (2 months'
-    rent total upfront, as two separately tracked amounts — not one combined figure).
-    - **Advance**: held for the duration of the tenancy. Returned at move-out unless reduced by a
-      forfeiture condition below.
-    - **Deposit**: at move-out, applied first against the tenant's final utility bill; the
-      remaining balance ("change") is refunded.
-  - **Forfeiture conditions** (advance and/or deposit may be reduced or forfeited):
-    - Early termination — tenant leaves before the agreed lease end date: **the full 1-month
-      advance is forfeited**, no partial/prorated credit regardless of how early the tenant
-      leaves.
-    - Unpaid balance at move-out — any outstanding rent/utility/add-on balance beyond what the
-      deposit already covers is deducted from the advance before refund.
-    - Otherwise (normal move-out, full lease term served, no outstanding balance): advance
-      refunded in full, deposit's change refunded after covering the final utility bill.
+  - **Structure — CONFIRMED (supersedes the earlier "advance forfeited / deposit covers utilities
+    only" wording):** a bed tenant pays, at move-in, **1 month ADVANCE + 1 month DEPOSIT**, each
+    **equal to the tenant's monthly rate** (₱5,000 rate → ₱10,000 upfront; a whole-room/two-bed
+    tenant has one rate per bed row, so each bed row carries its own advance and deposit). They are
+    two separately tracked amounts, not one combined figure.
+    - **Advance** is documented by a **Sales Invoice (S.I#)**.
+    - **Deposit** is documented by a **Temporary Receipt (T.R#)**; a tenant may have several
+      (e.g. "TR# 121 & TR# 133").
+    - S.I#/T.R# are **free text captured by staff at move-in** — no formula, no auto-generation, may
+      be left blank and filled in later.
+  - **Phase 1 — DONE (record-keeping only).** Table `tenant_deposits` (one row per receipt: `kind`
+    ADVANCE/DEPOSIT, `amount`, `ref_no`, `received_date`, `status` HELD/APPLIED/FORFEITED/REFUNDED,
+    `settled_note`, `notes`); migration `database/migrations/advance_deposit.sql` (DDL + a separate,
+    re-runnable backfill of one ADVANCE + one DEPOSIT row = current rate for every active bed
+    tenant, ref blank). Move In captures both amounts (defaulting to the Rate) and S.I#/T.R#; the
+    tenant profile has an "Advance & Deposit" tab (read-only for non-admin; admin can edit
+    amount/ref/date/notes and add a receipt). Rows are never deleted; `status` is only changed by
+    the move-out phase. The unused `tenants.advance_rent/security_deposit/credit_balance` columns
+    are not used.
+  - **Final bill / move-out settlement — Phase 2 DONE** (rules below; what was built and its known
+    limits are in the "Phase 2 as built" bullet that follows the rules). Only the refund tracker is left (Phase 3):
+    - **Billing periods** follow the cutoff windows (rent/water 1st–EOM, electric 10th–10th).
+    - The **advance is credited against the rent of the second-to-last bill** — the billing period
+      *before* the one containing the move-out date. If the tenant stays only one or two billing
+      periods, the unused advance is credited on the final bill and any excess is refunded.
+    - The **deposit covers the final bill**: prorated rent through the move-out date + utilities as
+      of the move-out readings + any unsettled earlier amounts entered manually by staff. (Data in
+      the app only started September 2026, so earlier unsettled balances are keyed in by staff.)
+    - **Excess over charges is refunded** ("Amount to be returned"); a **shortfall is paid by the
+      tenant**.
+    - **Early termination forfeits BOTH the advance and the deposit** unless management approves a
+      **waiver** (admin-only, with a required reason).
+    - **Non-admin move-outs require admin approval** (see §3 Move-out).
+  - **Phase 2 as built (final bill + automatic second-to-last advance credit).**
+    - **Schema:** `final_bills` (`database/migrations/final_bills.sql`, also in `init.sql`): lines jsonb
+      (credits stored as negative amounts), `details` jsonb (billing-details table), totals, `early_termination`,
+      `forfeit_waived` + `waived_reason`, `refund_status/refund_paid_date/refund_ref` (columns exist, unused until
+      Phase 3), `status` FINAL/VOID. RLS: select admin+user, insert/update admin only, no delete; a partial unique
+      index allows one non-void FINAL bill per tenant. `advance_credits` stores the second-to-last credit (below).
+      The QA-hardening SQL is `database/migrations/phase2_hardening.sql` (also mirrored into `init.sql`);
+      `tenant_deposits` insert by a non-admin is limited to status HELD.
+    - **Pure builder** `src/lib/finalBill.js` (`buildFinalBillDraft`, `billPosition`, `advanceCredits`,
+      `buildCreditLines`, `computeTotals`). Rent = rate x days from max(period start, move-in) through the
+      move-out date inclusive / days in the rent-water window, capped at the window. Utilities reuse
+      `computeBilling` with the tenant treated as present through the move-out date and the move-out readings
+      applied as hypothetical interim readings (nothing is written until confirm). Every line is rounded to 2
+      decimals when stored; totals are the exact sum of the stored lines.
+    - **Move Out flow** (`MoveOutModal.jsx`): (1) date + readings, (2) Final Bill editor, (3) confirm. The editor
+      is pre-filled from existing data (period, prorated rent, water/electric share with the billing-details
+      table, advance/deposit credits with their S.I#/T.R#, forfeiture flag); rows are read-only until clicked and
+      staff can edit any line, delete it, or add a free line (unsettled earlier amounts are typed in, no
+      automatic carry-over). Admin confirm runs `processMoveOutWithBill` (`supabase.js`): final bill saved
+      FIRST, then tenant out, bed vacated, move-out readings saved, optional final payment, receipts settled
+      (HELD to APPLIED/FORFEITED with a note naming the bill), activity `Move Out` + `Final Bill Issued`. If the
+      tenant update fails the bill is auto-voided; any later failure raises an error listing exactly which steps
+      ran. A non-admin submits the whole draft as an approval request (`new_value._bill`); the admin reviews the
+      bill in Approvals (and, for an early termination, can tick the waiver there), and approving executes the
+      move-out + bill in the admin session (applied before the request is marked approved, so a failed apply
+      leaves it pending).
+    - **Early termination** = actual move-out earlier than the tenant's planned `move_out_date` as stored when
+      the modal opened. Default: advance and deposit forfeited (`forfeit` lines at 0.00 with the original amounts
+      shown). The "Management approved, do not forfeit" waiver is admin-only and needs a typed reason.
+    - **Second-to-last bill (automatic, no staff action).** `billPosition(tenant, cutoff)`: the bill
+      for a cutoff is `FINAL` if the tenant's move-out date (actual, else planned) is inside its rent/water window,
+      `SECOND_TO_LAST` if it is inside the NEXT window (`water_end` .. `addMonths(water_end, 1)`, same month
+      arithmetic as Utilities; `water_end` is exclusive, as in `billing.js`), else `STANDARD`. A tenant who moved
+      in during the candidate window has no second-to-last bill (stays of only one or two billing periods get the
+      advance on the final bill instead). Billing (Rent + Water view) shows a "2nd-to-last bill" badge plus "Less
+      advance / Net"; PrintRentWater prints the credit line and the reduced total; credit = min(advance on file,
+      that period's rent). The credit is an **adjustment, not cash**: Collections' amount to collect is net of it,
+      and Payment Monitoring / Dashboard use it as `adjustments` in `buildPaymentMonitoring` (outstanding =
+      billed - adjustments - paid; "paid"/collected never includes it), so sum(bills) = sum(payments) +
+      adjustments + outstanding. Viewers cannot read the receipts (RLS), so their Dashboard summary omits it.
+    - **Stored credit (`advance_credits`) makes it immutable.** While a cutoff is ACTIVE the credit is detected
+      live from the move-out date. When the next cutoff is opened (Utilities "Open Cutoff", admin only: the button is
+      hidden for other roles) `recordAdvanceCredits` runs BEFORE `openCutoff` for the cutoff being closed, and a
+      failure ABORTS the open (nothing opened, error toast, safe to retry: recording is idempotent). Every
+      tenant who was on their second-to-last bill gets one row (tenant, cutoff, amount, ref text, `allocations` =
+      which receipts were used). From then on: a CLOSED cutoff's statement/adjustments read the stored row only (no
+      row = no credit); live detection for a later cutoff SKIPS a tenant who already has a stored credit (the advance
+      is consumed - a lease extension or date change can neither drop nor repeat it) and Billing shows "Advance
+      already credited in <cutoff>". The final-bill draft reads the stored rows first (matched by receipt, so
+      whole-room sibling beds are handled), falling back to a live estimate only when the immediately preceding
+      cutoff is still the active one.
+    - **Final bill vs. the earlier credit:** the earlier credit is not given twice - the advance line becomes a
+      0.00 record (plus a note) or only the balance when the advance exceeded that period's rent. With no stored
+      credit (1-2 period stay, or the earlier cutoff was closed before this feature) the full advance is credited
+      on the final bill. **Forfeiture after a credit:** if the draft forfeits (early termination, no waiver) and an
+      advance had already been credited, an editable charge line "Advance credited on second-to-last bill
+      (forfeited)" takes that amount back so the forfeiture really takes effect; a waiver removes it. Receipts
+      are only marked "credited on second-to-last bill" when a stored credit really covered them.
+    - **Safeguards:** `processMoveOutWithBill` refuses an inactive tenant or an existing FINAL bill (the unique
+      index backs it); after a partial failure the Move Out modal locks to Close only and lists what ran.
+      Receipt settlement is filtered by tenant id and HELD status. For an approval request, the apply step
+      recomputes cutoff (from the move-out date), early termination (from the tenant's planned date in the DB)
+      and the credit/forfeit lines (amounts + receipt ids from the tenant's own HELD receipts); it rejects a
+      request whose credit lines reference foreign receipts, exceed the receipts, or whose totals do not match
+      its lines, and the review modal lists every difference between "requested" and "will apply". If apply
+      fails after the tenant was moved out (or the final approve step fails), the admin sees that plainly and can
+      use "Mark approved (already applied)", which first re-reads the DB and refuses unless the tenant is inactive
+      and a non-void FINAL bill for the request's date exists. If the move-out failed while the bill could not be
+      auto-voided (bill saved, tenant still ACTIVE), the admin is told to void that bill from the tenant profile
+      and no mark-approved action is offered. The closed-cutoff "2nd-to-last" badge shows only with a stored credit. Only HELD receipts are editable. Readings are rounded to 2 decimals.
+      With no cutoff covering the move-out date an admin can still proceed (rent/utility lines at 0, to be keyed
+      in); non-admins cannot. Going back and changing the date/readings rebuilds the computed lines but keeps
+      lines staff added.
+    - **Print:** `/print/final-bill?id=` (`PrintFinalBill.jsx`, admin only like the other print pages) reuses
+      `Statement.jsx` (additive props: rate column, amount text, italic rows, total label/colour). Buttons: "Print
+      final bill" on the move-out result screen and in the tenant profile (Advance & Deposit tab, with an admin
+      Void). Voiding sets the bill VOID with a reason and puts its HELD-then-settled receipts back to HELD.
+    - **Utility split after a move-out:** `fetchTenants()` stamps tenants that have a non-void final bill
+      (`_finalBilled`, `_finalBilledCutoffs`); for that bill's cutoff `computeBilling` keeps them in the split as
+      non-billed participants (their days still apportion the room, so roommates pay only their own share) but
+      gives them no `perTenant` row or rent. The leaver's share stays in `perRoom.sum`, so the room still
+      reconciles and the utility P&L counts it as a collection; Collections / Payment Monitoring / Dashboard
+      iterate `perTenant` and do not double count it. The monthly snapshot's collections columns sum `perTenant`
+      and therefore exclude final-bill utilities. Move-outs saved without a final bill (before Phase 2), other
+      cutoffs, and viewers (who cannot read `final_bills`) keep the old behaviour (roommates absorb the days).
+    - **Known limits:** (1) as above, historical cutoffs other than the final bill's own are recomputed without
+      the leaver; (2) whole-room tenancies are billed per bed row, utilities are not collapsed (billing.js only collapses same-name beds
+      with no move-out date, so dated tenants never are); the advance credit code still handles a collapsed row by
+      summing all same-name beds against the combined rent; (3) the move-out
+      date should fall inside an existing cutoff (an admin may proceed without one: rent and utilities are then keyed in by hand); the electric share is only computed when the
+      date is strictly inside the electric window (first day of a window or outside it gives a 0 line and a
+      warning, enter it manually); (4) transfers inside the period are not folded into the rent/utility lines
+      (warning shown); (5) unsettled earlier amounts are typed in by staff; (6) no re-issue flow after voiding a
+      bill; (7) the credit on a printed second-to-last statement is not retroactively corrected if the date later
+      moves (it is recomputed live on the next view).
+    - **Phase 3 (not built):** refund tracker (mark `refund_status` PAID with date/reference), in-app
+      proof-of-payment.
   - **Refund timing/method**: not settled same-day/in cash — processed **within a few days after
     move-out, via bank transfer**.
 - **Projected vs. actual rent collection, directly comparable — DONE.** `Reports.jsx` used to show
@@ -243,9 +374,13 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
 - Common areas (Lobby, 2nd Floor, Roof Deck): pure operating cost, **billed to nobody**, absorbed
   by the business — confirmed intentional, not a placeholder.
 - Commercial tenants (e.g. water-refilling station, parking): billed **on the same cutoff/billing
-  cadence as regular bedspace tenants** — the "(pending)" marker currently in `Utilities.jsx` and
-  `pnl.js` should be resolved on that basis. *(Implementation task: verify current logic already
-  matches this and remove the "(pending)" language, or adjust if it doesn't.)*
+  cadence as regular bedspace tenants**. **Commercial WATER — done:** the Commercial area reading is
+  linked (`area_readings.tenant_id`) to the single active `COMMERCIAL` tenant when saved from
+  `Utilities.jsx`; `billing.js` then bills that tenant `consumption × bedspace rate`, and the utility
+  P&L counts it as a collection, so water variance = (room collections + commercial water) − provider
+  cost. The commercial tenant's `rate` stays a separate fixed monthly charge. **Commercial ELECTRIC is
+  still pending** (not linked, not in variance). Actual collections for a cutoff = bedspace tenants +
+  the commercial tenant.
 - **Judgment-laden "losing"/"earning" wording removed from the utility P&L variance display —
   DONE.** `Utilities.jsx` now renders the room-collections-vs-provider-cost variance as
   "Shortfall" / "Surplus" instead of "losing" / "earning."
@@ -724,14 +859,18 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
 - [x] Enable real RLS policies across all tables, matching the admin/user/viewer role model (§7)
       — **done**.
 - [ ] Resolve the "(pending)" commercial-tenant utility billing marker in `Utilities.jsx`/`pnl.js`
-      (§6).
+      (§6) — **water done**; commercial ELECTRIC still pending.
 - [x] Design + build day-weighted occupancy tracking feeding the EOM average (§9) — **done**, via a
       day-weighted formula computed per cutoff (not literal daily sampling); see
       `supabase/functions/_shared/occupancy.ts`.
-- [ ] Build deposit/refund/running-balance tracking per §5 (advance + deposit structure, in-app
-      proof-of-payment verification, forfeiture rules — full advance forfeited on early
-      termination, deductions for unpaid balance — bank-transfer refund within a few days of
-      move-out).
+- [ ] Build deposit/refund/running-balance tracking per §5. **Phase 1 done** (`tenant_deposits`
+      table, advance/deposit + S.I#/T.R# captured at Move In, "Advance & Deposit" tab in the tenant
+      profile, backfill for active tenants). **Phase 2 done** (see §5 "Phase 2 as built"): Move Out flow
+      with editable Final Bill, automatic second-to-last-bill advance credit, printable final bill,
+      early-termination forfeiture with admin-only waiver, admin approval for non-admin move-outs.
+      **Phase 3, not built:** refund tracker (mark the refund PAID with date/reference, bank transfer
+      within a few days) and in-app proof-of-payment verification. Also open: keep the moved-out tenant
+      in the utility split without billing them (known limit 1 in §5).
 - [x] Fix the missing `activity_log` entry when a tenant's `move_out_date` is edited directly
       (§3) — **done**.
 - [x] Remove "losing"/"earning" wording from the utility P&L variance display in `Utilities.jsx`

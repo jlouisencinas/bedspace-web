@@ -5,6 +5,7 @@ import {
 } from '../lib/supabase'
 import { computePnL } from '../lib/pnl'
 import { buildAndSaveSnapshot } from '../lib/snapshot'
+import { recordAdvanceCredits } from '../lib/advanceCredit'
 import { useToast } from '../components/Toast'
 import { useAuth } from '../lib/auth'
 import { Save, Trash2, Lock, Droplets, Zap, X } from 'lucide-react'
@@ -50,7 +51,7 @@ export default function Utilities() {
   const pendingFlush = useRef(false)
   const [showOpen, setShowOpen] = useState(false)
   const { show, ToastEl } = useToast()
-  const { user } = useAuth()
+  const { user, isAdmin } = useAuth()
 
   const cutoff = cutoffs.find(c => c.id === cutoffId)
   const readOnly = !!cutoff && !cutoff.is_active
@@ -146,6 +147,15 @@ export default function Utilities() {
     cons: t.cons + (r.cons || 0), amount: t.amount + (r.amount || 0),
   }), { cons: 0, amount: 0 }), [rows])
 
+  // The Commercial WATER reading is billed to the (single) active commercial tenant — billing.js picks
+  // it up through area_readings.tenant_id. Electric stays unlinked (commercial electric is still pending).
+  const commercialTenantId = useMemo(() => {
+    const c = tenants.filter(t => t.category === 'COMMERCIAL' && t.is_active)
+    return c.length === 1 ? c[0].id : null
+  }, [tenants])
+  const areaTenantLink = (areaName, util) =>
+    (areaName === 'Commercial' && util === 'WATER' && commercialTenantId) ? { tenant_id: commercialTenantId } : {}
+
   // ── Auto-save ───────────────────────────────────────────────────────────────
   // Room Prev/Actual and common-area readings save when the field loses focus, writing only
   // the rows that were edited at the rate already stored on that row. Rates / main-line fields
@@ -185,7 +195,8 @@ export default function Utilities() {
           await upsertAreaReadings(dirtyAreas.map(k => {
             const [area_name, util] = k.split('|'); const v = areas[k]
             return { cutoff_id: cutoffId, area_name, utility: util, rate_type: v.rate_type,
-                     previous_reading: Number(v.previous_reading) || 0, current_reading: Number(v.current_reading) || 0 }
+                     previous_reading: Number(v.previous_reading) || 0, current_reading: Number(v.current_reading) || 0,
+                     ...areaTenantLink(area_name, util) }
           }))
         }
         if (Object.keys(savedEdits).length) {
@@ -231,7 +242,8 @@ export default function Utilities() {
       await upsertAreaReadings(Object.entries(areas).map(([k, v]) => {
         const [area_name, util] = k.split('|')
         return { cutoff_id: cutoffId, area_name, utility: util, rate_type: v.rate_type,
-                 previous_reading: Number(v.previous_reading) || 0, current_reading: Number(v.current_reading) || 0 }
+                 previous_reading: Number(v.previous_reading) || 0, current_reading: Number(v.current_reading) || 0,
+                 ...areaTenantLink(area_name, util) }
       }))
       show('Saved.', 'success')
       const cs = await fetchCutoffs(); setCutoffs(cs)
@@ -260,9 +272,9 @@ export default function Utilities() {
     <div className="page"><div className="page-title">Utilities</div>
       <div className="card"><div className="empty"><Zap size={32} className="mx-auto mb-3 text-ink-faint" />
         <p>No cutoffs yet.</p>
-        <button className="btn primary mt-4" onClick={() => setShowOpen(true)}>+ Open New Cutoff</button>
+        {isAdmin && <button className="btn primary mt-4" onClick={() => setShowOpen(true)}>+ Open New Cutoff</button>}
       </div></div>
-      {showOpen && <OpenCutoffModal cutoffs={cutoffs} onClose={() => setShowOpen(false)}
+      {showOpen && <OpenCutoffModal cutoffs={cutoffs} actorId={user?.id} isAdmin={isAdmin} onClose={() => setShowOpen(false)}
         onDone={async id => {
           const prior = cutoffs.find(c => c.is_active)
           if (prior && prior.id !== id) { try { await buildAndSaveSnapshot(prior, user?.id) } catch (e) { console.error('snapshot failed', e) } }
@@ -292,7 +304,7 @@ export default function Utilities() {
           )}
           {!readOnly && <button className="btn primary" disabled={saving} onClick={handleSave}>{saving ? 'Saving…' : <><Save size={14} /> Save All</>}</button>}
           {cutoffs.length > 1 && <button className="btn danger" onClick={handleDeleteCutoff}><Trash2 size={14} /> Delete</button>}
-          <button className="btn secondary" onClick={() => setShowOpen(true)}>+ Open Cutoff</button>
+          {isAdmin && <button className="btn secondary" onClick={() => setShowOpen(true)}>+ Open Cutoff</button>}
         </div>
       </div>
 
@@ -433,7 +445,7 @@ export default function Utilities() {
         </div>
       )}
 
-      {showOpen && <OpenCutoffModal cutoffs={cutoffs} onClose={() => setShowOpen(false)}
+      {showOpen && <OpenCutoffModal cutoffs={cutoffs} actorId={user?.id} isAdmin={isAdmin} onClose={() => setShowOpen(false)}
         onDone={async id => {
           const prior = cutoffs.find(c => c.is_active)
           if (prior && prior.id !== id) { try { await buildAndSaveSnapshot(prior, user?.id) } catch (e) { console.error('snapshot failed', e) } }
@@ -468,7 +480,9 @@ function PnLCard({ pnl, utility }) {
         </div>
         <div>
           <Row label="Overhead (standard)" val={peso(pnl.overhead)} />
-          <Row label="Commercial (pending)" val={peso(pnl.commercial)} cls="text-ink-faint" />
+          {utility === 'WATER'
+            ? <Row label="Commercial collection" val={peso(pnl.commercial)} cls="text-success-text" />
+            : <Row label="Commercial (pending)" val={peso(pnl.commercial)} cls="text-ink-faint" />}
         </div>
       </div>
       <div className="border-t border-line-subtle mt-3 pt-3 flex justify-between items-center">
@@ -482,7 +496,7 @@ function PnLCard({ pnl, utility }) {
 }
 
 // ── Open New Cutoff modal ───────────────────────────────────────────────────────
-function OpenCutoffModal({ cutoffs, onClose, onDone, show }) {
+function OpenCutoffModal({ cutoffs, actorId, isAdmin, onClose, onDone, show }) {
   const last = cutoffs[0]
   const sW = last?.water_end || '', sE = last?.electric_end || ''
   const [f, setF] = useState({
@@ -498,7 +512,17 @@ function OpenCutoffModal({ cutoffs, onClose, onDone, show }) {
   async function submit(e) {
     e.preventDefault()
     if (!f.name || !f.water_start || !f.electric_start) { show('Fill name + both start dates.', 'error'); return }
+    if (!isAdmin) { show('Only an admin can open a cutoff, because opening one records the advance credits of the period being closed.', 'error'); return }
     setBusy(true)
+    // Record the second-to-last advance credits of the cutoff about to be closed BEFORE opening the next one.
+    // If that fails nothing is opened and the admin can simply retry (recording is idempotent).
+    const closing = cutoffs.find(c => c.is_active)
+    if (closing) {
+      try { await recordAdvanceCredits(closing, actorId) } catch (e) {
+        show(`Cutoff NOT opened: the advance credits for "${closing.name}" could not be recorded (${e.message}). Nothing was changed; fix the problem and try again.`, 'error', { duration: 20000 })
+        setBusy(false); return
+      }
+    }
     try {
       const id = await openCutoff({
         name: f.name, water_start: f.water_start, water_end: f.water_end,

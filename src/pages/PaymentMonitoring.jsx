@@ -2,11 +2,12 @@ import { useState, useEffect, useMemo } from 'react'
 import {
   fetchCutoffs, fetchTenants,
   fetchPaymentsForCutoff, fetchUtilityBill, fetchInterimReadings,
-  fetchSplits, fetchAddons, fetchAreaReadings,
+  fetchSplits, fetchAddons, fetchAreaReadings, fetchAdvanceCreditData,
 } from '../lib/supabase'
 import { computeBilling } from '../lib/billing'
 import { getCachedBilling, cacheBilling } from '../lib/billingCache'
 import { buildPaymentMonitoring } from '../lib/collectionsSummary'
+import { advanceAdjustments } from '../lib/finalBill'
 import { useToast } from '../components/Toast'
 import SearchInput from '../components/SearchInput'
 import { TrendingUp, AlertTriangle, Wallet } from 'lucide-react'
@@ -25,6 +26,7 @@ export default function PaymentMonitoring() {
   const [tenants,   setTenants]   = useState([])
   const [billingPerTenant, setBillingPerTenant] = useState([])
   const [cutoffPayments,   setCutoffPayments]   = useState([])
+  const [advData,   setAdvData]   = useState({ deposits: [], finalBills: [], stored: [], error: null })
   const [loading,   setLoading]   = useState(true)
   const [search,    setSearch]    = useState('')
   const [unpaidOnly,setUnpaidOnly]= useState(false)
@@ -55,6 +57,7 @@ export default function PaymentMonitoring() {
 
       const cutoffPays = await fetchPaymentsForCutoff(id)
       setCutoffPayments(cutoffPays)
+      setAdvData(await fetchAdvanceCreditData())
 
       const cached = getCachedBilling(id)
       if (cached) {
@@ -83,9 +86,15 @@ export default function PaymentMonitoring() {
   const selectedCutoff = cutoffs.find(c => c.id === cutoffId) || null
   const isHistorical   = selectedCutoff && !selectedCutoff.is_active
 
+  // Second-to-last-bill advance credit: counted as an adjustment against what is owed, never as cash paid.
+  const adjustments = useMemo(() => {
+    if (!selectedCutoff || !billingPerTenant.length) return new Map()
+    return advanceAdjustments({ tenants, cutoff: selectedCutoff, perTenant: billingPerTenant, deposits: advData.deposits, stored: advData.stored })
+  }, [selectedCutoff, tenants, billingPerTenant, advData])
+
   const rows = useMemo(() =>
-    buildPaymentMonitoring(selectedCutoff, tenants, billingPerTenant, cutoffPayments)
-  , [selectedCutoff, tenants, billingPerTenant, cutoffPayments])
+    buildPaymentMonitoring(selectedCutoff, tenants, billingPerTenant, cutoffPayments, adjustments)
+  , [selectedCutoff, tenants, billingPerTenant, cutoffPayments, adjustments])
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase()
@@ -158,6 +167,11 @@ export default function PaymentMonitoring() {
         </div>
       ) : (
         <>
+          {advData.error && (
+            <div className="mt-4 px-4 py-3 bg-warning-bg border border-warning-border rounded-xl text-[13px] text-warning-text">
+              Advance credits could not be loaded ({advData.error}); outstanding balances do not include any second-to-last-bill advance credit.
+            </div>
+          )}
           {isHistorical && (
             <div className="mt-4 px-4 py-3 bg-warning-bg border border-warning-border rounded-xl text-[13px] text-warning-text flex items-start gap-2">
               <AlertTriangle size={15} className="shrink-0 mt-0.5 text-amber-500" />
@@ -207,7 +221,10 @@ export default function PaymentMonitoring() {
                       <td>{fmt(r.billed.electric)}</td>
                       <td>{fmt(r.billed.addons)}</td>
                       <td className="font-semibold text-ink">{fmt(r.billed.total)}</td>
-                      <td className="text-success-text font-medium">{fmt(r.paid.total)}</td>
+                      <td className="text-success-text font-medium">
+                        {fmt(r.paid.total)}
+                        {r.adjustments > 0 && <div className="text-[10px] font-normal text-ink-muted" title="Advance credited on the second-to-last bill (an adjustment, not a payment)">+ {fmt(r.adjustments)} advance credit</div>}
+                      </td>
                       <td>
                         {r.outstanding > 0
                           ? <span className="font-semibold text-danger-text">{fmt(r.outstanding)}</span>

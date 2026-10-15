@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { fetchApprovals, approveRequest, rejectRequest } from '../lib/approvals'
-import { supabase, processTransfer, logTenantMoveOutDateChange, deleteInterimReading } from '../lib/supabase'
+import { supabase, processTransfer, logTenantMoveOutDateChange, deleteInterimReading, processMoveOutWithBill, fetchTenantDeposits, fetchCutoffs, fetchStoredAdvanceCredits, verifyMoveOutApplied } from '../lib/supabase'
+import { reconcileBill } from '../lib/finalBill'
 import { applyTenantProfileChange, PROFILE_FIELD_LABELS } from '../lib/tenantProfile'
 import { notifyAsync } from '../lib/notify'
 import { FIELD_LABELS } from '../../supabase/functions/_shared/approval-labels.ts'
@@ -14,6 +15,8 @@ function fmtDate(d) {
   if (!d) return '—'
   return new Date(d).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })
 }
+const pesoText = n => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
 function fmtDateTime(d) {
   if (!d) return '—'
   return new Date(d).toLocaleString('en-PH', {
@@ -71,6 +74,12 @@ function proposedLabel(r) {
       nv.move_out_date        && `Move-out: ${fmtDate(nv.move_out_date)}`,
       nv.actual_move_out_date && `Actual: ${fmtDate(nv.actual_move_out_date)}`,
       nv.amount_paid          && `Amount: ₱${Number(nv.amount_paid).toLocaleString('en-PH')}`,
+      nv.water_reading        && `Water: ${nv.water_reading}`,
+      nv.electric_reading     && `Electric: ${nv.electric_reading}`,
+      nv._bill && (Number(nv._bill.net_amount) < 0
+        ? `Refund due ${pesoText(-nv._bill.net_amount)}`
+        : `Bill due ${pesoText(nv._bill.net_amount)}`),
+      nv._bill?.early_termination && 'Early termination',
     ].filter(Boolean).join(' · ') || '—'
   }
   if (r.field_name === 'tenant_details') {
@@ -260,6 +269,37 @@ function DecideModal({ request, onClose, onDone }) {
   const [decision, setDecision] = useState(null)
   const [error,    setError]    = useState('')
 
+  const nvReq = request.new_value || {}
+  const moveOutBill = request.field_name === 'move_out' && nvReq._action === 'process_move_out' ? nvReq._bill : null
+  const [waived,    setWaived]    = useState(false)
+  const [waiveReason, setWaiveReason] = useState('')
+  const [partialApplied, setPartialApplied] = useState(false)
+  const [ctx, setCtx] = useState(null)
+
+  async function loadMoveOutCtx() {
+    const tenantId = parseInt(nvReq._tenant_id, 10)
+    if (!tenantId || isNaN(tenantId)) throw new Error(`Invalid tenant ID: "${nvReq._tenant_id}"`)
+    const [tRes, deposits, cutoffs, stored] = await Promise.all([
+      supabase.from('tenants').select('*, beds!bed_id(bed_letter, room_id, rooms(room_no))').eq('id', tenantId).single(),
+      fetchTenantDeposits(tenantId), fetchCutoffs(), fetchStoredAdvanceCredits(),
+    ])
+    if (tRes.error) throw tRes.error
+    return { tenant: tRes.data, deposits, cutoffs, stored }
+  }
+  const moveOutDay = (nvReq.actual_move_out_date || nvReq.move_out_date || '').slice(0, 10)
+  const reconcile = (c, w) => reconcileBill({ bill: moveOutBill, moveOut: moveOutDay, tenant: c.tenant, deposits: c.deposits, cutoffs: c.cutoffs, storedCredits: c.stored, waived: w })
+
+  useEffect(() => {
+    if (!moveOutBill) return
+    loadMoveOutCtx().then(setCtx).catch(e => setError(`Could not load the tenant's current data: ${e.message}`))
+  }, [])
+
+  // What will actually be applied: the credit/forfeit lines, cutoff and early termination are recomputed from the DB.
+  const rec = useMemo(() => (ctx ? reconcile(ctx, waived) : null), [ctx, waived])
+  const billLines = rec ? rec.lines : (moveOutBill?.lines || [])
+  const billTotals = rec ? rec.totals : null
+  const earlyNow = rec ? rec.early_termination : !!moveOutBill?.early_termination
+
   async function decide(d) {
     setDecision(d); setBusy(true); setError('')
     try {
@@ -272,6 +312,14 @@ function DecideModal({ request, onClose, onDone }) {
         } catch (err) {
           throw new Error(`Changes were applied, but marking the request approved failed: ${err.message}`)
         }
+      } else if (d === 'APPROVED' && moveOutBill) {
+        // Apply before marking approved so a failed apply leaves the request PENDING.
+        await applyMoveOutRequest()
+        try {
+          await approveRequest(request.id, notes || null)
+        } catch (err) {
+          throw new Error(`The move-out and final bill were applied, but marking the request approved failed: ${err.message}`)
+        }
       } else if (d === 'APPROVED') {
         const approved = await approveRequest(request.id, notes || null)
         await applyApprovedChange(approved)
@@ -281,7 +329,24 @@ function DecideModal({ request, onClose, onDone }) {
       // Only after the whole path succeeded; a `warning` (change applied, log write failed) still counts.
       notifyAsync('approval_decision', request.id)
       onDone(d, warning)
-    } catch (err) { setError(err.message); setBusy(false); setDecision(null) }
+    } catch (err) {
+      let msg = err.message, markable = false
+      if (err.orphanBill) {
+        msg = `Final bill #${err.billId} was saved but the tenant is still ACTIVE (the move-out did not go through and the bill could not be voided automatically). Void bill #${err.billId} from the tenant profile (Advance & Deposit tab) before retrying this request.\n\n(${err.message})`
+      } else if (moveOutBill) {
+        // Decide from the database, not from the error: was the move-out really applied?
+        try {
+          const v = await verifyMoveOutApplied(parseInt(nvReq._tenant_id, 10), moveOutDay)
+          if (v.ok) {
+            markable = true
+            msg = `${err.message}\n\nThe tenant HAS been moved out (final bill #${v.billId}) but this request is still PENDING. Check the bill on the tenant profile and finish any failed step by hand, then use "Mark approved (already applied)".`
+          }
+        } catch { /* keep the original message; no recovery button */ }
+      }
+      setError(msg)
+      setPartialApplied(markable)
+      setBusy(false); setDecision(null)
+    }
   }
 
   async function applyTenantProfileRequest() {
@@ -309,6 +374,48 @@ function DecideModal({ request, onClose, onDone }) {
       throw new Error(msg)
     }
     return logError ? `Request approved and applied, but activity log failed: ${logError}` : null
+  }
+
+  async function applyMoveOutRequest() {
+    const { data: cur, error: sErr } = await supabase
+      .from('approval_requests').select('status').eq('id', request.id).single()
+    if (sErr) throw sErr
+    if (cur.status !== 'PENDING') throw new Error('This request has already been decided.')
+    if (String(nvReq._tenant_id) !== String(request.entity_id)) throw new Error('The request is inconsistent: its tenant does not match the tenant it was filed against. Reject it.')
+
+    // Re-read everything the money depends on and recompute it; nothing but staff-edited text/charges is trusted from the request.
+    const c = await loadMoveOutCtx()
+    const t = c.tenant
+    if (!t.is_active) throw new Error('This tenant has already moved out.')
+    const r = reconcile(c, waived)
+    if (r.errors.length) throw new Error(`The request cannot be applied: ${r.errors.join(' ')}`)
+    if (r.forfeit_waived && !waiveReason.trim()) throw new Error('Enter the reason management approved waiving the forfeiture.')
+    const { data: { user } } = await supabase.auth.getUser()
+    await processMoveOutWithBill(
+      { ...t, room_id: t.beds?.room_id ?? null, _room_no: t.beds?.rooms?.room_no ?? nvReq._room_no, _bed_letter: t.beds?.bed_letter ?? nvReq._bed_letter },
+      {
+        move_out_date: nvReq.move_out_date, actual_move_out_date: nvReq.actual_move_out_date,
+        amount_paid: nvReq.amount_paid, water_reading: nvReq.water_reading, electric_reading: nvReq.electric_reading,
+      },
+      {
+        ...moveOutBill, lines: r.lines.map(({ _amt, ...l }) => l), cutoff_id: r.cutoff_id,
+        early_termination: r.early_termination, forfeit_waived: r.forfeit_waived,
+        waived_reason: r.forfeit_waived ? waiveReason.trim() : null,
+      },
+      user?.id,
+    )
+  }
+
+  async function markApplied() {
+    setBusy(true); setError('')
+    try {
+      if (String(nvReq._tenant_id) !== String(request.entity_id)) throw new Error('The request is inconsistent: its tenant does not match the tenant it was filed against.')
+      const v = await verifyMoveOutApplied(parseInt(nvReq._tenant_id, 10), moveOutDay)
+      if (!v.ok) throw new Error(`Not marked approved: ${v.reason}. This action only records a move-out that was really applied.`)
+      await approveRequest(request.id, notes || null)
+      notifyAsync('approval_decision', request.id)
+      onDone('APPROVED', null)
+    } catch (err) { setError(err.message); setBusy(false) }
   }
 
   async function applyApprovedChange(approved) {
@@ -460,6 +567,57 @@ function DecideModal({ request, onClose, onDone }) {
             </div>
           )}
 
+          {moveOutBill && (
+            <div className="bg-surface-2 border border-line-subtle rounded-xl p-4 space-y-2 text-[12px]">
+              <div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider">Final bill</div>
+              {!ctx && !error && <div className="text-ink-muted">Checking the bill against the tenant's current data…</div>}
+              {rec && rec.diffs.length > 0 && (
+                <div className="bg-warning-bg border border-warning-border rounded-lg px-3 py-2 text-warning-text space-y-1">
+                  <div className="font-semibold">Differences between the request and what will be applied:</div>
+                  {rec.diffs.map((x, i) => <div key={i}>{x}</div>)}
+                </div>
+              )}
+              {rec && rec.errors.length > 0 && (
+                <div className="bg-danger-bg border border-danger-border rounded-lg px-3 py-2 text-danger-text space-y-1">
+                  <div className="font-semibold">This request cannot be approved as submitted. Reject it and ask for a new move-out.</div>
+                  {rec.errors.map((x, i) => <div key={i}>{x}</div>)}
+                </div>
+              )}
+              {earlyNow && (
+                <div className="bg-danger-bg border border-danger-border rounded-lg px-3 py-2 space-y-2">
+                  <div className="text-danger-text font-semibold">
+                    Early termination (lease end {ctx?.tenant?.move_out_date?.slice(0, 10) || moveOutBill.planned_move_out || '—'}).{!waived && ' Advance and deposit are forfeited.'}
+                  </div>
+                  <label className="flex items-center gap-2 text-ink cursor-pointer">
+                    <input type="checkbox" checked={waived} disabled={!ctx} onChange={e => setWaived(e.target.checked)} />
+                    Management approved — do not forfeit
+                  </label>
+                  {waived && (
+                    <input type="text" className="w-full" value={waiveReason} onChange={e => setWaiveReason(e.target.value)}
+                      placeholder="Reason management approved the waiver (required)" />
+                  )}
+                </div>
+              )}
+              <table className="w-full">
+                <tbody>
+                  {billLines.map((l, i) => (
+                    <tr key={i} className="border-t border-line-subtle">
+                      <td className="py-1">{l.label}</td>
+                      <td className="text-ink-muted">{l.mid}{l.kind === 'forfeit' && l.original != null && ` (${pesoText(l.original)} forfeited)`}</td>
+                      <td className="text-right tabular-nums">{Number(l.amount) < 0 ? '-' + pesoText(-l.amount) : pesoText(l.amount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {billTotals && (
+                <div className={`text-right font-bold ${billTotals.net_amount < 0 ? 'text-success-text' : 'text-ink'}`}>
+                  {billTotals.net_amount < 0 ? `Amount to be returned ${pesoText(-billTotals.net_amount)}` : `Total amount due ${pesoText(billTotals.net_amount)}`}
+                </div>
+              )}
+              <div className="text-ink-muted">Readings: water {nvReq.water_reading} · electric {nvReq.electric_reading}. Approving executes the move-out and saves this bill.</div>
+            </div>
+          )}
+
           {/* Reason */}
           {request.reason && (
             <div className="bg-warning-bg border border-warning-border rounded-xl px-4 py-3 text-[13px] text-warning-text">
@@ -490,7 +648,10 @@ function DecideModal({ request, onClose, onDone }) {
             <XCircle size={14} />
             {busy && decision === 'REJECTED' ? 'Rejecting…' : 'Reject'}
           </button>
-          <button className="btn primary" onClick={() => decide('APPROVED')} disabled={busy}>
+          {partialApplied && (
+            <button className="btn secondary" onClick={markApplied} disabled={busy}>Mark approved (already applied)</button>
+          )}
+          <button className="btn primary" onClick={() => decide('APPROVED')} disabled={busy || partialApplied || (!!moveOutBill && (!rec || rec.errors.length > 0))}>
             <CheckCircle size={14} />
             {busy && decision === 'APPROVED' ? 'Approving…' : 'Approve'}
           </button>

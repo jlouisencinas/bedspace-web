@@ -1,10 +1,11 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
-  fetchBeds, fetchTenants, addTenant, processMoveOut, addTenantDocument,
+  fetchBeds, fetchTenants, addTenant, processMoveOutWithBill, addTenantDocument, addTenantDeposits,
   supabase,
 } from '../lib/supabase'
 import { getOrCreateTenantFolder, uploadFileToDrive, isDriveConfigured } from '../lib/googleDrive'
+import { moveInEligibleBeds } from '../lib/bedEligibility'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
 import MoveInModal          from '../components/MoveInModal'
@@ -29,7 +30,7 @@ function fmtDate(d)  {
 // ── Tenants Page ───────────────────────────────────────────────────────────────
 
 export default function Tenants() {
-  const { isAdmin } = useAuth()
+  const { isAdmin, user } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -80,6 +81,8 @@ export default function Tenants() {
   [tenants])
 
   const enriched = useMemo(() => allEnriched.filter(t => t.is_active), [allEnriched])
+
+  const eligibleBeds = useMemo(() => moveInEligibleBeds(beds, tenants), [beds, tenants])
 
   // Deep-link from Dashboard drill-down modals — resolves the tenant whether
   // currently active or since moved out (allEnriched is unfiltered). Consumes
@@ -144,12 +147,22 @@ export default function Tenants() {
     if (!moveInBed) return
     setSaving(true)
     try {
-      const { contacts = [], emails = [], docs = [], ...tenantData } = data
+      const { contacts = [], emails = [], docs = [], advance, deposit, ...tenantData } = data
       const tenant = await addTenant(moveInBed.bed_id, {
         ...tenantData,
         _room_no:    moveInBed.room_no,
         _bed_letter: moveInBed.bed_letter,
       })
+
+      let depositError = null
+      try {
+        await addTenantDeposits(tenant.id, [
+          { kind: 'ADVANCE', amount: advance.amount, refNo: advance.refNo, receivedDate: tenantData.move_in_date },
+          { kind: 'DEPOSIT', amount: deposit.amount, refNo: deposit.refNo, receivedDate: tenantData.move_in_date },
+        ], user?.id)
+      } catch(depErr) {
+        depositError = depErr
+      }
 
       const validContacts = contacts.filter(c => c.value.trim())
       if (validContacts.length) {
@@ -199,25 +212,29 @@ export default function Tenants() {
       }
 
       setMoveInBed(null)
-      show('Tenant moved in!', 'success')
+      if (depositError) {
+        show(`${tenant.name} was moved in, but the advance/deposit was NOT recorded: ${depositError.message}. An admin can add them from the tenant profile (Advance & Deposit tab).`, 'error', { duration: 15000 })
+      } else {
+        show('Tenant moved in!', 'success')
+      }
       load()
     } catch(e) { show(e.message, 'error') }
     setSaving(false)
   }
 
-  async function handleMoveOut(data) {
-    if (!moveOutT) return
-    setSaving(true)
-    try {
-      await processMoveOut(
-        { ...moveOutT, _room_no: moveOutT.room_no, _bed_letter: moveOutT.bed_letter },
-        data
-      )
-      setMoveOutT(null)
-      show('Move-out processed.', 'success')
-      load()
-    } catch(e) { show(e.message, 'error') }
-    setSaving(false)
+  // Errors propagate to the modal, which shows them in full (they say exactly which steps ran).
+  // The list reloads when the modal closes: reloading now would unmount the modal's result screen.
+  const moveOutAttempted = useRef(false)
+  async function handleMoveOut({ moveOut, bill }) {
+    moveOutAttempted.current = true
+    return processMoveOutWithBill(
+      { ...moveOutT, _room_no: moveOutT.room_no, _bed_letter: moveOutT.bed_letter },
+      moveOut, bill, user?.id,
+    )
+  }
+  function closeMoveOut() {
+    setMoveOutT(null)
+    if (moveOutAttempted.current) { moveOutAttempted.current = false; load() }
   }
 
   if (loading) return (
@@ -237,9 +254,10 @@ export default function Tenants() {
         <button
           className="btn primary"
           onClick={() => {
-            const vacant = beds.find(b => b.status === 'VACANT' && (!roomFilter || b.room_no === roomFilter))
-            if (vacant) setMoveInBed(vacant)
-            else show('No vacant beds available.', 'error')
+            const inRoom = eligibleBeds.filter(b => !roomFilter || b.room_no === roomFilter)
+            const free = inRoom.find(b => b.status === 'VACANT') || inRoom[0]
+            if (free) setMoveInBed(free)
+            else show('No vacant or reserved beds available.', 'error')
           }}
         >
           <UserPlus size={14} /> Move In
@@ -334,7 +352,7 @@ export default function Tenants() {
       {moveInBed && (
         <MoveInModal
           bed={moveInBed}
-          allBeds={beds.filter(b => b.status === 'VACANT')}
+          allBeds={eligibleBeds}
           onBedChange={setMoveInBed}
           onClose={() => setMoveInBed(null)}
           onSubmit={handleMoveIn}
@@ -344,9 +362,8 @@ export default function Tenants() {
       {moveOutT && (
         <MoveOutModal
           bed={{ ...moveOutT, tenant_name: moveOutT.name, move_out_date: moveOutT.move_out_date }}
-          onClose={() => setMoveOutT(null)}
+          onClose={closeMoveOut}
           onSubmit={handleMoveOut}
-          saving={saving}
         />
       )}
       {transferT && (

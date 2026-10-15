@@ -9,8 +9,9 @@
  *   Room collections  = Σ billed room amounts (Method B) — ties to room billing
  *   Overhead          = unbilled rooms (e.g. 702 mgmt, 706) consumption × standard
  *                       + common areas (Lobby/2nd Floor/Roof Deck) × standard
- *   Commercial        = commercial area consumption × bedspace (billing TBD)
- *   Variance          = Room collections − Provider cost   (− = losing)
+ *   Commercial        = commercial area consumption × bedspace. WATER is billed to the commercial
+ *                       tenant and counted as a collection; ELECTRIC is still pending (not counted)
+ *   Variance          = (Room collections + commercial water) − Provider cost   (− = shortfall)
  */
 import { computeBilling } from './billing'
 
@@ -49,9 +50,13 @@ export function computePnL(cutoff, billRows, interims, tenants, areaReadings, sp
     })
 
     const overhead = roomOverhead + areaOverhead
-    const variance = roomCollections - cost
+    // Commercial WATER is billed to the commercial tenant (see billing.js special tenants), so it
+    // counts as a collection. Commercial ELECTRIC is still pending and stays out of variance.
+    const commercialCollected = util === 'WATER' ? commercial : 0
+    const collections = roomCollections + commercialCollected
+    const variance = collections - cost
 
-    out[util] = { cost, standard, bedspace, mainCons, roomCollections, overhead, commercial, variance }
+    out[util] = { cost, standard, bedspace, mainCons, roomCollections, commercialCollected, collections, overhead, commercial, variance }
   }
   out.totalVariance = out.WATER.variance + out.ELECTRIC.variance
   return out

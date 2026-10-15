@@ -22,7 +22,7 @@ npm run preview
 ## Layout
 - `src/pages/` — one file per route (Dashboard, BedMap, Tenants, EditTenantProfile, Billing,
   Utilities, Collections, PaymentMonitoring, Maintenance, Approvals, Reports, Occupancy, Property, Activity,
-  Users, NotificationSettings, PrintElectricity, PrintRentWater, Login, OccupancySimulator).
+  Users, NotificationSettings, PrintElectricity, PrintRentWater, PrintFinalBill, Login, OccupancySimulator).
   `Occupancy.jsx` is the per-month daily-weighted occupancy module (`requirements.md` §9), all roles,
   built on `computeDailyOccupancy()` in `_shared/occupancy.ts`.
 - `src/components/` — shared UI (MoveInModal, MoveOutModal, TransferModal, Statement, MultiEntryInput,
@@ -42,6 +42,11 @@ npm run preview
   deployment to take effect.
 - `database/init.sql` — single consolidated schema file (tables, views, functions, RLS policies, seed
   data). See the truncate warning under Working conventions.
+- `database/migrations/` — one-off, apply-by-hand SQL (e.g. `advance_deposit.sql` → `tenant_deposits`:
+  per-tenant advance/deposit receipts with S.I#/T.R#; requirements §5).
+- `src/lib/finalBill.js` — pure move-out Final Bill builder + automatic second-to-last-bill advance credit
+  (`billPosition`, `advanceCredits`); `final_bills` table (`database/migrations/final_bills.sql`), flow in
+  `MoveOutModal` → `processMoveOutWithBill`, print page `PrintFinalBill` (`/print/final-bill`); requirements §5.
 - `database/UTILITIES_PLAN.md` — design notes for the utilities billing model.
 - `scripts/` — one-time Node migration scripts from the old Google Sheets.
 

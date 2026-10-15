@@ -15,6 +15,7 @@ import Billing        from './pages/Billing'
 import Reports        from './pages/Reports'
 import PrintRentWater    from './pages/PrintRentWater'
 import PrintElectricity  from './pages/PrintElectricity'
+import PrintFinalBill    from './pages/PrintFinalBill'
 import Activity       from './pages/Activity'
 import Approvals      from './pages/Approvals'
 import Users          from './pages/Users'
@@ -75,6 +76,7 @@ function Layout() {
             {isAdmin && <>
               <Route path="/print/rent-water"  element={<PrintRentWater />}   />
               <Route path="/print/electricity" element={<PrintElectricity />} />
+              <Route path="/print/final-bill" element={<PrintFinalBill />} />
               <Route path="/approvals"         element={<Approvals />}        />
               <Route path="/users"             element={<Users />}            />
               <Route path="/notification-settings" element={<NotificationSettings />} />

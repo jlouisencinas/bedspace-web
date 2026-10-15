@@ -5,12 +5,13 @@ import {
   fetchBeds, fetchActivityLog, fetchCutoffs, fetchUtilityBill,
   fetchInterimReadings, fetchTenants, fetchAreaReadings,
   fetchMonthlyReports, fetchActivityLogByType, fetchSplits, fetchAddons,
-  fetchPaymentsForCutoff,
+  fetchPaymentsForCutoff, fetchAdvanceCreditData,
 } from '../lib/supabase'
 import { computePnL } from '../lib/pnl'
 import { computeBilling } from '../lib/billing'
 import { getCachedBilling, cacheBilling } from '../lib/billingCache'
 import { buildPaymentMonitoring, summarizeCollections } from '../lib/collectionsSummary'
+import { advanceAdjustments } from '../lib/finalBill'
 import { useAuth } from '../lib/auth'
 import RoomMaintenancePanel  from '../components/RoomMaintenancePanel'
 import OccupancyYtdChart     from '../components/OccupancyYtdChart'
@@ -125,6 +126,7 @@ export default function Dashboard() {
   const [activeCutoff,     setActiveCutoff]     = useState(null)
   const [billingPerTenant, setBillingPerTenant] = useState([])
   const [cutoffPayments,   setCutoffPayments]   = useState([])
+  const [advData,          setAdvData]          = useState({ deposits: [], finalBills: [], stored: [] })
   const [loading, setLoading] = useState(true)
   const [drillDown, setDrillDown] = useState(null)
 
@@ -153,6 +155,7 @@ export default function Dashboard() {
         setPnl(computePnL(active, bill, interims, allTenants, areaArr))
         setPnlCut(active.name)
         setCutoffPayments(cutoffPays)
+        setAdvData(await fetchAdvanceCreditData())
         if (bill.length) {
           const cached = getCachedBilling(active.id)
           if (cached) {
@@ -171,9 +174,10 @@ export default function Dashboard() {
 
   const collectionsSummary = useMemo(() => {
     if (!activeCutoff || billingPerTenant.length === 0) return null
-    const rows = buildPaymentMonitoring(activeCutoff, tenants, billingPerTenant, cutoffPayments)
+    const adjustments = advanceAdjustments({ tenants, cutoff: activeCutoff, perTenant: billingPerTenant, deposits: advData.deposits, stored: advData.stored })
+    const rows = buildPaymentMonitoring(activeCutoff, tenants, billingPerTenant, cutoffPayments, adjustments)
     return summarizeCollections(rows)
-  }, [activeCutoff, tenants, billingPerTenant, cutoffPayments])
+  }, [activeCutoff, tenants, billingPerTenant, cutoffPayments, advData])
 
   // Live, day-weighted "month so far" occupancy — distinct from the point-in-time
   // tiles below (which reflect only right-now bed status). Snapshot timing (when

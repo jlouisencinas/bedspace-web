@@ -18,6 +18,11 @@ const r2 = n => Math.round((Number(n) || 0) * 100) / 100
  *                   in the signature to match the plan's call shape.
  * billingPerTenant: computeBilling(...).perTenant
  * cutoffPayments:   fetchPaymentsForCutoff(cutoffId)
+ * adjustments:      optional Map(tenantId -> amount) of credits applied against the bill
+ *                   (the automatic second-to-last-bill advance credit, see finalBill.js
+ *                   advanceCredits). A credit settles part of what is owed; it is NOT cash, so
+ *                   paid.* and the collected totals never include it:
+ *                   sum(bills) = sum(payments) + adjustments + outstanding.
  *
  * Billed is split into 3 comparable columns (Rent+Water / Electric / Add-ons)
  * so the Payment Monitoring table can show them separately — this differs from
@@ -25,7 +30,7 @@ const r2 = n => Math.round((Number(n) || 0) * 100) / 100
  * electric) only in that the add-on portion is broken out as its own column;
  * the underlying totals are identical.
  */
-export function buildPaymentMonitoring(cutoff, tenants, billingPerTenant, cutoffPayments) {
+export function buildPaymentMonitoring(cutoff, tenants, billingPerTenant, cutoffPayments, adjustments = new Map()) {
   const paysByTenant = {}
   ;(cutoffPayments || []).forEach(p => {
     ;(paysByTenant[p.tenant_id] ||= []).push(p)
@@ -44,7 +49,8 @@ export function buildPaymentMonitoring(cutoff, tenants, billingPerTenant, cutoff
     const paidTotal     = r2(paidRentWater + paidElectric + paidOther)
 
     // Overpayment surfaces as a credit, not a negative outstanding balance.
-    const diff = r2(billedTotal - paidTotal)
+    const adjusted = r2(adjustments.get(t.id) || 0)
+    const diff = r2(billedTotal - adjusted - paidTotal)
     const outstanding = diff > 0 ? diff : 0
     const credit       = diff < 0 ? r2(-diff) : 0
 
@@ -59,6 +65,7 @@ export function buildPaymentMonitoring(cutoff, tenants, billingPerTenant, cutoff
       wholeRoom:  !!t.wholeRoom,
       billed: { rentWater, electric, addons, total: billedTotal },
       paid:   { rentWater: paidRentWater, electric: paidElectric, other: paidOther, total: paidTotal },
+      adjustments: adjusted,
       outstanding,
       credit,
       lastPaymentDate,
@@ -71,8 +78,10 @@ export function summarizeCollections(rows) {
   const totalBilled      = r2(list.reduce((s, r) => s + r.billed.total, 0))
   const totalPaid        = r2(list.reduce((s, r) => s + r.paid.total, 0))
   const totalOutstanding = r2(list.reduce((s, r) => s + r.outstanding, 0))
-  const pctCollected     = totalBilled > 0 ? Math.round((totalPaid / totalBilled) * 100) : 0
+  const totalAdjustments = r2(list.reduce((s, r) => s + (r.adjustments || 0), 0))
+  const collectible      = r2(totalBilled - totalAdjustments)
+  const pctCollected     = collectible > 0 ? Math.round((totalPaid / collectible) * 100) : 0
   const unpaidCount      = list.filter(r => r.outstanding > 0).length
   const tenantCount      = list.length
-  return { totalBilled, totalPaid, totalOutstanding, pctCollected, unpaidCount, tenantCount }
+  return { totalBilled, totalPaid, totalAdjustments, totalOutstanding, pctCollected, unpaidCount, tenantCount }
 }

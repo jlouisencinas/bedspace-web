@@ -172,6 +172,10 @@ create table if not exists tenants (
   created_at             timestamptz default now()
 );
 
+-- One active tenant per bed. Matches the live DB definition
+-- (see database/migrations/uniq_active_tenant_per_bed.sql). Rows with bed_id null are not constrained.
+create unique index if not exists uniq_active_tenant_per_bed on tenants(bed_id) where (is_active and bed_id is not null);
+
 create table if not exists payments (
   id           serial primary key,
   tenant_id    int references tenants(id),
@@ -553,6 +557,69 @@ create table if not exists tenant_emails (
   is_primary boolean not null default false,
   created_at timestamptz not null default now()
 );
+
+-- Advance (S.I#) / deposit (T.R#) receipts, 1 month each at move-in.
+-- Backfill for existing tenants lives in database/migrations/advance_deposit.sql.
+create table if not exists tenant_deposits (
+  id            serial primary key,
+  tenant_id     int not null references tenants(id),
+  kind          text not null check (kind in ('ADVANCE','DEPOSIT')),
+  amount        numeric(10,2) not null check (amount >= 0),
+  ref_no        text,
+  received_date date,
+  status        text not null default 'HELD'
+                check (status in ('HELD','APPLIED','FORFEITED','REFUNDED')),
+  settled_note  text,
+  notes         text,
+  created_by    uuid,
+  created_at    timestamptz default now()
+);
+create index if not exists idx_tenant_deposits_tenant on tenant_deposits(tenant_id);
+create index if not exists idx_tenant_deposits_status on tenant_deposits(status);
+
+-- Final bill issued when a tenant moves out. lines = jsonb array of
+-- {label, mid, amount, kind: 'charge'|'unsettled'|'credit'|'forfeit'}; credits are negative amounts;
+-- net_amount > 0 tenant owes, < 0 refund due. Never deleted: void via status.
+create table if not exists final_bills (
+  id                serial primary key,
+  tenant_id         int not null references tenants(id),
+  cutoff_id         int references cutoffs(id),
+  status            text not null default 'FINAL' check (status in ('FINAL','VOID')),
+  move_out_date     date not null,
+  early_termination boolean default false,
+  forfeit_waived    boolean default false,
+  waived_reason     text,
+  lines             jsonb not null,
+  details           jsonb,
+  total_charges     numeric(12,2),
+  total_credits     numeric(12,2),
+  net_amount        numeric(12,2),
+  refund_status     text not null default 'NONE' check (refund_status in ('NONE','PENDING','PAID')),
+  refund_paid_date  date,
+  refund_ref        text,
+  prepared_by       text,
+  void_reason       text,
+  voided_at         timestamptz,
+  created_by        uuid,
+  created_at        timestamptz default now()
+);
+create index if not exists idx_final_bills_tenant on final_bills(tenant_id);
+-- One non-void FINAL bill per tenant.
+create unique index if not exists uq_final_bills_one_final on final_bills(tenant_id) where status = 'FINAL';
+
+-- Second-to-last-bill advance credit, recorded automatically when its cutoff is closed (opening the next
+-- one). Immutable; allocations = [{deposit_id, amount}] (receipts used, incl. whole-room sibling beds).
+create table if not exists advance_credits (
+  id          serial primary key,
+  tenant_id   int not null references tenants(id),
+  cutoff_id   int not null references cutoffs(id),
+  amount      numeric(10,2) not null check (amount >= 0),
+  ref_text    text,
+  allocations jsonb,
+  created_at  timestamptz default now(),
+  unique (tenant_id, cutoff_id)
+);
+create index if not exists idx_advance_credits_tenant on advance_credits(tenant_id);
 
 -- History of a tenant's room/bed assignments over time
 create table if not exists tenant_stays (
@@ -1294,6 +1361,61 @@ begin
       'using (exists (select 1 from public.profiles where id = auth.uid() and role = ''admin''))', t, t);
   end loop;
 end $$;
+
+-- ── tenant_deposits ───────────────────────────────────────────────────────
+-- select/insert = admin+user (viewers cannot see or forge receipts; move-in by a user inserts
+-- the two receipts); update = admin only; nobody deletes. Status moves
+-- HELD -> APPLIED/FORFEITED/REFUNDED.
+alter table public.tenant_deposits enable row level security;
+drop policy if exists tenant_deposits_select on public.tenant_deposits;
+create policy tenant_deposits_select on public.tenant_deposits
+  for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists tenant_deposits_insert on public.tenant_deposits;
+create policy tenant_deposits_insert on public.tenant_deposits
+  for insert to authenticated
+  with check (
+    exists (select 1 from public.profiles where id = auth.uid() and role = 'admin')
+    or (status = 'HELD' and exists (select 1 from public.profiles where id = auth.uid() and role = 'user'))
+  );
+drop policy if exists tenant_deposits_update on public.tenant_deposits;
+create policy tenant_deposits_update on public.tenant_deposits
+  for update to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+-- No DELETE policy on purpose: receipts are never deleted (void/settle via status for the audit trail).
+drop policy if exists tenant_deposits_delete on public.tenant_deposits;
+
+-- ── final_bills ───────────────────────────────────────────────────────────
+-- select = admin+user; insert/update = admin only (void / refund tracking); nobody deletes.
+alter table public.final_bills enable row level security;
+drop policy if exists final_bills_select on public.final_bills;
+create policy final_bills_select on public.final_bills
+  for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists final_bills_insert on public.final_bills;
+create policy final_bills_insert on public.final_bills
+  for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+drop policy if exists final_bills_update on public.final_bills;
+create policy final_bills_update on public.final_bills
+  for update to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+-- No DELETE policy on purpose: bills are never deleted (void via status for the audit trail).
+drop policy if exists final_bills_delete on public.final_bills;
+
+-- ── advance_credits ───────────────────────────────────────────────────────
+alter table public.advance_credits enable row level security;
+drop policy if exists advance_credits_select on public.advance_credits;
+create policy advance_credits_select on public.advance_credits
+  for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists advance_credits_insert on public.advance_credits;
+create policy advance_credits_insert on public.advance_credits
+  for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+-- No UPDATE / DELETE policies on purpose: a recorded credit is immutable.
+drop policy if exists advance_credits_update on public.advance_credits;
+drop policy if exists advance_credits_delete on public.advance_credits;
 
 -- ── addon_types ───────────────────────────────────────────────────────────
 alter table public.addon_types enable row level security;

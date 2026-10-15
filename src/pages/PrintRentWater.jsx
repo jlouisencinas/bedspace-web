@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
-import { fetchCutoffs, fetchUtilityBill, fetchInterimReadings, fetchTenants, fetchSplits, fetchAddons, fetchAreaReadings } from '../lib/supabase'
+import { fetchCutoffs, fetchUtilityBill, fetchInterimReadings, fetchTenants, fetchSplits, fetchAddons, fetchAreaReadings, fetchAdvanceCreditData } from '../lib/supabase'
 import { computeBilling } from '../lib/billing'
+import { advanceCredits } from '../lib/finalBill'
 import Statement from '../components/Statement'
 
 const COMPANY = {
@@ -35,6 +36,7 @@ export default function PrintRentWater() {
   const [splits, setSplits] = useState([])
   const [addons, setAddons] = useState([])
   const [areas, setAreas] = useState([])
+  const [advData, setAdvData] = useState({ deposits: [], finalBills: [], stored: [], error: null })
   const [loading, setLoading] = useState(true)
 
   const [billingDate, setBillingDate] = useState('')
@@ -47,11 +49,12 @@ export default function PrintRentWater() {
         const cs = await fetchCutoffs()
         const c = cs.find(x => x.id === cutoffId)
         setCutoff(c)
-        const [b, ir, t, sp, ad, ar] = await Promise.all([
+        const [b, ir, t, sp, ad, ar, adv] = await Promise.all([
           fetchUtilityBill(cutoffId), fetchInterimReadings(cutoffId), fetchTenants(),
           fetchSplits(cutoffId), fetchAddons(cutoffId), fetchAreaReadings(cutoffId),
+          fetchAdvanceCreditData(),
         ])
-        setBill(b); setInterims(ir); setTenants(t); setSplits(sp); setAddons(ad); setAreas(ar)
+        setBill(b); setInterims(ir); setTenants(t); setSplits(sp); setAddons(ad); setAreas(ar); setAdvData(adv)
         if (c) setBillingDate(addDays(c.water_end, -1))
       } catch (e) { console.error(e) }
       setLoading(false)
@@ -62,6 +65,12 @@ export default function PrintRentWater() {
     if (!cutoff || !bill.length) return { perTenant: [] }
     return computeBilling(cutoff, bill, interims, tenants, splits, addons, areas)
   }, [cutoff, bill, interims, tenants, splits, addons, areas])
+
+  // Second-to-last bill: advance credited against this period's rent, computed from the move-out date.
+  const credits = useMemo(() => {
+    if (!cutoff || !perTenant.length) return new Map()
+    return advanceCredits({ tenants, cutoff, perTenant, deposits: advData.deposits, stored: advData.stored })
+  }, [cutoff, perTenant, tenants, advData])
 
   const roomMap = useMemo(() => {
     const m = {}; bill.forEach(b => { m[b.room_id] = b }); return m
@@ -86,11 +95,13 @@ export default function PrintRentWater() {
     if (!t.special || t.water > 0) charges.push({ label: 'Add: Water (cu. m)', mid: cu(t.waterCons), amount: t.water })
     ;(t.addons || []).filter(a => a.bill_on !== 'ELECTRIC').forEach(a =>
       charges.push({ label: `Add: ${a.label}${a.recurring ? '' : ' · one-time'}`, mid: '', amount: Number(a.amount) }))
+    const credit = credits.get(t.id)
+    if (credit) charges.push({ label: 'Less: Advanced Payment', mid: credit.ref, amount: -credit.amount, amountText: '-' + peso(credit.amount) })
     return {
       company: COMPANY, copyLabel, peso,
       name: t.name, room: t.room_no, asOf: fmt(asOf), due: fmt(due), billNo, preparedBy,
       charges,
-      total: t.rent + t.water + (t.addonRentWater || 0),
+      total: t.rent + t.water + (t.addonRentWater || 0) - (credit ? credit.amount : 0),
       details: t.special ? null : {
         header: ['', 'Prev Reading', 'Actual Reading', 'Actual Room Consumption (cu. m)', 'Personal Consumption'],
         rows: [['Water', reading(room.water_prev), reading(room.water_curr),
@@ -116,6 +127,12 @@ export default function PrintRentWater() {
           <button className="btn primary" onClick={() => window.print()}>🖨 Print / Save PDF</button>
         </div>
       </div>
+
+      {advData.error && (
+        <div className="no-print" style={{ maxWidth: 760, margin: '0 auto 16px', background: '#fff7ed', border: '1px solid #fdba74', color: '#9a3412', padding: 12, borderRadius: 10, fontSize: 13 }}>
+          Advance credits could not be loaded ({advData.error}). Do not print 2nd-to-last bills until this is fixed: they would be missing the advance credit.
+        </div>
+      )}
 
       {statements.map((t, i) => {
         const billNo = String(billStart + i).padStart(4, '0')

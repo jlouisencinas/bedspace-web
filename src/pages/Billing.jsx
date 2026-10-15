@@ -3,9 +3,10 @@ import {
   fetchCutoffs, fetchUtilityBill, fetchTenants,
   fetchInterimReadings, deleteInterimReading,
   fetchSplits, setRoomSplit, fetchAddons, saveAddon, deleteAddon, fetchAreaReadings,
-  fetchTransfersForCutoff,
+  fetchTransfersForCutoff, fetchAdvanceCreditData,
 } from '../lib/supabase'
 import { computeBilling } from '../lib/billing'
+import { billPosition, advanceCredits, advanceConsumed } from '../lib/finalBill'
 import { cacheBilling } from '../lib/billingCache'
 import { useToast } from '../components/Toast'
 import { useAuth } from '../lib/auth'
@@ -31,6 +32,7 @@ export default function Billing() {
   const [addons,      setAddons]      = useState([])
   const [areas,       setAreas]       = useState([])
   const [transfers,   setTransfers]   = useState([])
+  const [advData,     setAdvData]     = useState({ deposits: [], finalBills: [], stored: [], error: null })
   const [addonTenant, setAddonTenant] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)
   const { show, ToastEl } = useToast()
@@ -56,13 +58,14 @@ export default function Billing() {
       // Re-fetch cutoff directly to avoid stale closure over `cutoffs` state
       const freshCutoffs = await fetchCutoffs()
       const cutoffObj = freshCutoffs.find(c => c.id === id)
-      const [b, ir, t, sp, ad, ar, xf] = await Promise.all([
+      const [b, ir, t, sp, ad, ar, xf, adv] = await Promise.all([
         fetchUtilityBill(id), fetchInterimReadings(id), fetchTenants(),
         fetchSplits(id), fetchAddons(id), fetchAreaReadings(id),
         cutoffObj ? fetchTransfersForCutoff(cutoffObj) : Promise.resolve([]),
+        fetchAdvanceCreditData(),
       ])
       setCutoffs(freshCutoffs)
-      setBill(b); setInterims(ir); setTenants(t); setSplits(sp); setAddons(ad); setAreas(ar); setTransfers(xf)
+      setBill(b); setInterims(ir); setTenants(t); setSplits(sp); setAddons(ad); setAreas(ar); setTransfers(xf); setAdvData(adv)
     } catch (e) { show(e.message, 'error') }
     setLoading(false)
   }
@@ -74,6 +77,19 @@ export default function Billing() {
     cacheBilling(cutoff.id, result.perTenant)
     return result
   }, [cutoff, bill, interims, tenants, splits, addons, areas, transfers])
+
+  // Second-to-last bill: the advance is credited against this period's rent automatically,
+  // computed from the tenant's move-out date (not stored, not cash).
+  const tenantById = useMemo(() => new Map(tenants.map(t => [t.id, t])), [tenants])
+  const credits = useMemo(() => {
+    if (!cutoff || !perTenant.length) return new Map()
+    return advanceCredits({ tenants, cutoff, perTenant, deposits: advData.deposits, stored: advData.stored })
+  }, [cutoff, perTenant, tenants, advData])
+  // Live second-to-last detection skips tenants whose advance was already credited in an earlier cutoff.
+  const consumed = useMemo(() => {
+    if (!cutoff || !perTenant.length) return new Map()
+    return advanceConsumed({ tenants, cutoff, perTenant, stored: advData.stored, cutoffs })
+  }, [cutoff, perTenant, tenants, advData, cutoffs])
 
   const splitFlags = useMemo(() => {
     const s = new Set(); splits.forEach(x => s.add(`${x.room_id}|${x.utility}`)); return s
@@ -160,6 +176,12 @@ export default function Billing() {
 
       </div>
 
+      {advData.error && (
+        <div className="mb-3 px-4 py-3 bg-warning-bg border border-warning-border rounded-xl text-[13px] text-warning-text">
+          Advance credits could not be loaded ({advData.error}); the amounts below do not include any second-to-last-bill advance credit.
+        </div>
+      )}
+
       {/* ── Content ── */}
       {loading ? (
         <div className="loading-screen min-h-[200px]"><div className="spinner" /></div>
@@ -200,6 +222,14 @@ export default function Billing() {
                     <td className="td-name">
                       {t.name}
                       {t.settled     && <span className="badge oor ml-1.5">moved out</span>}
+                      {billCat === 'RENT_WATER' && !t.special && cutoff && (cutoff.is_active
+                        ? billPosition(tenantById.get(t.id), cutoff) === 'SECOND_TO_LAST'
+                        : advData.stored.some(s => s.tenant_id === t.id && s.cutoff_id === cutoff.id)) && (
+                        <span className="badge leased ml-1.5" title="Move-out falls in the next period: the advance is credited against this period's rent automatically">2nd-to-last bill</span>
+                      )}
+                      {consumed.has(t.id) && (
+                        <div className="text-[10px] font-normal text-ink-muted mt-0.5">Advance already credited in {consumed.get(t.id)}</div>
+                      )}
                       {t.transferred && <span className="badge leased ml-1.5" title="Mid-period room transfer — readings show old room (period start → transfer date); amounts include both rooms">XFER</span>}
                       {t.wholeRoom   && <span className="badge ml-1.5 bg-info-bg text-info-text" style={{border:'1px solid var(--info-border)'}} title="Single tenant renting the entire room — all bed rates combined, full room utilities">ROOM</span>}
                     </td>
@@ -235,7 +265,14 @@ export default function Billing() {
                             : <span className="text-ink-faint">—</span>}
                           <button className="btn-xs blue ml-1.5" onClick={() => setAddonTenant(t)}><PlusCircle size={10} /></button>
                         </td>
-                        <td className="td-rate text-right">{peso(rwTotal)}</td>
+                        <td className="td-rate text-right">
+                          {peso(rwTotal)}
+                          {credits.has(t.id) && (
+                            <div className="text-[10px] font-normal text-success-text leading-[1.3] mt-0.5 tabular-nums" title={`Advance ${credits.get(t.id).ref}`}>
+                              Less advance -{peso(credits.get(t.id).amount)}<br />Net {peso(rwTotal - credits.get(t.id).amount)}
+                            </div>
+                          )}
+                        </td>
                       </>
                     ) : (
                       <>
@@ -296,6 +333,12 @@ export default function Billing() {
               )}
             </tfoot>
           </table>
+          {billCat === 'RENT_WATER' && credits.size > 0 && (
+            <div className="px-4 py-2 text-[11px] text-ink-muted border-t border-line-subtle">
+              Advance credited on second-to-last bills this period: {peso([...credits.values()].reduce((s, c) => s + c.amount, 0))} across {credits.size} tenant(s).
+              It reduces what is owed (an adjustment, not a payment); the totals above are before the credit.
+            </div>
+          )}
         </div>
       ) : view === 'rooms' ? (
         <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))' }}>

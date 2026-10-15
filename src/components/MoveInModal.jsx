@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { LogIn, X, FileUp, CheckCircle, Wifi } from 'lucide-react'
 import MultiEntryInput from './MultiEntryInput'
 import { isDriveConfigured, isDriveConnected, preloadDrive, connectDrive } from '../lib/googleDrive'
@@ -49,6 +49,8 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
     emergency_contact_name: '', emergency_contact_no: '',
     comments: '',
   })
+  // null = follow the Rate field; a string = the user typed their own amount.
+  const [upfront, setUpfront] = useState({ advance_amount: null, advance_ref: '', deposit_amount: null, deposit_ref: '' })
   const [contacts,   setContacts]   = useState([{ value: '', label: 'Mobile', isPrimary: true }])
   const [emails,     setEmails]     = useState([{ value: '', label: '', isPrimary: true }])
   const [docs,           setDocs]           = useState(DOC_SLOTS.map(s => ({ ...s, file: null })))
@@ -56,8 +58,18 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
   const [driveConnected, setDriveConnected] = useState(isDriveConnected)
   const [drivePreloaded, setDrivePreloaded] = useState(false)
 
+  // Last name we auto-filled from a reservation; only replaced/cleared while the field still holds it.
+  const prefilledName = useRef('')
   useEffect(() => {
-    if (bed) setForm(f => ({ ...f, rate: bed.default_rate || '' }))
+    if (!bed) return
+    const reserved = bed.status === 'RESERVED' ? (bed.reserved_name || '') : ''
+    const previous = prefilledName.current
+    prefilledName.current = reserved
+    setForm(f => ({
+      ...f,
+      rate: bed.default_rate || '',
+      name: f.name === '' || f.name === previous ? reserved : f.name,
+    }))
   }, [bed])
 
   useEffect(() => {
@@ -76,11 +88,21 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
     setDocs(prev => prev.map((d, idx) => idx === i ? { ...d, file } : d))
   }
 
+  const setUp = (k, v) => { setFormError(''); setUpfront(u => ({ ...u, [k]: v })) }
+  const advanceAmount = upfront.advance_amount ?? form.rate
+  const depositAmount = upfront.deposit_amount ?? form.rate
+
   function handleSubmit(e) {
     e.preventDefault()
     setFormError('')
 
-    onSubmit({ ...form, duration: calcDuration(form.move_in_date, form.move_out_date), contacts, emails, docs })
+    onSubmit({
+      ...form,
+      duration: calcDuration(form.move_in_date, form.move_out_date),
+      contacts, emails, docs,
+      advance: { amount: advanceAmount, refNo: upfront.advance_ref },
+      deposit: { amount: depositAmount, refNo: upfront.deposit_ref },
+    })
   }
 
   return (
@@ -99,7 +121,7 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
 
               {allBeds && (
                 <div className="fg full">
-                  <label>Select Vacant Bed *</label>
+                  <label>Select Bed (Vacant or Reserved) *</label>
                   <select
                     value={bed?.bed_id || ''}
                     onChange={e => {
@@ -111,7 +133,7 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
                     <option value="" disabled>Select…</option>
                     {allBeds.map(b => (
                       <option key={b.bed_id} value={b.bed_id}>
-                        Room {b.room_no} · Bed {b.bed_letter} {b.bed_location ? `(${b.bed_location})` : ''} — {b.room_type}
+                        Room {b.room_no} · Bed {b.bed_letter} {b.bed_location ? `(${b.bed_location})` : ''} — {b.room_type}{b.status === 'RESERVED' ? ` — Reserved${b.reserved_name ? ` for ${b.reserved_name}` : ''}` : ''}
                       </option>
                     ))}
                   </select>
@@ -133,12 +155,34 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
                 <input type="number" value={form.rate} onChange={e => set('rate', e.target.value)} required min="0" step="0.01" />
               </div>
 
+              {/* ── Upfront payments ── */}
+              <div className="form-section">Upfront Payments</div>
+              <div className="fg">
+                <label>Advance (PHP) *</label>
+                <input type="number" value={advanceAmount} onChange={e => setUp('advance_amount', e.target.value)} required min="0" step="0.01" />
+              </div>
+              <div className="fg">
+                <label>S.I# (Sales Invoice)</label>
+                <input type="text" value={upfront.advance_ref} onChange={e => setUp('advance_ref', e.target.value)} placeholder="Optional" />
+              </div>
+              <div className="fg">
+                <label>Deposit (PHP) *</label>
+                <input type="number" value={depositAmount} onChange={e => setUp('deposit_amount', e.target.value)} required min="0" step="0.01" />
+              </div>
+              <div className="fg">
+                <label>T.R# (Temporary Receipt)</label>
+                <input type="text" value={upfront.deposit_ref} onChange={e => setUp('deposit_ref', e.target.value)} placeholder="Optional, e.g. TR# 121 & TR# 133" />
+              </div>
+
               {/* ── Personal Info ── */}
               <div className="form-section">Personal Information</div>
 
               <div className="fg full">
                 <label>Full Name *</label>
                 <input type="text" value={form.name} onChange={e => set('name', e.target.value)} required placeholder="Last, First Middle" />
+                {bed?.status === 'RESERVED' && bed.reserved_name && (
+                  <span className="text-[11px] text-ink-muted mt-1">Reserved for {bed.reserved_name}</span>
+                )}
               </div>
               <div className="fg">
                 <label>Gender *</label>

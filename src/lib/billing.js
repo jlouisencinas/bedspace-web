@@ -121,9 +121,15 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
   // Only active tenants appear in billing — settled/moved-out tenants still hold
   // their old bed_id FK after move-out, which would otherwise pull them into the
   // wrong billing period. Their billing is handled at the time of move-out.
+  // Exception: a tenant moved out WITH a final bill for THIS cutoff (fetchTenants stamps
+  // _finalBilled / _finalBilledCutoffs) stays a "ghost" participant: their days still apportion
+  // the room's utilities, so the roommates are billed only their own share, but they get no
+  // billed row (perTenant, rent) because their charges live on the final bill.
+  const isGhost = (t) => !t.is_active && !!t._finalBilled && (t._finalBilledCutoffs || []).includes(cutoff.id)
   const tByRoom = {}
   tenants.forEach(t => {
-    if (!t.is_active) return
+    const ghost = isGhost(t)
+    if (!t.is_active && !ghost) return
     const roomId = t.beds?.room_id
     if (!roomId) return
     const moveIn  = t.move_in_date
@@ -133,6 +139,7 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
       bed: t.beds?.bed_letter || '',
       moveInNum:  dayNum(moveIn),
       moveOutNum: dayNum(moveOut),  // null = still active
+      ghost,
     }
     ;(tByRoom[roomId] ||= []).push(rec)
   })
@@ -247,9 +254,10 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
 
     // Skip room-info update for _isTransfer virtual entries so they don't overwrite the
     // tenant's current (new) room — room info is corrected in the post-process below.
-    wt.forEach(t => { const a = ensure(t); if (!t._isTransfer) { a.room_id = br.room_id; a.room_no = br.room_no; a.room_type = br.room_type; a.waterPrev = br.water_prev; a.waterCurr = br.water_curr } a.water += wRes.amt[t.id]; a.waterCons += wRes.cons[t.id]; if (t._isTransfer) { a.oldWater += wRes.amt[t.id]; a.oldWaterCons += wRes.cons[t.id] } })
-    et.forEach(t => { const a = ensure(t); if (!t._isTransfer) { a.room_id = br.room_id; a.room_no = br.room_no; a.room_type = br.room_type; a.elecPrev = br.elec_prev; a.elecCurr = br.elec_curr } a.elec  += eRes.amt[t.id]; a.elecCons += eRes.cons[t.id]; if (t._isTransfer) { a.oldElec += eRes.amt[t.id]; a.oldElecCons += eRes.cons[t.id] } })
+    wt.forEach(t => { if (t.ghost) return; const a = ensure(t); if (!t._isTransfer) { a.room_id = br.room_id; a.room_no = br.room_no; a.room_type = br.room_type; a.waterPrev = br.water_prev; a.waterCurr = br.water_curr } a.water += wRes.amt[t.id]; a.waterCons += wRes.cons[t.id]; if (t._isTransfer) { a.oldWater += wRes.amt[t.id]; a.oldWaterCons += wRes.cons[t.id] } })
+    et.forEach(t => { if (t.ghost) return; const a = ensure(t); if (!t._isTransfer) { a.room_id = br.room_id; a.room_no = br.room_no; a.room_type = br.room_type; a.elecPrev = br.elec_prev; a.elecCurr = br.elec_curr } a.elec  += eRes.amt[t.id]; a.elecCons += eRes.cons[t.id]; if (t._isTransfer) { a.oldElec += eRes.amt[t.id]; a.oldElecCons += eRes.cons[t.id] } })
 
+    // Σ includes final-billed (ghost) shares so the room still reconciles and the P&L counts them as billed.
     const wSum = wt.reduce((s, t) => s + wRes.amt[t.id], 0)
     const eSum = et.reduce((s, t) => s + eRes.amt[t.id], 0)
     perRoom.push({

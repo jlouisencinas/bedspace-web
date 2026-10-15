@@ -2,9 +2,10 @@ import { useState, useEffect, useMemo } from 'react'
 import {
   fetchCutoffs, fetchTenants, recordPaymentsBatch, voidPayments,
   fetchPaymentsForCutoff, fetchUtilityBill, fetchInterimReadings,
-  fetchSplits, fetchAddons, fetchAreaReadings,
+  fetchSplits, fetchAddons, fetchAreaReadings, fetchAdvanceCreditData,
 } from '../lib/supabase'
 import { computeBilling } from '../lib/billing'
+import { advanceAdjustments } from '../lib/finalBill'
 import { getCachedBilling, cacheBilling } from '../lib/billingCache'
 import { useToast } from '../components/Toast'
 import { Droplets, Zap, Wallet } from 'lucide-react'
@@ -95,6 +96,7 @@ export default function Collections() {
   const [activeCutoff,    setActiveCutoff]    = useState(null)
   const [cutoffPayments,  setCutoffPayments]  = useState([])
   const [billingPerTenant,setBillingPerTenant]= useState([])
+  const [advData,         setAdvData]         = useState({ deposits: [], finalBills: [], stored: [], error: null })
 
   const [selected,   setSelected]   = useState(new Map())
   const [batchDate,  setBatchDate]  = useState(todayStr())
@@ -114,6 +116,7 @@ export default function Collections() {
       const cuts   = await fetchCutoffs()
       const active = cuts.find(c => c.is_active) || cuts[0] || null
       setActiveCutoff(active)
+      setAdvData(await fetchAdvanceCreditData())
 
       if (active) {
         const cached = getCachedBilling(active.id)
@@ -160,12 +163,18 @@ export default function Collections() {
     })
   , [enriched, cutoffPayments])
 
+  // Second-to-last-bill advance credit: an adjustment against rent, so the amount to collect is net of it.
+  const adjustments = useMemo(() => {
+    if (!activeCutoff || !billingPerTenant.length) return new Map()
+    return advanceAdjustments({ tenants, cutoff: activeCutoff, perTenant: billingPerTenant, deposits: advData.deposits, stored: advData.stored })
+  }, [activeCutoff, billingPerTenant, tenants, advData])
+
   const billingMap = useMemo(() => {
     return new Map(billingPerTenant.map(t => [t.id, {
-      rw:   r2((t.rent || 0) + (t.water || 0) + (t.addonRentWater || 0)),
+      rw:   r2((t.rent || 0) + (t.water || 0) + (t.addonRentWater || 0) - (adjustments.get(t.id) || 0)),
       elec: r2((t.elec  || 0) + (t.addonElectric || 0)),
     }]))
-  }, [billingPerTenant])
+  }, [billingPerTenant, adjustments])
 
   function toggleCell(row, category, defaultAmount) {
     setSelected(prev => {
@@ -273,6 +282,12 @@ export default function Collections() {
           )}
         </div>
       </div>
+
+      {advData.error && (
+        <div className="mb-3 px-4 py-3 bg-warning-bg border border-warning-border rounded-xl text-[13px] text-warning-text">
+          Advance credits could not be loaded ({advData.error}); Rent + Water amounts do not include any second-to-last-bill advance credit.
+        </div>
+      )}
 
       {!activeCutoff ? (
         <div className="card mt-4">

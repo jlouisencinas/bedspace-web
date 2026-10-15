@@ -1,5 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { notifyAsync } from './notify'
+import { normalizeLines, computeTotals, round2 } from './finalBill'
+import { deriveBedStatuses, activeTenantOnBedMessage, isActiveTenantPerBedViolation } from './bedEligibility'
 import { PROFILE_FIELD_LABELS } from '../../supabase/functions/_shared/approval-labels.ts'
 
 const url = import.meta.env.VITE_SUPABASE_URL
@@ -19,7 +21,7 @@ export async function fetchBeds() {
   if (viewRes.error) throw viewRes.error
   const nameMap = {}
   if (bedsRes.data) bedsRes.data.forEach(b => { nameMap[b.id] = b.reserved_name })
-  return viewRes.data.map(b => ({ ...b, reserved_name: nameMap[b.bed_id] ?? null }))
+  return deriveBedStatuses(viewRes.data.map(b => ({ ...b, reserved_name: nameMap[b.bed_id] ?? null })))
 }
 
 export async function updateBedStatus(bedId, status, reservedName = null) {
@@ -35,7 +37,25 @@ export async function fetchTenants() {
     .select(`*, beds!bed_id(bed_letter, bed_location, room_id, rooms(room_no, room_type))`)
     .order('created_at', { ascending: false })
   if (error) throw error
-  return data
+
+  // Tenants moved out WITH a (non-void) final bill: computeBilling keeps them in the utility split
+  // for that bill's cutoff without billing them. Best-effort on purpose: if the table is missing
+  // (migration not applied yet), unreadable (viewer RLS) or errors, fall back to the old behaviour.
+  try {
+    const { data: bills, error: bErr } = await supabase
+      .from('final_bills').select('tenant_id, cutoff_id').eq('status', 'FINAL')
+    if (bErr) throw bErr
+    const byTenant = new Map()
+    for (const b of bills || []) {
+      if (b.cutoff_id == null) continue
+      if (!byTenant.has(b.tenant_id)) byTenant.set(b.tenant_id, [])
+      byTenant.get(b.tenant_id).push(b.cutoff_id)
+    }
+    return data.map(t => (byTenant.has(t.id) ? { ...t, _finalBilled: true, _finalBilledCutoffs: byTenant.get(t.id) } : t))
+  } catch (e) {
+    console.warn('final_bills lookup skipped:', e.message)
+    return data
+  }
 }
 
 const TENANT_COLUMNS = new Set([
@@ -59,13 +79,26 @@ export async function addTenant(bedId, tenantData) {
       .map(([k, v]) => [k, v === '' ? null : v])
   )
 
+  // Friendly pre-check; the unique index uniq_active_tenant_per_bed remains the real guard.
+  const { data: existing, error: exErr } = await supabase
+    .from('tenants')
+    .select('name')
+    .eq('bed_id', bedId)
+    .eq('is_active', true)
+    .limit(1)
+  if (exErr) console.warn('active-tenant pre-check skipped:', exErr.message)
+  else if (existing?.length) throw new Error(activeTenantOnBedMessage(_room_no, _bed_letter, existing[0].name))
+
   // 1. Insert tenant
   const { data: tenant, error: tErr } = await supabase
     .from('tenants')
     .insert({ bed_id: bedId, is_active: true, ...dbData })
     .select()
     .single()
-  if (tErr) throw tErr
+  if (tErr) {
+    if (isActiveTenantPerBedViolation(tErr)) throw new Error(activeTenantOnBedMessage(_room_no, _bed_letter))
+    throw tErr
+  }
 
   // 2. Mark bed as LEASED
   await updateBedStatus(bedId, 'LEASED')
@@ -87,77 +120,6 @@ export async function addTenant(bedId, tenantData) {
   })
 
   return tenant
-}
-
-export async function processMoveOut(tenant, moveOutData) {
-  // 1. Update tenant record
-  const { error: tErr } = await supabase
-    .from('tenants')
-    .update({
-      is_active:            false,
-      move_out_date:        moveOutData.move_out_date || null,
-      actual_move_out_date: moveOutData.actual_move_out_date || moveOutData.move_out_date,
-    })
-    .eq('id', tenant.id)
-  if (tErr) throw tErr
-
-  // 2. Mark bed as VACANT
-  await updateBedStatus(tenant.bed_id, 'VACANT')
-
-  // 3. Log payment if amount provided
-  if (moveOutData.amount_paid) {
-    await supabase.from('payments').insert({
-      tenant_id:    tenant.id,
-      payment_date: moveOutData.actual_move_out_date || new Date().toISOString().slice(0,10),
-      amount:       moveOutData.amount_paid,
-      pay_type:     'Other',
-      notes:        'Final payment on move-out',
-    })
-  }
-
-  // 4. Save move-out meter readings as interim readings
-  if (moveOutData.water_reading || moveOutData.electric_reading) {
-    const { data: cutoffs } = await supabase.from('cutoffs').select('id').eq('is_active', true).limit(1)
-    const cutoffId = cutoffs?.[0]?.id
-    if (cutoffId && tenant.room_id) {
-      const readingDate = moveOutData.actual_move_out_date || moveOutData.move_out_date
-      const readings = []
-      if (moveOutData.water_reading) readings.push({
-        cutoff_id:     cutoffId,
-        room_id:       tenant.room_id,
-        utility:       'WATER',
-        reading_date:  readingDate,
-        reading_value: Number(moveOutData.water_reading),
-        note:          `Move-out reading — ${tenant.name}`,
-      })
-      if (moveOutData.electric_reading) readings.push({
-        cutoff_id:     cutoffId,
-        room_id:       tenant.room_id,
-        utility:       'ELECTRIC',
-        reading_date:  readingDate,
-        reading_value: Number(moveOutData.electric_reading),
-        note:          `Move-out reading — ${tenant.name}`,
-      })
-      if (readings.length) await supabase.from('interim_readings').insert(readings)
-    }
-  }
-
-  // 5. Log activity
-  await logActivity({
-    activity_type:        'Move Out',
-    tenant_id:            tenant.id,
-    tenant_name:          tenant.name,
-    room_no:              tenant._room_no,
-    bed_letter:           tenant._bed_letter,
-    rate:                 tenant.rate,
-    move_in_date:         tenant.move_in_date,
-    move_out_date:        moveOutData.move_out_date,
-    actual_move_out_date: moveOutData.actual_move_out_date,
-    amount_paid:          moveOutData.amount_paid,
-    entity_type:          'TENANT',
-    entity_id:            tenant.id,
-    notes:                `Moved out from Room ${tenant._room_no} Bed ${tenant._bed_letter}`,
-  })
 }
 
 export async function recordPayment(tenantId, paymentData) {
@@ -322,6 +284,451 @@ export async function fetchPayments(tenantId) {
     .order('payment_date', { ascending: false })
   if (error) throw error
   return data
+}
+
+// ── Advance & Deposit receipts (tenant_deposits) ──────────────────────────────
+// Rows are never deleted: status moves HELD -> APPLIED/FORFEITED/REFUNDED in the
+// move-out phase. Phase 1 only records receipts and lets admin correct them.
+export const DEPOSIT_KIND_LABEL = { ADVANCE: 'Advance', DEPOSIT: 'Deposit' }
+export const DEPOSIT_REF_LABEL  = { ADVANCE: 'S.I#',    DEPOSIT: 'T.R#'   }
+
+export async function fetchTenantDeposits(tenantId) {
+  const { data, error } = await supabase
+    .from('tenant_deposits')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('kind')
+    .order('id')
+  if (error) throw error
+  return data
+}
+
+export async function fetchAllTenantDeposits() {
+  const { data, error } = await supabase
+    .from('tenant_deposits')
+    .select('*')
+    .order('tenant_id')
+    .order('id')
+  if (error) throw error
+  return data
+}
+
+function depositAmount(v) {
+  if (v === '' || v == null) throw new Error('Amount is required.')
+  const n = Number(v)
+  if (!Number.isFinite(n) || n < 0) throw new Error('Amount must be a number of 0 or more.')
+  return n
+}
+
+function blankToNull(v) {
+  const s = typeof v === 'string' ? v.trim() : v
+  return s === '' || s == null ? null : s
+}
+
+async function depositTenantMeta(tenantId) {
+  const { data } = await supabase
+    .from('tenants')
+    .select('name, beds!bed_id(bed_letter, rooms(room_no))')
+    .eq('id', tenantId)
+    .maybeSingle()
+  return {
+    tenant_name: data?.name,
+    room_no:     data?.beds?.rooms?.room_no,
+    bed_letter:  data?.beds?.bed_letter,
+  }
+}
+
+const peso = n => '₱' + Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+// Inserts all rows in one statement so a move-in never ends up with only one of
+// the two receipts. Throws on any error; the activity log is best-effort.
+export async function addTenantDeposits(tenantId, entries, actorId) {
+  const rows = entries.map(e => ({
+    tenant_id:     tenantId,
+    kind:          e.kind,
+    amount:        depositAmount(e.amount),
+    ref_no:        blankToNull(e.refNo),
+    received_date: blankToNull(e.receivedDate),
+    notes:         blankToNull(e.notes),
+    created_by:    actorId || null,
+  }))
+  const { data, error } = await supabase.from('tenant_deposits').insert(rows).select()
+  if (error) throw error
+
+  const meta = await depositTenantMeta(tenantId)
+  for (const r of data) {
+    await logActivity({
+      activity_type: 'Advance/Deposit Recorded',
+      entity_type:   'TENANT', entity_id: tenantId,
+      tenant_id:     tenantId,
+      tenant_name:   meta.tenant_name,
+      room_no:       meta.room_no,
+      bed_letter:    meta.bed_letter,
+      actor_id:      actorId || null,
+      notes:         `${DEPOSIT_KIND_LABEL[r.kind]} ${peso(r.amount)} recorded${r.ref_no ? ` (${DEPOSIT_REF_LABEL[r.kind]} ${r.ref_no})` : ''}`,
+      metadata: {
+        deposit_id: r.id, kind: r.kind, amount: r.amount,
+        ref_no: r.ref_no, received_date: r.received_date,
+      },
+    })
+  }
+  return data
+}
+
+export async function addTenantDeposit({ tenantId, kind, amount, refNo, receivedDate, notes }, actorId) {
+  const [row] = await addTenantDeposits(tenantId, [{ kind, amount, refNo, receivedDate, notes }], actorId)
+  return row
+}
+
+// Admin-only (RLS is the enforcement). Status is deliberately not patchable here.
+export async function updateTenantDeposit(id, patch, actorId) {
+  const { data: current, error: cErr } = await supabase
+    .from('tenant_deposits')
+    .select('*')
+    .eq('id', id)
+    .single()
+  if (cErr) throw cErr
+  if (current.status !== 'HELD') {
+    throw new Error(`This ${DEPOSIT_KIND_LABEL[current.kind].toLowerCase()} receipt is ${current.status}: it was settled on a final bill and can no longer be edited.`)
+  }
+
+  const next = {}
+  if ('amount' in patch)        next.amount        = depositAmount(patch.amount)
+  if ('ref_no' in patch)        next.ref_no        = blankToNull(patch.ref_no)
+  if ('received_date' in patch) next.received_date = blankToNull(patch.received_date)
+  if ('notes' in patch)         next.notes         = blankToNull(patch.notes)
+
+  const changes = {}
+  for (const [k, v] of Object.entries(next)) {
+    const before = current[k]
+    const same = k === 'amount' ? Number(before) === v : (before ?? null) === v
+    if (!same) changes[k] = { old: before, new: v }
+  }
+  if (!Object.keys(changes).length) return current
+
+  const { data: updated, error } = await supabase
+    .from('tenant_deposits')
+    .update(Object.fromEntries(Object.entries(changes).map(([k, c]) => [k, c.new])))
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+
+  const meta = await depositTenantMeta(current.tenant_id)
+  await logActivity({
+    activity_type: 'Advance/Deposit Updated',
+    entity_type:   'TENANT', entity_id: current.tenant_id,
+    tenant_id:     current.tenant_id,
+    tenant_name:   meta.tenant_name,
+    room_no:       meta.room_no,
+    bed_letter:    meta.bed_letter,
+    actor_id:      actorId || null,
+    notes:         `${DEPOSIT_KIND_LABEL[current.kind]} receipt updated (${Object.keys(changes).join(', ')})`,
+    metadata:      { deposit_id: id, kind: current.kind, changes },
+  })
+  return updated
+}
+
+// ── Final bills (move-out settlement) ─────────────────────────────────────────
+// Bills are never deleted: voidFinalBill() sets status VOID + reason. Every write here
+// throws on error; only the activity log is best-effort.
+export async function fetchFinalBills(tenantId) {
+  const { data, error } = await supabase
+    .from('final_bills')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data
+}
+
+export async function fetchFinalBill(id) {
+  const { data, error } = await supabase.from('final_bills').select('*').eq('id', id).single()
+  if (error) throw error
+  return data
+}
+
+// Just what the automatic second-to-last advance credit needs, for every tenant.
+export async function fetchFinalBillsLite() {
+  const { data, error } = await supabase
+    .from('final_bills')
+    .select('tenant_id, status, early_termination, forfeit_waived')
+  if (error) throw error
+  return data
+}
+
+export async function fetchStoredAdvanceCredits() {
+  const { data, error } = await supabase.from('advance_credits').select('*')
+  if (error) throw error
+  return data
+}
+
+// Inputs of finalBill.advanceCredits(). Viewers cannot read these tables (RLS), so for them the
+// credit is simply not applied. Never throws: a failure comes back as `error` so the page can say
+// that the credit is missing instead of failing to load the whole billing view.
+export async function fetchAdvanceCreditData() {
+  try {
+    const [deposits, finalBills, stored] = await Promise.all([fetchAllTenantDeposits(), fetchFinalBillsLite(), fetchStoredAdvanceCredits()])
+    return { deposits, finalBills, stored, error: null }
+  } catch (e) {
+    return { deposits: [], finalBills: [], stored: [], error: e.message }
+  }
+}
+
+// Admin session only (RLS). Idempotent per (tenant, cutoff): a credit that is already recorded is kept.
+export async function saveAdvanceCredits(rows, actorId) {
+  if (!rows.length) return []
+  const { data, error } = await supabase
+    .from('advance_credits')
+    .upsert(rows, { onConflict: 'tenant_id,cutoff_id', ignoreDuplicates: true })
+    .select()
+  if (error) throw error
+  await logActivity({
+    activity_type: 'Advance Credited',
+    entity_type:   'CUTOFF', entity_id: rows[0].cutoff_id,
+    actor_id:      actorId || null,
+    notes:         `Second-to-last-bill advance credit recorded for ${rows.length} tenant(s): ${peso(rows.reduce((s, r) => s + Number(r.amount), 0))}.`,
+    metadata:      { cutoff_id: rows[0].cutoff_id, tenant_ids: rows.map(r => r.tenant_id) },
+  })
+  return data
+}
+
+export async function saveFinalBill(bill, actorId) {
+  if (!bill.tenant_id) throw new Error('Final bill: tenant is required.')
+  if (!bill.move_out_date) throw new Error('Final bill: move-out date is required.')
+  if (!Array.isArray(bill.lines) || bill.lines.length === 0) throw new Error('Final bill: at least one line is required.')
+  for (const l of bill.lines) {
+    if (!String(l.label ?? '').trim()) throw new Error('Final bill: every line needs a label.')
+    if (!Number.isFinite(Number(l.amount))) throw new Error(`Final bill: line "${l.label}" has an invalid amount.`)
+  }
+  if (bill.forfeit_waived && !String(bill.waived_reason ?? '').trim()) {
+    throw new Error('Final bill: a reason is required to waive the forfeiture.')
+  }
+  const lines = normalizeLines(bill.lines)
+  const totals = computeTotals(lines)
+  const { data, error } = await supabase
+    .from('final_bills')
+    .insert({
+      tenant_id:         bill.tenant_id,
+      cutoff_id:         bill.cutoff_id ?? null,
+      status:            'FINAL',
+      move_out_date:     bill.move_out_date,
+      early_termination: !!bill.early_termination,
+      forfeit_waived:    !!bill.forfeit_waived,
+      waived_reason:     bill.forfeit_waived ? String(bill.waived_reason).trim() : null,
+      lines,
+      details:           bill.details ?? null,
+      total_charges:     totals.total_charges,
+      total_credits:     totals.total_credits,
+      net_amount:        totals.net_amount,
+      refund_status:     totals.net_amount < 0 ? 'PENDING' : 'NONE',
+      prepared_by:       blankToNull(bill.prepared_by),
+      created_by:        actorId || null,
+    })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+// Admin-only (RLS): HELD -> APPLIED / FORFEITED. Throws unless every id is this tenant's and still HELD.
+export async function settleTenantDeposits(ids, status, note, tenantId) {
+  if (!ids.length) return []
+  if (!tenantId) throw new Error('settleTenantDeposits: tenant id is required.')
+  if (status !== 'APPLIED' && status !== 'FORFEITED') throw new Error(`Invalid receipt status: ${status}`)
+  const { data, error } = await supabase
+    .from('tenant_deposits')
+    .update({ status, settled_note: note })
+    .in('id', ids)
+    .eq('tenant_id', tenantId)
+    .eq('status', 'HELD')
+    .select()
+  if (error) throw error
+  if (data.length !== ids.length) {
+    throw new Error(`Only ${data.length} of ${ids.length} receipts could be set to ${status} (the others are not this tenant's or are no longer HELD).`)
+  }
+  return data
+}
+
+// Has this tenant really been moved out with a (non-void) final bill for this date? Used before an approval
+// request is marked approved without being applied again.
+export async function verifyMoveOutApplied(tenantId, moveOutDate) {
+  const [t, b] = await Promise.all([
+    supabase.from('tenants').select('is_active').eq('id', tenantId).single(),
+    supabase.from('final_bills').select('id, move_out_date').eq('tenant_id', tenantId).eq('status', 'FINAL'),
+  ])
+  if (t.error) throw t.error
+  if (b.error) throw b.error
+  if (t.data.is_active) return { ok: false, reason: 'the tenant is still active' }
+  const day = String(moveOutDate || '').slice(0, 10)
+  const bill = b.data.find(x => String(x.move_out_date).slice(0, 10) === day)
+  if (!bill) return { ok: false, reason: `there is no final bill for ${day}` }
+  return { ok: true, billId: bill.id }
+}
+
+export async function voidFinalBill(id, reason, actorId) {
+  if (!String(reason ?? '').trim()) throw new Error('A reason is required to void a final bill.')
+  const { data: bill, error: bErr } = await supabase
+    .from('final_bills')
+    .update({ status: 'VOID', void_reason: reason.trim(), voided_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('status', 'FINAL')
+    .select()
+    .single()
+  if (bErr) throw bErr
+
+  const { error: rErr } = await supabase
+    .from('tenant_deposits')
+    .update({ status: 'HELD', settled_note: `Final bill #${id} voided: ${reason.trim()}` })
+    .eq('tenant_id', bill.tenant_id)
+    .like('settled_note', `Final bill #${id}:%`)
+    .in('status', ['APPLIED', 'FORFEITED'])
+  if (rErr) throw new Error(`Final bill #${id} was voided, but its advance/deposit receipts could NOT be set back to HELD (${rErr.message}). Fix them manually.`)
+
+  const meta = await depositTenantMeta(bill.tenant_id)
+  await logActivity({
+    activity_type: 'Final Bill Voided',
+    entity_type:   'TENANT', entity_id: bill.tenant_id,
+    tenant_id:     bill.tenant_id,
+    tenant_name:   meta.tenant_name, room_no: meta.room_no, bed_letter: meta.bed_letter,
+    actor_id:      actorId || null,
+    notes:         `Final bill #${id} voided. Reason: ${reason.trim()}`,
+    metadata:      { final_bill_id: id, net_amount: bill.net_amount },
+  })
+  return bill
+}
+
+const settleNote = (billId, line) => {
+  if (line.kind === 'forfeit') return `Final bill #${billId}: forfeited (early termination)`
+  if (line.source === 'ADVANCE' && line.prior_cutoff) {
+    const bal = -Number(line.amount)
+    return `Final bill #${billId}: credited on second-to-last bill (cutoff ${line.prior_cutoff})`
+      + (bal > 0 ? `; balance ${peso(bal)} applied on final bill` : '')
+  }
+  return `Final bill #${billId}: applied on final bill`
+}
+
+/**
+ * ONE admin-side move-out: final bill saved first (nothing else is touched if that fails), then
+ * the tenant is moved out / bed vacated / move-out readings saved, then the receipts are settled.
+ * If a later step fails the error says exactly what was and was not done.
+ *   moveOutData: { move_out_date, actual_move_out_date, amount_paid, water_reading, electric_reading }
+ *   bill: { cutoff_id, lines, details, early_termination, forfeit_waived, waived_reason, prepared_by }
+ * Returns { billId, net_amount }.
+ */
+export async function processMoveOutWithBill(tenant, moveOutData, bill, actorId) {
+  const actual = moveOutData.actual_move_out_date || moveOutData.move_out_date
+
+  // Refuse a duplicate / repeated move-out (the partial unique index uq_final_bills_one_final backs this up).
+  const { data: cur, error: cErr } = await supabase.from('tenants').select('is_active').eq('id', tenant.id).single()
+  if (cErr) throw cErr
+  if (!cur.is_active) throw new Error('This tenant has already moved out; nothing was changed.')
+  const { data: open, error: oErr } = await supabase
+    .from('final_bills').select('id').eq('tenant_id', tenant.id).eq('status', 'FINAL')
+  if (oErr) throw oErr
+  if (open.length) throw new Error(`A final bill (#${open[0].id}) already exists for this tenant; nothing was changed. Void it first if it was issued by mistake.`)
+
+  const saved = await saveFinalBill({ ...bill, tenant_id: tenant.id, move_out_date: actual }, actorId)
+  const done = [`final bill #${saved.id} saved`]
+  const fail = (step, err, advice) => Object.assign(new Error(
+    `Final bill #${saved.id} was saved. Done: ${done.join('; ')}. FAILED: ${step} (${err.message}). ${advice}`), { partial: true, billId: saved.id })
+
+  // 2. Tenant out. If this fails nothing else has changed, so cancel the bill again.
+  const { error: tErr } = await supabase
+    .from('tenants')
+    .update({
+      is_active:            false,
+      move_out_date:        moveOutData.move_out_date || null,
+      actual_move_out_date: actual,
+    })
+    .eq('id', tenant.id)
+  if (tErr) {
+    const { error: vErr } = await supabase
+      .from('final_bills')
+      .update({ status: 'VOID', void_reason: `Move-out failed: ${tErr.message}`, voided_at: new Date().toISOString() })
+      .eq('id', saved.id)
+    // partial = the tenant WAS moved out; here they were not. orphanBill = a FINAL bill is left behind on an active tenant.
+    throw Object.assign(new Error(`Move-out failed (${tErr.message}); the tenant is still active. `
+      + (vErr ? `The draft final bill #${saved.id} could NOT be voided automatically (${vErr.message}); void it from the tenant profile.`
+              : `The draft final bill #${saved.id} was voided automatically. Nothing else changed.`)), { partial: false, orphanBill: !!vErr, billId: saved.id })
+  }
+  done.push('tenant marked moved out')
+
+  try {
+    if (tenant.bed_id) {
+      await updateBedStatus(tenant.bed_id, 'VACANT')
+      done.push('bed set to VACANT')
+    }
+  } catch (e) { throw fail('setting the bed to VACANT', e, 'Set the bed to Vacant on the Bed Map, then check the receipts and readings.') }
+
+  const readings = []
+  if (moveOutData.water_reading !== '' && moveOutData.water_reading != null) readings.push(['WATER', moveOutData.water_reading])
+  if (moveOutData.electric_reading !== '' && moveOutData.electric_reading != null) readings.push(['ELECTRIC', moveOutData.electric_reading])
+  if (readings.length && bill.cutoff_id && tenant.room_id) {
+    const { error: iErr } = await supabase.from('interim_readings').insert(readings.map(([utility, v]) => ({
+      cutoff_id: bill.cutoff_id, room_id: tenant.room_id, utility, reading_date: actual, reading_value: round2(v),
+      moving_out_tenant_id: tenant.id, note: `Move-out reading — ${tenant.name}`,
+    })))
+    if (iErr) throw fail('saving the move-out meter readings', iErr, 'Add the move-out readings in Billing > Move-out readings; the remaining tenants are billed wrongly until you do.')
+    done.push('move-out readings saved')
+  }
+
+  if (moveOutData.amount_paid) {
+    const { error: pErr } = await supabase.from('payments').insert({
+      tenant_id: tenant.id, payment_date: actual, amount: moveOutData.amount_paid,
+      pay_type: 'Other', notes: 'Final payment on move-out',
+    })
+    if (pErr) throw fail('recording the final payment', pErr, 'Record the payment in Collections.')
+    done.push('final payment recorded')
+  }
+
+  const groups = new Map()
+  for (const l of bill.lines) {
+    if (!l.deposit_ids?.length || (l.kind !== 'credit' && l.kind !== 'forfeit')) continue
+    const status = l.kind === 'forfeit' ? 'FORFEITED' : 'APPLIED'
+    const note = settleNote(saved.id, l)
+    const key = `${status}|${note}`
+    if (!groups.has(key)) groups.set(key, { status, note, ids: [] })
+    groups.get(key).ids.push(...l.deposit_ids)
+  }
+  for (const g of groups.values()) {
+    try {
+      await settleTenantDeposits(g.ids, g.status, g.note, tenant.id)
+      done.push(`${g.ids.length} receipt(s) set to ${g.status}`)
+    } catch (e) { throw fail(`setting receipt(s) ${g.ids.join(', ')} to ${g.status}`, e, 'Set the advance/deposit status manually.') }
+  }
+
+  const totals = computeTotals(normalizeLines(bill.lines))
+  await logActivity({
+    activity_type:        'Move Out',
+    tenant_id:            tenant.id,
+    tenant_name:          tenant.name,
+    room_no:              tenant._room_no,
+    bed_letter:           tenant._bed_letter,
+    rate:                 tenant.rate,
+    move_in_date:         tenant.move_in_date,
+    move_out_date:        moveOutData.move_out_date,
+    actual_move_out_date: actual,
+    amount_paid:          moveOutData.amount_paid ? Number(moveOutData.amount_paid) : null,
+    actor_id:             actorId || null,
+    entity_type:          'TENANT',
+    entity_id:            tenant.id,
+    notes:                `Moved out from Room ${tenant._room_no} Bed ${tenant._bed_letter}`,
+  })
+  await logActivity({
+    activity_type: 'Final Bill Issued',
+    tenant_id:     tenant.id,
+    tenant_name:   tenant.name,
+    room_no:       tenant._room_no,
+    bed_letter:    tenant._bed_letter,
+    actor_id:      actorId || null,
+    entity_type:   'TENANT',
+    entity_id:     tenant.id,
+    notes:         `Final bill #${saved.id}: ${totals.net_amount < 0 ? `refund due ${peso(-totals.net_amount)}` : `amount due ${peso(totals.net_amount)}`}`
+                   + `${bill.early_termination ? (bill.forfeit_waived ? ' · early termination, forfeiture waived' : ' · early termination, advance/deposit forfeited') : ''}`,
+    metadata:      { final_bill_id: saved.id, net_amount: totals.net_amount, early_termination: !!bill.early_termination, forfeit_waived: !!bill.forfeit_waived },
+  })
+  return { billId: saved.id, net_amount: totals.net_amount }
 }
 
 export async function fetchPaymentsForCutoff(cutoffId) {

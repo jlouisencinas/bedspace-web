@@ -37,8 +37,8 @@ export function computeSnapshot(cutoff, beds, bill, interims, tenants, areas, sp
     occupied_rooms: occ.occupiedRoomsAvg, total_rooms: totalRooms, occupancy_pct: occ.occupancyPct,
     col_rent: col.rent, col_water: col.water, col_electric: col.elec,
     col_addons: col.addons, col_total: col.total,
-    water_cost: pnl.WATER.cost, water_collections: pnl.WATER.roomCollections, water_variance: pnl.WATER.variance,
-    electric_cost: pnl.ELECTRIC.cost, electric_collections: pnl.ELECTRIC.roomCollections, electric_variance: pnl.ELECTRIC.variance,
+    water_cost: pnl.WATER.cost, water_collections: pnl.WATER.collections, water_variance: pnl.WATER.variance,
+    electric_cost: pnl.ELECTRIC.cost, electric_collections: pnl.ELECTRIC.collections, electric_variance: pnl.ELECTRIC.variance,
     total_variance: pnl.totalVariance,
   }
 }

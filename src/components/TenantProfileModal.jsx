@@ -2,7 +2,10 @@ import { useState, useEffect, useRef } from 'react'
 import {
   fetchPayments, fetchTicketsForTenant, fetchTenantContacts, fetchTenantEmails,
   fetchTenantDocuments, addTenantDocument, deleteTenantDocument, fetchTenantHistory,
+  fetchTenantDeposits, addTenantDeposit, updateTenantDeposit, DEPOSIT_KIND_LABEL, DEPOSIT_REF_LABEL,
+  fetchFinalBills, voidFinalBill,
 } from '../lib/supabase'
+import { Link } from 'react-router-dom'
 import { getOrCreateTenantFolder, uploadFileToDrive, isDriveConfigured, isDriveConnected, preloadDrive, connectDrive } from '../lib/googleDrive'
 import { useAuth } from '../lib/auth'
 import { useToast } from './Toast'
@@ -17,6 +20,7 @@ const PROFILE_TABS = [
   { id: 'contacts',   label: 'Contacts'   },
   { id: 'documents',  label: 'Documents'  },
   { id: 'payments',   label: 'Payments'   },
+  { id: 'advance',    label: 'Advance & Deposit' },
   { id: 'tickets',    label: 'Tickets'    },
   { id: 'history',    label: 'History'    },
 ]
@@ -48,6 +52,16 @@ const DOC_TYPE_COLORS = {
   OTHER:           'bg-surface-3 text-ink-secondary',
 }
 
+const DEPOSIT_STATUS_COLORS = {
+  HELD:      'bg-info-bg text-info-text',
+  APPLIED:   'bg-success-bg text-success-text',
+  FORFEITED: 'bg-danger-bg text-danger-text',
+  REFUNDED:  'bg-surface-3 text-ink-secondary',
+}
+
+function money(n) {
+  return '₱' + Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
 function fmt(n)      { return n ? '₱' + Number(n).toLocaleString('en-PH') : '—' }
 function fmtDate(d)  {
   if (!d) return '—'
@@ -63,7 +77,7 @@ function fmtSize(b)  {
 // Parent owns what happens when each footer button is clicked (opens its own
 // modal state) — this component just calls the callback.
 export default function TenantProfileModal({ tenant, onClose, onTransfer, onMoveOut, onCorrectRate, onCorrectMoveIn }) {
-  const { isAdmin } = useAuth()
+  const { isAdmin, user } = useAuth()
   const docFileRef = useRef(null)
   const { show, ToastEl } = useToast()
 
@@ -74,6 +88,15 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
   const [detailEmails,  setDetailEmails]  = useState([])
   const [detailDocs,    setDetailDocs]    = useState([])
   const [detailHistory, setDetailHistory] = useState([])
+  const [detailDeposits,setDetailDeposits]= useState([])
+  const [detailBills,   setDetailBills]   = useState([])
+  const [voidId,        setVoidId]        = useState(null)
+  const [voidReason,    setVoidReason]    = useState('')
+  const [billBusy,      setBillBusy]      = useState(false)
+  const [depLoadError,  setDepLoadError]  = useState('')
+  const [depEditId,     setDepEditId]     = useState(null)
+  const [depForm,       setDepForm]       = useState(null)
+  const [depSaving,     setDepSaving]     = useState(false)
 
   const [docUploading,   setDocUploading]   = useState(false)
   const [newDocType,     setNewDocType]     = useState('GOVT_ID')
@@ -89,6 +112,12 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
     setDetailEmails([])
     setDetailDocs([])
     setDetailHistory([])
+    setDetailDeposits([])
+    setDetailBills([])
+    setVoidId(null)
+    setDepLoadError('')
+    setDepEditId(null)
+    setDepForm(null)
 
     async function load() {
       const results = await Promise.allSettled([
@@ -98,6 +127,8 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
         fetchTenantEmails(tenant.id),
         fetchTenantDocuments(tenant.id),
         fetchTenantHistory(tenant.id),
+        fetchTenantDeposits(tenant.id),
+        fetchFinalBills(tenant.id),
       ])
       if (cancelled) return
       if (results[0].status === 'fulfilled') setDetailPays(results[0].value)
@@ -106,6 +137,9 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
       if (results[3].status === 'fulfilled') setDetailEmails(results[3].value)
       if (results[4].status === 'fulfilled') setDetailDocs(results[4].value)
       if (results[5].status === 'fulfilled') setDetailHistory(results[5].value)
+      if (results[6].status === 'fulfilled') setDetailDeposits(results[6].value)
+      else setDepLoadError(results[6].reason?.message || 'unknown error')
+      if (results[7].status === 'fulfilled') setDetailBills(results[7].value)
     }
     load()
     return () => { cancelled = true }
@@ -151,6 +185,60 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
     } catch(e) { show(e.message, 'error') }
   }
 
+  // ── Advance & Deposit handlers ────────────────────────────────────────────────
+
+  function startEditDeposit(d) {
+    setDepEditId(d.id)
+    setDepForm({ amount: String(d.amount), ref_no: d.ref_no || '', received_date: d.received_date || '', notes: d.notes || '' })
+  }
+
+  function startAddDeposit() {
+    setDepEditId('new')
+    setDepForm({ kind: 'DEPOSIT', amount: '', ref_no: '', received_date: new Date().toISOString().slice(0, 10), notes: '' })
+  }
+
+  function cancelDepositForm() { setDepEditId(null); setDepForm(null) }
+
+  async function saveDeposit(e) {
+    e.preventDefault()
+    setDepSaving(true)
+    try {
+      if (depEditId === 'new') {
+        const row = await addTenantDeposit({
+          tenantId: tenant.id, kind: depForm.kind, amount: depForm.amount,
+          refNo: depForm.ref_no, receivedDate: depForm.received_date, notes: depForm.notes,
+        }, user?.id)
+        setDetailDeposits(prev => [...prev, row])
+        show('Receipt added.', 'success')
+      } else {
+        const row = await updateTenantDeposit(depEditId, {
+          amount: depForm.amount, ref_no: depForm.ref_no,
+          received_date: depForm.received_date, notes: depForm.notes,
+        }, user?.id)
+        setDetailDeposits(prev => prev.map(d => d.id === row.id ? row : d))
+        show('Receipt updated.', 'success')
+      }
+      cancelDepositForm()
+    } catch(err) { show(err.message, 'error') }
+    setDepSaving(false)
+  }
+
+  async function doVoidBill() {
+    setBillBusy(true)
+    try {
+      await voidFinalBill(voidId, voidReason, user?.id)
+      const [bills, deps] = await Promise.all([fetchFinalBills(tenant.id), fetchTenantDeposits(tenant.id)])
+      setDetailBills(bills); setDetailDeposits(deps)
+      setVoidId(null); setVoidReason('')
+      show('Final bill voided. Its advance/deposit receipts are HELD again.', 'success')
+    } catch(err) { show(err.message, 'error') }
+    setBillBusy(false)
+  }
+
+  const heldTotal = kind => detailDeposits
+    .filter(d => d.kind === kind && d.status === 'HELD')
+    .reduce((sum, d) => sum + Number(d.amount), 0)
+
   return (
     <div className="overlay" onClick={e => e.stopPropagation()}>
       <div className="modal" style={{ maxWidth: '680px' }}>
@@ -187,6 +275,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
               {t.label}
               {t.id === 'payments'  && detailPays.length    > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailPays.length}</span>}
               {t.id === 'tickets'   && detailTickets.length  > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailTickets.length}</span>}
+              {t.id === 'advance'   && detailDeposits.length > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailDeposits.length}</span>}
               {t.id === 'documents' && detailDocs.length     > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailDocs.length}</span>}
               {t.id === 'history'   && detailHistory.length  > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailHistory.length}</span>}
             </button>
@@ -454,6 +543,189 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
             )
           )}
 
+          {/* ── Advance & Deposit ── */}
+          {profileTab === 'advance' && (
+            <div>
+              {depLoadError && (
+                <div className="text-[12px] text-danger-text bg-danger-bg border border-danger-border rounded-lg px-3 py-2.5 mb-3">
+                  Could not load advance/deposit records: {depLoadError}
+                </div>
+              )}
+
+              {!depLoadError && (
+                <div className="grid grid-cols-3 gap-2 mb-4">
+                  {[
+                    ['Advance held', heldTotal('ADVANCE')],
+                    ['Deposit held', heldTotal('DEPOSIT')],
+                    ['Total held',   heldTotal('ADVANCE') + heldTotal('DEPOSIT')],
+                  ].map(([label, val]) => (
+                    <div key={label} className="rounded-xl bg-surface-2 px-3 py-2">
+                      <div className="text-[10px] font-bold text-ink-faint uppercase tracking-widest">{label}</div>
+                      <div className="text-[14px] font-semibold text-ink mt-0.5">{money(val)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!depLoadError && detailDeposits.length === 0 && depEditId !== 'new' && (
+                <div className="text-center py-6">
+                  <CreditCard size={28} className="mx-auto mb-2 text-ink-faint" />
+                  <p className="text-[13px] text-ink-faint">No advance or deposit receipts recorded.</p>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {detailDeposits.map(d => (
+                  depEditId === d.id ? (
+                    <form key={d.id} onSubmit={saveDeposit} className="p-3 rounded-xl bg-surface-2">
+                      <div className="text-[12px] font-semibold text-ink mb-2">
+                        Edit {DEPOSIT_KIND_LABEL[d.kind]} receipt
+                      </div>
+                      <div className="form-grid">
+                        <div className="fg">
+                          <label>Amount (PHP) *</label>
+                          <input type="number" min="0" step="0.01" required value={depForm.amount}
+                            onChange={e => setDepForm(f => ({ ...f, amount: e.target.value }))} />
+                        </div>
+                        <div className="fg">
+                          <label>{DEPOSIT_REF_LABEL[d.kind]}</label>
+                          <input type="text" value={depForm.ref_no}
+                            onChange={e => setDepForm(f => ({ ...f, ref_no: e.target.value }))} />
+                        </div>
+                        <div className="fg">
+                          <label>Received date</label>
+                          <input type="date" value={depForm.received_date}
+                            onChange={e => setDepForm(f => ({ ...f, received_date: e.target.value }))} />
+                        </div>
+                        <div className="fg">
+                          <label>Notes</label>
+                          <input type="text" value={depForm.notes}
+                            onChange={e => setDepForm(f => ({ ...f, notes: e.target.value }))} />
+                        </div>
+                      </div>
+                      <div className="flex justify-end gap-2 mt-3">
+                        <button type="button" className="btn-xs" onClick={cancelDepositForm} disabled={depSaving}>Cancel</button>
+                        <button type="submit" className="btn-xs blue" disabled={depSaving}>{depSaving ? 'Saving…' : 'Save'}</button>
+                      </div>
+                    </form>
+                  ) : (
+                    <div key={d.id} className="flex items-start gap-3 p-3 rounded-xl bg-surface-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[13px] font-semibold text-ink">{DEPOSIT_KIND_LABEL[d.kind]}</span>
+                          <span className="text-[13px] text-ink">{money(d.amount)}</span>
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${DEPOSIT_STATUS_COLORS[d.status] || DEPOSIT_STATUS_COLORS.REFUNDED}`}>
+                            {d.status}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-ink-faint mt-0.5">
+                          {DEPOSIT_REF_LABEL[d.kind]} {d.ref_no || '—'} · Received {fmtDate(d.received_date)}
+                        </div>
+                        {d.notes && <div className="text-[11px] text-ink-muted mt-0.5">{d.notes}</div>}
+                        {d.settled_note && <div className="text-[11px] text-ink-muted mt-0.5">Settlement: {d.settled_note}</div>}
+                      </div>
+                      {isAdmin && depEditId === null && d.status === 'HELD' && (
+                        <button className="btn-xs blue inline-flex items-center gap-1 shrink-0" onClick={() => startEditDeposit(d)}>
+                          <Pencil size={10} /> Edit
+                        </button>
+                      )}
+                    </div>
+                  )
+                ))}
+
+                {depEditId === 'new' && (
+                  <form onSubmit={saveDeposit} className="p-3 rounded-xl bg-surface-2">
+                    <div className="text-[12px] font-semibold text-ink mb-2">Add receipt</div>
+                    <div className="form-grid">
+                      <div className="fg">
+                        <label>Type *</label>
+                        <select value={depForm.kind} onChange={e => setDepForm(f => ({ ...f, kind: e.target.value }))}>
+                          <option value="ADVANCE">Advance (S.I#)</option>
+                          <option value="DEPOSIT">Deposit (T.R#)</option>
+                        </select>
+                      </div>
+                      <div className="fg">
+                        <label>Amount (PHP) *</label>
+                        <input type="number" min="0" step="0.01" required value={depForm.amount}
+                          onChange={e => setDepForm(f => ({ ...f, amount: e.target.value }))} />
+                      </div>
+                      <div className="fg">
+                        <label>{DEPOSIT_REF_LABEL[depForm.kind]}</label>
+                        <input type="text" value={depForm.ref_no}
+                          onChange={e => setDepForm(f => ({ ...f, ref_no: e.target.value }))} />
+                      </div>
+                      <div className="fg">
+                        <label>Received date</label>
+                        <input type="date" value={depForm.received_date}
+                          onChange={e => setDepForm(f => ({ ...f, received_date: e.target.value }))} />
+                      </div>
+                      <div className="fg full">
+                        <label>Notes</label>
+                        <input type="text" value={depForm.notes}
+                          onChange={e => setDepForm(f => ({ ...f, notes: e.target.value }))} />
+                      </div>
+                    </div>
+                    <div className="flex justify-end gap-2 mt-3">
+                      <button type="button" className="btn-xs" onClick={cancelDepositForm} disabled={depSaving}>Cancel</button>
+                      <button type="submit" className="btn-xs blue" disabled={depSaving}>{depSaving ? 'Saving…' : 'Add'}</button>
+                    </div>
+                  </form>
+                )}
+              </div>
+
+              {isAdmin && !depLoadError && depEditId === null && (
+                <div className="mt-3">
+                  <button className="btn-xs blue" onClick={startAddDeposit}>+ Add receipt</button>
+                </div>
+              )}
+
+              {detailBills.length > 0 && (
+                <div className="mt-5">
+                  <div className="text-[10px] font-bold text-ink-faint uppercase tracking-widest mb-2">Final bills</div>
+                  <div className="space-y-2">
+                    {detailBills.map(b => {
+                      const net = Number(b.net_amount)
+                      return (
+                        <div key={b.id} className="p-3 rounded-xl bg-surface-2">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-[13px] font-semibold text-ink">Final bill #{b.id}</span>
+                            <span className="text-[12px] text-ink-muted">{fmtDate(b.move_out_date)}</span>
+                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${b.status === 'VOID' ? 'bg-danger-bg text-danger-text' : 'bg-success-bg text-success-text'}`}>{b.status}</span>
+                            <span className={`text-[13px] font-semibold ml-auto ${net < 0 ? 'text-success-text' : 'text-ink'}`}>
+                              {net < 0 ? `Refund ${money(-net)}` : `Due ${money(net)}`}
+                            </span>
+                          </div>
+                          {b.early_termination && (
+                            <div className="text-[11px] text-ink-muted mt-0.5">
+                              Early termination — {b.forfeit_waived ? `forfeiture waived: ${b.waived_reason}` : 'advance and deposit forfeited'}
+                            </div>
+                          )}
+                          {b.status === 'VOID' && <div className="text-[11px] text-danger-text mt-0.5">Voided: {b.void_reason}</div>}
+                          {isAdmin && (
+                            <div className="flex items-center gap-2 mt-2">
+                              <Link className="btn-xs blue" to={`/print/final-bill?id=${b.id}`}>Print</Link>
+                              {b.status === 'FINAL' && voidId !== b.id && (
+                                <button className="btn-xs red" onClick={() => { setVoidId(b.id); setVoidReason('') }}>Void</button>
+                              )}
+                            </div>
+                          )}
+                          {isAdmin && voidId === b.id && (
+                            <div className="flex items-center gap-2 mt-2">
+                              <input type="text" className="flex-1" placeholder="Reason for voiding (required)" value={voidReason}
+                                onChange={e => setVoidReason(e.target.value)} />
+                              <button className="btn-xs red" disabled={billBusy || !voidReason.trim()} onClick={doVoidBill}>{billBusy ? 'Voiding…' : 'Confirm void'}</button>
+                              <button className="btn-xs" disabled={billBusy} onClick={() => setVoidId(null)}>Cancel</button>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ── Tickets ── */}
           {profileTab === 'tickets' && (
             detailTickets.length === 0 ? (
@@ -536,12 +808,16 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
         {/* Footer */}
         <div className="modal-foot">
           <button className="btn secondary" onClick={onClose}>Close</button>
-          <button className="btn primary" onClick={() => onTransfer(tenant)}>
-            <ArrowRightLeft size={13} /> Transfer
-          </button>
-          <button className="btn danger" onClick={() => onMoveOut(tenant)}>
-            <LogOut size={13} /> Move Out
-          </button>
+          {tenant.is_active && (
+            <>
+              <button className="btn primary" onClick={() => onTransfer(tenant)}>
+                <ArrowRightLeft size={13} /> Transfer
+              </button>
+              <button className="btn danger" onClick={() => onMoveOut(tenant)}>
+                <LogOut size={13} /> Move Out
+              </button>
+            </>
+          )}
         </div>
       </div>
       {ToastEl}
