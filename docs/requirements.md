@@ -37,9 +37,21 @@ requests, and owner-facing occupancy/collections/P&L reporting.
   fabricated values. Empty contact/email rows and missing files are simply not saved. The list
   under "Tenant profile" below is the intended full record, not a move-in gate.
 - **Upfront payments at move-in:** the form also records the 1-month **advance** (S.I#) and
-  1-month **deposit** (T.R#) — amounts default to the entered Rate and are required (≥ 0); the
-  S.I#/T.R# text is optional. See §5. If saving the receipts fails after the tenant was created,
-  the user is told explicitly (the tenant exists; an admin can add receipts from the profile).
+  1-month **deposit** (T.R#) — "Advance due" / "Deposit due" default to the entered Rate and are
+  editable; each is covered by one or **several receipt lines** (amount, BANK/CASH mode, S.I#/T.R#
+  text, bank reference, date) whose sum must equal the due amount exactly (never rounded; more than
+  2 decimals is rejected). A **reservation payment** already held on the selected RESERVED bed is
+  carried in automatically as the deposit (see §5 "Reservation payments"), so the cashier collects
+  only the remainder. Move In also has an optional **Reservation payment** section (first, above the
+  advance) where lines can be typed even when the bed was never reserved or recorded on the Bed Map:
+  each line needs amount, mode, **T.R# (required)** and the received date (not in the future); lines
+  have no target sum. Deposit due (default Rate, editable) minus the total reservation (Bed Map
+  payments + typed lines) is what the cashier collects as deposit; the advance is never reduced.
+  Admin and user only. All receipts are written by one atomic database call
+  (`record_move_in_receipts`). Move In stops with a clear message, before creating the tenant, if
+  that function has not been deployed. If saving the receipts fails after the tenant was created,
+  the user is told explicitly (the tenant exists; use "Apply reservation payment" on the profile's
+  Advance & Deposit tab when the bed had a reservation payment, or an admin adds receipts there).
 - Intended documents: **2 valid government-issued IDs** (any type accepted) + a **scanned signed
   copy** of the lease contract (fixed template). Confirmed implemented — uploaded to Google Drive
   (one folder per tenant) and tracked in `tenant_documents`, viewable/manageable anytime from the
@@ -51,7 +63,12 @@ requests, and owner-facing occupancy/collections/P&L reporting.
   move-in (`moveInEligibleBeds` in `src/lib/bedEligibility.js`). The one-active-tenant-per-bed rule is
   enforced by the DB (`uniq_active_tenant_per_bed`, a partial unique index on `tenants(bed_id)` where
   `is_active`) and `addTenant` surfaces a violation as a clear message naming the room/bed (and the
-  current tenant) instead of the raw Postgres error; the Move In modal stays open.
+  current tenant) instead of the raw Postgres error; the Move In modal stays open. A RESERVED bed may
+  hold optional **reservation payments** (§5): selecting such a bed at Move In shows them and applies
+  them as the deposit; switching to another bed re-reads that bed's payments (the money never
+  follows the tenant to a different bed). If the typed name differs from the name the payment was
+  recorded under, an explicit confirmation tick is required. Reservation payments can also be typed
+  at Move In itself, for any VACANT or RESERVED bed (§5).
 - Billing starts immediately at move-in, prorated against the rent/water cutoff window (see §5)
   — day-exact proration, confirmed correct as currently implemented.
 
@@ -242,6 +259,76 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
     amount/ref/date/notes and add a receipt). Rows are never deleted; `status` is only changed by
     the move-out phase. The unused `tenants.advance_rent/security_deposit/credit_balance` columns
     are not used.
+  - **Reservation payments + split receipt lines — built** (migration
+    `database/migrations/reservation_payments.sql`, mirrored into `init.sql`; apply the SQL BEFORE
+    deploying the frontend that uses it).
+    - **Storage:** table `bed_reservation_payments`, keyed by **bed**, many rows per bed allowed:
+      amount (> 0, 2 decimals), own **T.R# (required on every reservation payment: enforced in the
+      Bed Map form and `addReservationPayment`, in Move In's `validateLines`, and again in
+      `record_move_in_receipts`; the table itself does not enforce it)**, bank ref, mode BANK/CASH, received date, `reserved_name`
+      snapshot (filled by a DB trigger), status HELD / APPLIED / FORFEITED / VOID, `tenant_id` once
+      applied. Second entry point: reservation lines typed in the Move In modal (kind RESERVATION in the
+      receipts RPC) are inserted by the RPC as HELD rows of the tenant's bed (the bed is already LEASED
+      then, so a transaction-local, bed-bound flag lets the insert trigger skip its RESERVED check; direct
+      client inserts on a non-RESERVED bed still fail) with note "Recorded at Move In" and the tenant's
+      name, then applied together with any Bed Map payments, all in the same transaction; the ledger
+      shows them APPLIED. Optional: a RESERVED bed with no payment (e.g. beds 71 and 75) works exactly as before.
+      Recorded from the Bed Map status modal (on a RESERVED bed, or right when reserving) by admin and
+      user; viewers see no reservation UI and cannot read the table. Rows are never deleted; an admin
+      can edit a HELD row or void it with a required reason; APPLIED / FORFEITED / VOID rows are
+      immutable. The Bed Map card shows a "P3,000 held" chip and a "Reservation payments" ledger
+      lists every row (`ReservationLedgerModal`; the one place forfeited reservation income is
+      reported). Collections, Payment Monitoring, Dashboard and utility reconciliation read
+      `payments`, not this table, so they are unaffected.
+    - **Carry-over at Move In:** the HELD payments of the selected bed are copied into
+      `tenant_deposits` as `kind = DEPOSIT`, status HELD, **same amount, T.R#, bank ref, mode and
+      original date** (`reservation_payment_id` links back; a unique index allows one deposit per
+      payment), and the reservation row becomes APPLIED with the tenant. Example: rent 6,000,
+      reservation 3,000 (TR# 500), deposit due 3,000: the tenant ends with ADVANCE 6,000 (S.I#) and
+      one DEPOSIT 3,000 (TR# 500, dated the reservation date); total held 9,000, never 12,000. Deposit
+      math: R = HELD reservation total, due = the editable Deposit due. R = due: nothing more to
+      collect. R < due: the cashier collects exactly due - R as new deposit line(s). **R > due: the
+      full R stays as the deposit** (a T.R# is never split or shrunk); the surplus comes back through
+      the final bill's "Amount to be returned"; no cash rebate and no use toward the advance (open
+      question O2, confirm with the owner). The advance is unaffected. A deposit carried from a
+      reservation keeps amount/date/type/tenant locked (UI and DB trigger); ref, bank ref, mode and
+      notes stay editable by an admin. The Move In receipts step is one transaction; if it fails
+      after the tenant was created the reservation stays HELD and the profile's Advance & Deposit tab
+      shows an amber banner with **Apply reservation payment** (admin + user, idempotent).
+    - **Forfeiture:** when a RESERVED bed leaves RESERVED for anything but LEASED (Remove Reservation,
+      Out of Order, retire_room, reconfigure_room, approval bed removal) a trigger on `beds` marks
+      every HELD payment FORFEITED with a reason note and writes one `Reservation Payment Forfeited`
+      activity row per payment. Leftover HELD rows are also forfeited if the bed is reserved again.
+      Nothing is deleted. The Bed Map asks for a confirmation tick showing the amount before a
+      reservation holding money is removed. A mistaken forfeiture is irreversible in the app
+      (workaround: record a new reservation payment referencing the forfeited TR#). Non-admins can
+      remove a reservation (as before); the tick and the activity entry are the control.
+    - **Split lines:** an advance or a deposit can have several receipt lines (e.g. 4,000 BANK + 2,000
+      CASH), each = one `tenant_deposits` row with `payment_mode` (BANK/CASH, null on legacy rows,
+      shown "mode not recorded") and `bank_ref`. Their sum must equal the due amount exactly in
+      integer cents: typed amounts are parsed strictly (`src/lib/receiptLines.js`, max 2 decimals,
+      never rounded, negative / blank rejected), the mismatch message states both figures and the
+      difference, and `record_move_in_receipts` repeats the check with exact `numeric` math. The final
+      bill math (`finalBill.js`) needed no change: it already pools all HELD receipts per kind, so the
+      combined refs read "TR# 500 & TR# 612" and an overage deposit is credited in full. A Move In line
+      whose ref equals a reservation T.R# on that bed is blocked (duplicate guard).
+    - **Move In arithmetic (6,000 rent, 3,000 reservation TR#, 6,000 advance):** deposit due defaults to
+      the Rate = 6,000, so the cashier collects 6,000 - 3,000 = 3,000 with its own T.R#; stored are
+      ADVANCE 6,000, DEPOSIT 3,000 (reservation TR#, original date) and DEPOSIT 3,000 (new T.R#). Deposit
+      due edited to 3,000: nothing more to collect, one DEPOSIT 3,000. R > due with typed lines needs an
+      explicit tick before saving; the surplus returns via the final bill. On file is always advance due
+      + max(deposit due, R). A new reservation line whose T.R# equals an existing reservation T.R# on the
+      bed, or an advance/deposit line ref, is blocked (client and server); the same amount and date as an
+      existing payment only shows a warning.
+    - **Known limits:** reservation lines typed at Move In are lost if the receipts RPC fails after the
+      tenant was created (an admin adds Deposit receipts from the profile, which carry no ledger row);
+      retyping a payment already on the Bed Map with a different T.R# is only caught by the same
+      amount/date warning. HELD rows left after a failed apply stay on the bed until applied from the tenant
+      profile; an unapplied one blocks the next Move In on that bed with the "Reservation payments on
+      this bed changed" message, so apply or void it first. Reservation money cannot be moved to another bed (admin voids and a new payment
+      is recorded); the DB does not require a date on split lines (the form does); open question O1:
+      the Deposit due defaults to the Rate (§5 structure, confirmed by the owner: the deposit due
+      is collected at move-in) and staff edit the field when the real deposit differs.
   - **Final bill / move-out settlement — Phase 2 DONE** (rules below; what was built and its known
     limits are in the "Phase 2 as built" bullet that follows the rules). Only the refund tracker is left (Phase 3):
     - **Billing periods** follow the cutoff windows (rent/water 1st–EOM, electric 10th–10th).
@@ -871,6 +958,13 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       **Phase 3, not built:** refund tracker (mark the refund PAID with date/reference, bank transfer
       within a few days) and in-app proof-of-payment verification. Also open: keep the moved-out tenant
       in the utility split without billing them (known limit 1 in §5).
+- [x] Reservation payments (own T.R#, BANK/CASH) on RESERVED beds, carried into the deposit at Move
+      In, forfeited automatically when the reservation is cancelled, plus split (bank + cash)
+      advance/deposit receipt lines with an exact-sum check (§3, §5) — **built**; the migration
+      `database/migrations/reservation_payments.sql` must be applied by the DBA before deploying.
+      Move In can also take typed reservation lines (T.R# required). Owner decisions: the deposit due
+      is collected at move-in (default = Rate, editable, reservation credited toward it). Open: the
+      reservation-greater-than-deposit rule (O2); no tester pass yet.
 - [x] Fix the missing `activity_log` entry when a tenant's `move_out_date` is edited directly
       (§3) — **done**.
 - [x] Remove "losing"/"earning" wording from the utility P&L variance display in `Utilities.jsx`

@@ -1,9 +1,11 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
-  fetchBeds, fetchTenants, addTenant, processMoveOutWithBill, addTenantDocument, addTenantDeposits,
+  fetchBeds, fetchTenants, addTenant, processMoveOutWithBill, addTenantDocument,
+  fetchReservationPayments, fetchAllReservationPayments, recordMoveInReceipts, assertMoveInReceiptsAvailable,
   supabase,
 } from '../lib/supabase'
+import { dbToCents } from '../lib/receiptLines'
 import { getOrCreateTenantFolder, uploadFileToDrive, isDriveConfigured } from '../lib/googleDrive'
 import { moveInEligibleBeds } from '../lib/bedEligibility'
 import { useAuth } from '../lib/auth'
@@ -52,6 +54,10 @@ export default function Tenants() {
   const [correctRateT, setCorrectRateT] = useState(null)
   const [correctMoveInT, setCorrectMoveInT] = useState(null)
   const [saving,    setSaving]    = useState(false)
+  const [resPayments, setResPayments] = useState([])
+  const [resLoading,  setResLoading]  = useState(false)
+  const [resError,    setResError]    = useState('')
+  const [otherReserved, setOtherReserved] = useState([])
 
   const { show, ToastEl } = useToast()
 
@@ -83,6 +89,44 @@ export default function Tenants() {
   const enriched = useMemo(() => allEnriched.filter(t => t.is_active), [allEnriched])
 
   const eligibleBeds = useMemo(() => moveInEligibleBeds(beds, tenants), [beds, tenants])
+
+  // HELD reservation money belongs to the selected bed; re-fetched whenever another bed is picked.
+  const moveInBedId = moveInBed?.bed_id ?? null
+  const moveInReserved = moveInBed?.status === 'RESERVED'
+  useEffect(() => {
+    setResPayments([]); setResError('')
+    if (moveInBedId == null || !moveInReserved) { setResLoading(false); return }
+    let cancelled = false
+    setResLoading(true)
+    fetchReservationPayments({ bedId: moveInBedId, statuses: ['HELD'] })
+      .then(rows => { if (!cancelled) setResPayments(rows) })
+      .catch(e => { if (!cancelled) setResError(e.message) })
+      .finally(() => { if (!cancelled) setResLoading(false) })
+    return () => { cancelled = true }
+  }, [moveInBedId, moveInReserved])
+
+  // For the "name matches a different reserved bed that holds money" warning; best-effort.
+  const moveInOpen = moveInBedId != null
+  useEffect(() => {
+    if (!moveInOpen) { setOtherReserved([]); return }
+    let cancelled = false
+    fetchAllReservationPayments({ statuses: ['HELD'] })
+      .then(rows => {
+        if (cancelled) return
+        const byBed = new Map()
+        for (const r of rows) {
+          const cur = byBed.get(r.bed_id) || {
+            bed_id: r.bed_id, reserved_name: r.reserved_name,
+            room_no: r.beds?.rooms?.room_no, bed_letter: r.beds?.bed_letter, totalCents: 0,
+          }
+          cur.totalCents += dbToCents(r.amount)
+          byBed.set(r.bed_id, cur)
+        }
+        setOtherReserved([...byBed.values()])
+      })
+      .catch(() => { if (!cancelled) setOtherReserved([]) })
+    return () => { cancelled = true }
+  }, [moveInOpen])
 
   // Deep-link from Dashboard drill-down modals — resolves the tenant whether
   // currently active or since moved out (allEnriched is unfiltered). Consumes
@@ -147,7 +191,9 @@ export default function Tenants() {
     if (!moveInBed) return
     setSaving(true)
     try {
-      const { contacts = [], emails = [], docs = [], advance, deposit, ...tenantData } = data
+      const { contacts = [], emails = [], docs = [], receipts, ...tenantData } = data
+      // Stops BEFORE the tenant is created if the receipts RPC is not deployed yet.
+      await assertMoveInReceiptsAvailable()
       const tenant = await addTenant(moveInBed.bed_id, {
         ...tenantData,
         _room_no:    moveInBed.room_no,
@@ -156,10 +202,7 @@ export default function Tenants() {
 
       let depositError = null
       try {
-        await addTenantDeposits(tenant.id, [
-          { kind: 'ADVANCE', amount: advance.amount, refNo: advance.refNo, receivedDate: tenantData.move_in_date },
-          { kind: 'DEPOSIT', amount: deposit.amount, refNo: deposit.refNo, receivedDate: tenantData.move_in_date },
-        ], user?.id)
+        await recordMoveInReceipts(tenant.id, receipts)
       } catch(depErr) {
         depositError = depErr
       }
@@ -213,7 +256,7 @@ export default function Tenants() {
 
       setMoveInBed(null)
       if (depositError) {
-        show(`${tenant.name} was moved in, but the advance/deposit was NOT recorded: ${depositError.message}. An admin can add them from the tenant profile (Advance & Deposit tab).`, 'error', { duration: 15000 })
+        show(`${tenant.name} was moved in, but the advance/deposit was NOT recorded: ${depositError.message}. An admin can add them from the tenant profile (Advance & Deposit tab). If this bed already had a reservation payment recorded, do not retype it: open the tenant's Advance & Deposit tab and use Apply reservation payment. Any reservation payment lines typed in Move In were NOT saved either; an admin can add them as Deposit receipts from that tab.`, 'error', { duration: 20000 })
       } else {
         show('Tenant moved in!', 'success')
       }
@@ -357,6 +400,10 @@ export default function Tenants() {
           onClose={() => setMoveInBed(null)}
           onSubmit={handleMoveIn}
           saving={saving}
+          reservationPayments={resPayments}
+          reservationLoading={resLoading}
+          reservationError={resError}
+          otherReservedWithMoney={otherReserved}
         />
       )}
       {moveOutT && (

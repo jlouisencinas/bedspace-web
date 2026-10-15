@@ -1,6 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
 import { LogIn, X, FileUp, CheckCircle, Wifi } from 'lucide-react'
 import MultiEntryInput from './MultiEntryInput'
+import ReceiptLinesInput from './ReceiptLinesInput'
+import { PAYMENT_MODE_LABEL } from '../lib/supabase'
+import {
+  parseMoney, dbToCents, centsToInput, fmtCents, planDeposit, validateLines, nameMatches, blankLine, sumCents, refsOf,
+} from '../lib/receiptLines'
 import { isDriveConfigured, isDriveConnected, preloadDrive, connectDrive } from '../lib/googleDrive'
 
 export const GENDER_OPTIONS = [
@@ -22,7 +27,16 @@ const DOC_SLOTS = [
   { docType: 'SIGNED_CONTRACT', label: 'Signed Contract' },
 ]
 
-function today() { return new Date().toISOString().slice(0, 10) }
+// Local calendar date (toISOString() is UTC, a day behind in the Philippines before 08:00).
+function today() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function fmtDay(d) {
+  if (!d) return '—'
+  return new Date(d + 'T00:00:00').toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })
+}
 
 function calcDuration(start, end) {
   if (!start || !end) return ''
@@ -38,7 +52,10 @@ function calcDuration(start, end) {
   return parts.length ? parts.join(' ') : 'Less than 1 month'
 }
 
-export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubmit, saving }) {
+export default function MoveInModal({
+  bed, allBeds, onBedChange, onClose, onSubmit, saving,
+  reservationPayments = [], reservationLoading = false, reservationError = '', otherReservedWithMoney = [],
+}) {
   const [form, setForm] = useState({
     name: '', gender: '', rate: bed?.default_rate || '',
     move_in_date: today(), move_out_date: '',
@@ -50,7 +67,15 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
     comments: '',
   })
   // null = follow the Rate field; a string = the user typed their own amount.
-  const [upfront, setUpfront] = useState({ advance_amount: null, advance_ref: '', deposit_amount: null, deposit_ref: '' })
+  const [dueText, setDueText] = useState({ advance: null, deposit: null })
+  // Until the user edits a line amount, the first line follows the due amount; after that nothing auto-resizes.
+  const [advLines, setAdvLines] = useState(() => [blankLine({ date: today() })])
+  const [depLines, setDepLines] = useState(() => [blankLine({ date: today() })])
+  const [touched,  setTouched]  = useState({ advance: false, deposit: false })
+  const [nameAck,  setNameAck]  = useState(false)
+  const [overAck,   setOverAck]   = useState(false)
+  // Reservation payments typed at Move In (bed never reserved/recorded). Optional; not bed-bound client-side.
+  const [resLines, setResLines] = useState([])
   const [contacts,   setContacts]   = useState([{ value: '', label: 'Mobile', isPrimary: true }])
   const [emails,     setEmails]     = useState([{ value: '', label: '', isPrimary: true }])
   const [docs,           setDocs]           = useState(DOC_SLOTS.map(s => ({ ...s, file: null })))
@@ -88,20 +113,94 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
     setDocs(prev => prev.map((d, idx) => idx === i ? { ...d, file } : d))
   }
 
-  const setUp = (k, v) => { setFormError(''); setUpfront(u => ({ ...u, [k]: v })) }
-  const advanceAmount = upfront.advance_amount ?? form.rate
-  const depositAmount = upfront.deposit_amount ?? form.rate
+  const setDue = (k, v) => { setFormError(''); setDueText(u => ({ ...u, [k]: v })) }
+  const advanceDueText = dueText.advance ?? String(form.rate ?? '')
+  const depositDueText = dueText.deposit ?? String(form.rate ?? '')
+  const advDueCents = parseMoney(advanceDueText)
+  const depDueCents = parseMoney(depositDueText)
+
+  const heldCents        = reservationPayments.reduce((sum, p) => sum + dbToCents(p.amount), 0)
+  const newResCents      = sumCents(resLines)
+  const reservationCents = heldCents + newResCents
+  const existingRefs     = reservationPayments.map(p => p.ref_no).filter(Boolean)
+  const allReservationRefs = [...existingRefs, ...refsOf(resLines)]
+  const plan = planDeposit({ dueCents: depDueCents ?? 0, reservationCents })
+  const overNeeded = plan.state === 'OVER' && newResCents > 0
+  const possibleDuplicate = resLines.some(l => {
+    const c = parseMoney(l.amount)
+    return c != null && reservationPayments.some(p => dbToCents(p.amount) === c && p.received_date === l.date)
+  })
+  const reservedFor = reservationPayments[0]?.reserved_name || ''
+  const nameMismatch = reservationPayments.length > 0 && reservedFor !== '' && form.name.trim() !== '' && !nameMatches(reservedFor, form.name)
+  const otherBedWarning = reservationPayments.length === 0 && form.name.trim() !== ''
+    ? otherReservedWithMoney.find(o => o.bed_id !== bed?.bed_id && nameMatches(o.reserved_name, form.name))
+    : null
+
+  // The tick only ever applies to the bed and payer name it was given for.
+  useEffect(() => { setNameAck(false) }, [bed?.bed_id, reservedFor, form.name])
+  useEffect(() => { setOverAck(false) }, [bed?.bed_id, form.name, reservationCents])
+
+  const follow = (lines, isTouched, cents) => (isTouched ? lines : lines.map((l, i) =>
+    i === 0 ? { ...l, amount: cents != null && cents > 0 ? centsToInput(cents) : '' } : l))
+  const advShown = follow(advLines, touched.advance, advDueCents)
+  const depShown = follow(depLines, touched.deposit, plan.shortfallCents)
+
+  function changeLines(kind, next, shown, setLines) {
+    setFormError('')
+    if (next.length !== shown.length || next.some((l, i) => l.amount !== shown[i].amount)) {
+      setTouched(t => ({ ...t, [kind]: true }))
+    }
+    setLines(next)
+  }
 
   function handleSubmit(e) {
     e.preventDefault()
     setFormError('')
 
+    if (reservationError) { setFormError(`Could not check this bed for reservation payments: ${reservationError}. Reselect the bed or reopen Move In.`); return }
+    if (reservationLoading) { setFormError('Still checking this bed for reservation payments. Try again in a moment.'); return }
+    if (advDueCents == null) { setFormError('Advance due must be an exact amount with at most 2 decimals (never rounded).'); return }
+    if (depDueCents == null) { setFormError('Deposit due must be an exact amount with at most 2 decimals (never rounded).'); return }
+    if (nameMismatch && !nameAck) {
+      setFormError('Confirm that the reservation payment is being applied to a tenant with a different name.')
+      return
+    }
+
+    if (overNeeded && !overAck) {
+      setFormError(`Confirm that the reservation payment exceeds the deposit due by ${fmtCents(plan.overageCents)} and the surplus is returned on the final bill.`)
+      return
+    }
+
+    const advLinesUsed = advDueCents > 0 ? advShown : []
+    const depLinesUsed = plan.shortfallCents > 0 ? depShown : []
+    const resErr = validateLines({ kind: 'RESERVATION', dueCents: null, lines: resLines, reservationRefs: existingRefs, maxDate: today() })
+    const advErr = validateLines({ kind: 'ADVANCE', dueCents: advDueCents, lines: advLinesUsed, reservationRefs: allReservationRefs })
+    const depErr = validateLines({ kind: 'DEPOSIT', dueCents: plan.shortfallCents, lines: depLinesUsed, reservationRefs: allReservationRefs })
+    const errors = [...resErr.errors, ...advErr.errors, ...depErr.errors]
+    if (errors.length) { setFormError(errors.join('\n')); return }
+
+    const toLine = kind => l => ({
+      kind,
+      amountCents:  parseMoney(l.amount),
+      paymentMode:  l.mode,
+      refNo:        l.refNo.trim(),
+      bankRef:      l.mode === 'BANK' ? l.bankRef.trim() : '',
+      receivedDate: l.date,
+    })
     onSubmit({
       ...form,
       duration: calcDuration(form.move_in_date, form.move_out_date),
       contacts, emails, docs,
-      advance: { amount: advanceAmount, refNo: upfront.advance_ref },
-      deposit: { amount: depositAmount, refNo: upfront.deposit_ref },
+      receipts: {
+        advanceDueCents:          advDueCents,
+        depositDueCents:          depDueCents,
+        expectedReservationCents: heldCents,
+        lines: [
+          ...resLines.map(toLine('RESERVATION')),
+          ...advLinesUsed.map(toLine('ADVANCE')),
+          ...depLinesUsed.map(toLine('DEPOSIT')),
+        ],
+      },
     })
   }
 
@@ -157,22 +256,137 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
 
               {/* ── Upfront payments ── */}
               <div className="form-section">Upfront Payments</div>
-              <div className="fg">
-                <label>Advance (PHP) *</label>
-                <input type="number" value={advanceAmount} onChange={e => setUp('advance_amount', e.target.value)} required min="0" step="0.01" />
+
+              <div className="fg full rounded-xl border border-line p-4 gap-3">
+                <label>Reservation payment (optional)</label>
+                <span className="text-[11px] text-ink-muted">
+                  Money paid earlier to hold the bed, with its own T.R#. It is applied as part of the deposit. Required for each line: amount, mode, T.R# and the date it was received.
+                </span>
+
+                {reservationLoading && (
+                  <span className="text-[12px] text-ink-muted">Checking this bed for reservation payments…</span>
+                )}
+
+                {reservationError && (
+                  <span className="text-[12px] text-danger-text">Could not load reservation payments for this bed: {reservationError}</span>
+                )}
+
+                {reservationPayments.length > 0 && (
+                  <div className="rounded-lg border border-info-border bg-info-bg text-info-text px-3 py-2 text-[12px] flex flex-col gap-1">
+                    <div className="font-semibold">Reservation payment(s) already recorded on this bed (applied as deposit)</div>
+                    {reservationPayments.map(p => (
+                      <div key={p.id} className="flex flex-wrap justify-between gap-x-3">
+                        <span>
+                          {p.ref_no ? `TR# ${p.ref_no}` : 'No TR#'} · {fmtDay(p.received_date)} · {PAYMENT_MODE_LABEL[p.payment_mode] || p.payment_mode}
+                          {p.bank_ref ? ` (${p.bank_ref})` : ''}{p.reserved_name ? ` · paid by ${p.reserved_name}` : ''}
+                        </span>
+                        <span className="font-semibold">{fmtCents(dbToCents(p.amount))}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {nameMismatch && (
+                  <label className="flex items-start gap-2 rounded-lg border border-warning-border bg-warning-bg text-warning-text px-3 py-2 text-[12px] cursor-pointer">
+                    <input type="checkbox" className="mt-0.5" checked={nameAck} onChange={e => { setFormError(''); setNameAck(e.target.checked) }} />
+                    <span>Reservation was paid by <strong>{reservedFor}</strong>; apply to <strong>{form.name.trim()}</strong>. I confirm this is correct.</span>
+                  </label>
+                )}
+
+                {otherBedWarning && (
+                  <div className="rounded-lg border border-warning-border bg-warning-bg text-warning-text px-3 py-2 text-[12px]">
+                    {otherBedWarning.reserved_name} has {fmtCents(otherBedWarning.totalCents)} of reservation payment on Room {otherBedWarning.room_no} Bed {otherBedWarning.bed_letter}.
+                    Reservation money stays with that bed; select that bed to use it, or continue to collect the full deposit here.
+                  </div>
+                )}
+
+                {resLines.length > 0 && (
+                  <ReceiptLinesInput
+                    refLabel="T.R# (Temporary Receipt)"
+                    refRequired
+                    dueCents={null}
+                    minLines={0}
+                    addLabel="Add another reservation payment"
+                    lines={resLines}
+                    defaultDate={today()}
+                    onChange={next => { setFormError(''); setResLines(next) }}
+                  />
+                )}
+                {resLines.length === 0 && (
+                  <div>
+                    <button type="button" className="btn-xs blue" onClick={() => { setFormError(''); setResLines([blankLine({ date: today() })]) }}>
+                      + Add reservation payment
+                    </button>
+                  </div>
+                )}
+
+                {possibleDuplicate && (
+                  <div className="rounded-lg border border-warning-border bg-warning-bg text-warning-text px-3 py-2 text-[12px]">
+                    A reservation payment with the same amount and date is already recorded on this bed. Make sure you are not entering it twice.
+                  </div>
+                )}
               </div>
-              <div className="fg">
-                <label>S.I# (Sales Invoice)</label>
-                <input type="text" value={upfront.advance_ref} onChange={e => setUp('advance_ref', e.target.value)} placeholder="Optional" />
+
+              <div className="fg full rounded-xl border border-line p-4 gap-3">
+                <label>Advance due (PHP) *</label>
+                <input type="text" inputMode="decimal" value={advanceDueText} onChange={e => setDue('advance', e.target.value)} required />
+                {advDueCents > 0 && (
+                  <ReceiptLinesInput
+                    refLabel="S.I# (Sales Invoice)"
+                    dueCents={advDueCents}
+                    lines={advShown}
+                    defaultDate={today()}
+                    onChange={next => changeLines('advance', next, advShown, setAdvLines)}
+                  />
+                )}
               </div>
-              <div className="fg">
-                <label>Deposit (PHP) *</label>
-                <input type="number" value={depositAmount} onChange={e => setUp('deposit_amount', e.target.value)} required min="0" step="0.01" />
+
+              <div className="fg full rounded-xl border border-line p-4 gap-3">
+                <label>Deposit due (PHP) *</label>
+                <input type="text" inputMode="decimal" value={depositDueText} onChange={e => setDue('deposit', e.target.value)} required />
+
+                {depDueCents != null && reservationCents > 0 && (
+                  <div className="rounded-lg border border-info-border bg-info-bg text-info-text px-3 py-2 text-[12px] flex flex-col gap-1">
+                    <div className="font-semibold">
+                      Deposit due {fmtCents(depDueCents)} - reservation {fmtCents(reservationCents)} = to collect now {fmtCents(plan.shortfallCents)}
+                    </div>
+                    {plan.state === 'FULL' && <div>Fully covered by reservation. The cashier collects no deposit.</div>}
+                    {plan.state === 'OVER' && (
+                      <div>
+                        The reservation payment is {fmtCents(plan.overageCents)} more than the deposit due. The full {fmtCents(reservationCents)} stays
+                        as the deposit and the surplus is returned through the final bill (Amount to be returned).
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {overNeeded && (
+                  <label className="flex items-start gap-2 rounded-lg border border-warning-border bg-warning-bg text-warning-text px-3 py-2 text-[12px] cursor-pointer">
+                    <input type="checkbox" className="mt-0.5" checked={overAck} onChange={e => { setFormError(''); setOverAck(e.target.checked) }} />
+                    <span>Reservation exceeds deposit due by {fmtCents(plan.overageCents)}; the surplus is returned on the final bill.</span>
+                  </label>
+                )}
+
+                {depDueCents != null && plan.shortfallCents > 0 && (
+                  <ReceiptLinesInput
+                    refLabel="T.R# (Temporary Receipt)"
+                    dueCents={plan.shortfallCents}
+                    lines={depShown}
+                    defaultDate={today()}
+                    onChange={next => changeLines('deposit', next, depShown, setDepLines)}
+                  />
+                )}
               </div>
-              <div className="fg">
-                <label>T.R# (Temporary Receipt)</label>
-                <input type="text" value={upfront.deposit_ref} onChange={e => setUp('deposit_ref', e.target.value)} placeholder="Optional, e.g. TR# 121 & TR# 133" />
-              </div>
+
+              {advDueCents != null && depDueCents != null && (
+                <div className="fg full">
+                  <div className="rounded-lg bg-surface-2 border border-line px-3.5 py-3 text-[12px] leading-relaxed text-ink-secondary">
+                    Reservation held {fmtCents(heldCents)} (+ entered now {fmtCents(newResCents)}) · Advance {fmtCents(advDueCents)} ·
+                    Deposit due {fmtCents(depDueCents)} = reservation {fmtCents(reservationCents)} + collected {fmtCents(plan.shortfallCents)}.
+                    On file after Move In: advance {fmtCents(advDueCents)} + deposit {fmtCents(Math.max(depDueCents, reservationCents))}.
+                  </div>
+                </div>
+              )}
 
               {/* ── Personal Info ── */}
               <div className="form-section">Personal Information</div>
@@ -365,14 +579,14 @@ export default function MoveInModal({ bed, allBeds, onBedChange, onClose, onSubm
             {formError && (
               <div className="mt-3 px-3 py-2.5 bg-danger-bg border border-danger-border rounded-xl text-[13px] text-danger-text flex items-start gap-2">
                 <span className="shrink-0 mt-px">⚠</span>
-                {formError}
+                <span className="whitespace-pre-line">{formError}</span>
               </div>
             )}
           </div>
 
           <div className="modal-foot">
             <button type="button" className="btn secondary" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn success" disabled={saving}>
+            <button type="submit" className="btn success" disabled={saving || reservationLoading}>
               {saving ? 'Saving…' : 'Confirm Move In'}
             </button>
           </div>

@@ -4,10 +4,12 @@ import {
   fetchTenantDocuments, addTenantDocument, deleteTenantDocument, fetchTenantHistory,
   fetchTenantDeposits, addTenantDeposit, updateTenantDeposit, DEPOSIT_KIND_LABEL, DEPOSIT_REF_LABEL,
   fetchFinalBills, voidFinalBill,
+  fetchReservationPayments, applyReservationPayments, PAYMENT_MODES, PAYMENT_MODE_LABEL,
 } from '../lib/supabase'
 import { Link } from 'react-router-dom'
 import { getOrCreateTenantFolder, uploadFileToDrive, isDriveConfigured, isDriveConnected, preloadDrive, connectDrive } from '../lib/googleDrive'
 import { useAuth } from '../lib/auth'
+import { dbToCents } from '../lib/receiptLines'
 import { useToast } from './Toast'
 import { GENDER_OPTIONS, SOURCE_OPTIONS } from './MoveInModal'
 import {
@@ -77,7 +79,7 @@ function fmtSize(b)  {
 // Parent owns what happens when each footer button is clicked (opens its own
 // modal state) — this component just calls the callback.
 export default function TenantProfileModal({ tenant, onClose, onTransfer, onMoveOut, onCorrectRate, onCorrectMoveIn }) {
-  const { isAdmin, user } = useAuth()
+  const { isAdmin, isUser, user } = useAuth()
   const docFileRef = useRef(null)
   const { show, ToastEl } = useToast()
 
@@ -97,6 +99,8 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
   const [depEditId,     setDepEditId]     = useState(null)
   const [depForm,       setDepForm]       = useState(null)
   const [depSaving,     setDepSaving]     = useState(false)
+  const [resHeld,       setResHeld]       = useState([])
+  const [applyBusy,     setApplyBusy]     = useState(false)
 
   const [docUploading,   setDocUploading]   = useState(false)
   const [newDocType,     setNewDocType]     = useState('GOVT_ID')
@@ -118,6 +122,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
     setDepLoadError('')
     setDepEditId(null)
     setDepForm(null)
+    setResHeld([])
 
     async function load() {
       const results = await Promise.allSettled([
@@ -129,6 +134,9 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
         fetchTenantHistory(tenant.id),
         fetchTenantDeposits(tenant.id),
         fetchFinalBills(tenant.id),
+        tenant.is_active !== false && tenant.bed_id
+          ? fetchReservationPayments({ bedId: tenant.bed_id, statuses: ['HELD'] })
+          : Promise.resolve([]),
       ])
       if (cancelled) return
       if (results[0].status === 'fulfilled') setDetailPays(results[0].value)
@@ -140,6 +148,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
       if (results[6].status === 'fulfilled') setDetailDeposits(results[6].value)
       else setDepLoadError(results[6].reason?.message || 'unknown error')
       if (results[7].status === 'fulfilled') setDetailBills(results[7].value)
+      if (results[8].status === 'fulfilled') setResHeld(results[8].value)
     }
     load()
     return () => { cancelled = true }
@@ -189,24 +198,35 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
 
   function startEditDeposit(d) {
     setDepEditId(d.id)
-    setDepForm({ amount: String(d.amount), ref_no: d.ref_no || '', received_date: d.received_date || '', notes: d.notes || '' })
+    setDepForm({
+      amount: String(d.amount), ref_no: d.ref_no || '', received_date: d.received_date || '', notes: d.notes || '',
+      payment_mode: d.payment_mode || '', bank_ref: d.bank_ref || '',
+    })
   }
 
   function startAddDeposit() {
     setDepEditId('new')
-    setDepForm({ kind: 'DEPOSIT', amount: '', ref_no: '', received_date: new Date().toISOString().slice(0, 10), notes: '' })
+    setDepForm({
+      kind: 'DEPOSIT', amount: '', ref_no: '', received_date: new Date().toISOString().slice(0, 10), notes: '',
+      payment_mode: '', bank_ref: '',
+    })
   }
 
   function cancelDepositForm() { setDepEditId(null); setDepForm(null) }
 
   async function saveDeposit(e) {
     e.preventDefault()
+    if (depEditId === 'new' && !PAYMENT_MODES.includes(depForm.payment_mode)) {
+      show('Choose how this receipt was paid (BANK or CASH).', 'error')
+      return
+    }
     setDepSaving(true)
     try {
       if (depEditId === 'new') {
         const row = await addTenantDeposit({
           tenantId: tenant.id, kind: depForm.kind, amount: depForm.amount,
           refNo: depForm.ref_no, receivedDate: depForm.received_date, notes: depForm.notes,
+          paymentMode: depForm.payment_mode, bankRef: depForm.payment_mode === 'BANK' ? depForm.bank_ref : '',
         }, user?.id)
         setDetailDeposits(prev => [...prev, row])
         show('Receipt added.', 'success')
@@ -214,6 +234,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
         const row = await updateTenantDeposit(depEditId, {
           amount: depForm.amount, ref_no: depForm.ref_no,
           received_date: depForm.received_date, notes: depForm.notes,
+          payment_mode: depForm.payment_mode, bank_ref: depForm.payment_mode === 'BANK' ? depForm.bank_ref : '',
         }, user?.id)
         setDetailDeposits(prev => prev.map(d => d.id === row.id ? row : d))
         show('Receipt updated.', 'success')
@@ -234,6 +255,25 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
     } catch(err) { show(err.message, 'error') }
     setBillBusy(false)
   }
+
+  async function doApplyReservation() {
+    setApplyBusy(true)
+    try {
+      await applyReservationPayments(tenant.id)
+      const [deps, held] = await Promise.all([
+        fetchTenantDeposits(tenant.id),
+        fetchReservationPayments({ bedId: tenant.bed_id, statuses: ['HELD'] }),
+      ])
+      setDetailDeposits(deps); setResHeld(held)
+      show('Reservation payment applied as deposit.', 'success')
+    } catch(err) { show(err.message, 'error') }
+    setApplyBusy(false)
+  }
+
+  const heldCount = kind => detailDeposits
+    .filter(d => (!kind || d.kind === kind) && d.status === 'HELD').length
+
+  const resHeldTotal = resHeld.reduce((sum, p) => sum + dbToCents(p.amount), 0) / 100
 
   const heldTotal = kind => detailDeposits
     .filter(d => d.kind === kind && d.status === 'HELD')
@@ -552,16 +592,32 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                 </div>
               )}
 
+              {resHeld.length > 0 && (
+                <div className="rounded-lg border border-warning-border bg-warning-bg text-warning-text px-3 py-2.5 mb-3 text-[12px]">
+                  <div className="font-semibold">{money(resHeldTotal)} reservation payment on this bed has not been applied</div>
+                  <div className="mt-0.5">
+                    {resHeld.map(r => `${r.ref_no ? 'TR# ' + r.ref_no : 'No TR#'} (${money(r.amount)})`).join(' & ')}.
+                    Apply it as this tenant's deposit instead of typing it again as a new receipt, or it would be counted twice.
+                  </div>
+                  {(isAdmin || isUser) && (
+                    <button className="btn-xs amber mt-2" disabled={applyBusy} onClick={doApplyReservation}>
+                      {applyBusy ? 'Applying…' : 'Apply reservation payment'}
+                    </button>
+                  )}
+                </div>
+              )}
+
               {!depLoadError && (
                 <div className="grid grid-cols-3 gap-2 mb-4">
                   {[
-                    ['Advance held', heldTotal('ADVANCE')],
-                    ['Deposit held', heldTotal('DEPOSIT')],
-                    ['Total held',   heldTotal('ADVANCE') + heldTotal('DEPOSIT')],
-                  ].map(([label, val]) => (
+                    ['Advance held', heldTotal('ADVANCE'), heldCount('ADVANCE')],
+                    ['Deposit held', heldTotal('DEPOSIT'), heldCount('DEPOSIT')],
+                    ['Total held',   heldTotal('ADVANCE') + heldTotal('DEPOSIT'), heldCount()],
+                  ].map(([label, val, n]) => (
                     <div key={label} className="rounded-xl bg-surface-2 px-3 py-2">
                       <div className="text-[10px] font-bold text-ink-faint uppercase tracking-widest">{label}</div>
                       <div className="text-[14px] font-semibold text-ink mt-0.5">{money(val)}</div>
+                      <div className="text-[10px] text-ink-faint">{n} {n === 1 ? 'receipt' : 'receipts'}</div>
                     </div>
                   ))}
                 </div>
@@ -581,10 +637,15 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                       <div className="text-[12px] font-semibold text-ink mb-2">
                         Edit {DEPOSIT_KIND_LABEL[d.kind]} receipt
                       </div>
+                      {d.reservation_payment_id && (
+                        <div className="text-[11px] text-ink-muted mb-2">This deposit came from a reservation payment: its amount and date are locked.</div>
+                      )}
                       <div className="form-grid">
                         <div className="fg">
                           <label>Amount (PHP) *</label>
                           <input type="number" min="0" step="0.01" required value={depForm.amount}
+                            readOnly={!!d.reservation_payment_id}
+                            className={d.reservation_payment_id ? 'bg-surface-3 text-ink-muted cursor-not-allowed' : ''}
                             onChange={e => setDepForm(f => ({ ...f, amount: e.target.value }))} />
                         </div>
                         <div className="fg">
@@ -595,8 +656,24 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                         <div className="fg">
                           <label>Received date</label>
                           <input type="date" value={depForm.received_date}
+                            readOnly={!!d.reservation_payment_id}
+                            className={d.reservation_payment_id ? 'bg-surface-3 text-ink-muted cursor-not-allowed' : ''}
                             onChange={e => setDepForm(f => ({ ...f, received_date: e.target.value }))} />
                         </div>
+                        <div className="fg">
+                          <label>Mode</label>
+                          <select value={depForm.payment_mode} onChange={e => setDepForm(f => ({ ...f, payment_mode: e.target.value }))}>
+                            {!d.payment_mode && <option value="">Not recorded</option>}
+                            {PAYMENT_MODES.map(m => <option key={m} value={m}>{PAYMENT_MODE_LABEL[m]}</option>)}
+                          </select>
+                        </div>
+                        {depForm.payment_mode === 'BANK' && (
+                          <div className="fg">
+                            <label>Bank reference</label>
+                            <input type="text" value={depForm.bank_ref}
+                              onChange={e => setDepForm(f => ({ ...f, bank_ref: e.target.value }))} />
+                          </div>
+                        )}
                         <div className="fg">
                           <label>Notes</label>
                           <input type="text" value={depForm.notes}
@@ -617,9 +694,15 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${DEPOSIT_STATUS_COLORS[d.status] || DEPOSIT_STATUS_COLORS.REFUNDED}`}>
                             {d.status}
                           </span>
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-surface-3 text-ink-secondary">
+                            {d.payment_mode ? PAYMENT_MODE_LABEL[d.payment_mode] : 'mode not recorded'}
+                          </span>
+                          {d.reservation_payment_id && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-warning-bg text-warning-text">From reservation</span>
+                          )}
                         </div>
                         <div className="text-[11px] text-ink-faint mt-0.5">
-                          {DEPOSIT_REF_LABEL[d.kind]} {d.ref_no || '—'} · Received {fmtDate(d.received_date)}
+                          {DEPOSIT_REF_LABEL[d.kind]} {d.ref_no || '—'}{d.bank_ref ? ` · Bank ref ${d.bank_ref}` : ''} · Received {fmtDate(d.received_date)}
                         </div>
                         {d.notes && <div className="text-[11px] text-ink-muted mt-0.5">{d.notes}</div>}
                         {d.settled_note && <div className="text-[11px] text-ink-muted mt-0.5">Settlement: {d.settled_note}</div>}
@@ -636,6 +719,11 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                 {depEditId === 'new' && (
                   <form onSubmit={saveDeposit} className="p-3 rounded-xl bg-surface-2">
                     <div className="text-[12px] font-semibold text-ink mb-2">Add receipt</div>
+                    {resHeld.length > 0 && (
+                      <div className="text-[11px] text-warning-text bg-warning-bg border border-warning-border rounded-lg px-2.5 py-1.5 mb-2">
+                        A reservation payment of {money(resHeldTotal)} on this bed has not been applied yet. Apply it first (banner above) so it is not counted twice.
+                      </div>
+                    )}
                     <div className="form-grid">
                       <div className="fg">
                         <label>Type *</label>
@@ -659,6 +747,20 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                         <input type="date" value={depForm.received_date}
                           onChange={e => setDepForm(f => ({ ...f, received_date: e.target.value }))} />
                       </div>
+                      <div className="fg">
+                        <label>Mode *</label>
+                        <select required value={depForm.payment_mode} onChange={e => setDepForm(f => ({ ...f, payment_mode: e.target.value }))}>
+                          <option value="" disabled>Select…</option>
+                          {PAYMENT_MODES.map(m => <option key={m} value={m}>{PAYMENT_MODE_LABEL[m]}</option>)}
+                        </select>
+                      </div>
+                      {depForm.payment_mode === 'BANK' && (
+                        <div className="fg">
+                          <label>Bank reference</label>
+                          <input type="text" value={depForm.bank_ref}
+                            onChange={e => setDepForm(f => ({ ...f, bank_ref: e.target.value }))} />
+                        </div>
+                      )}
                       <div className="fg full">
                         <label>Notes</label>
                         <input type="text" value={depForm.notes}

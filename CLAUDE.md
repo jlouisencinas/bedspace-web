@@ -27,12 +27,13 @@ npm run preview
   built on `computeDailyOccupancy()` in `_shared/occupancy.ts`.
 - `src/components/` — shared UI (MoveInModal, MoveOutModal, TransferModal, Statement, MultiEntryInput,
   SearchInput, TicketDetailModal, Sidebar, Toast, RoomReconfigureModal, AddRoomModal, RetireRoomModal,
-  DrillDownModal, …).
+  DrillDownModal, ReceiptLinesInput, ReservationLedgerModal, …).
   Property.jsx has room reconfiguration split across two tabs: "Reconfigure" (rebalance bed count/
   rates) is in the Bed Rates tab; "+ Add Room" / "Retire" (create/retire a room entirely) are in the
   Room Config tab.
 - `src/lib/` — data layer: `supabase.js`, `billing.js`, `pnl.js`, `snapshot.js`, `auth.jsx`,
-  `approvals.js` (approval requests), `tenantProfile.js`, `notify.js` (client side of email
+  `approvals.js` (approval requests), `receiptLines.js` (pure, no imports: strict cents parsing,
+  split receipt line validation, reservation/deposit math), `tenantProfile.js`, `notify.js` (client side of email
   notifications), `theme.jsx`, `simCsv.js` (Occupancy Simulator CSV parsing/validation)
 - `supabase/functions/notify-email/` + `supabase/functions/_shared/notification-types.ts` — the
   notification Edge Function and its type registry. Deployed via the Supabase MCP/CLI, **not** by
@@ -43,7 +44,11 @@ npm run preview
 - `database/init.sql` — single consolidated schema file (tables, views, functions, RLS policies, seed
   data). See the truncate warning under Working conventions.
 - `database/migrations/` — one-off, apply-by-hand SQL (e.g. `advance_deposit.sql` → `tenant_deposits`:
-  per-tenant advance/deposit receipts with S.I#/T.R#; requirements §5).
+  per-tenant advance/deposit receipts with S.I#/T.R#; requirements §5). `reservation_payments.sql` →
+  `bed_reservation_payments` (optional money paid on a RESERVED bed, carried into `tenant_deposits` as the
+  deposit at Move In, forfeited by a `beds` trigger on cancel) + `tenant_deposits.payment_mode/bank_ref` +
+  the atomic RPCs `record_move_in_receipts` / `apply_reservation_payments`; apply it BEFORE deploying the
+  frontend (Move In depends on the RPC; requirements §5 "Reservation payments").
 - `src/lib/finalBill.js` — pure move-out Final Bill builder + automatic second-to-last-bill advance credit
   (`billPosition`, `advanceCredits`); `final_bills` table (`database/migrations/final_bills.sql`), flow in
   `MoveOutModal` → `processMoveOutWithBill`, print page `PrintFinalBill` (`/print/final-bill`); requirements §5.

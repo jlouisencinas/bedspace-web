@@ -53,6 +53,12 @@ const TYPE_CONFIG = {
   'Add-on Type Created':        { bg: 'bg-badge-teal-bg',     text: 'text-badge-teal-text',     dot: 'bg-teal-400'     },
   'Add-on Type Updated':        { bg: 'bg-badge-teal-bg',     text: 'text-badge-teal-text',     dot: 'bg-teal-300'     },
   'Add-on Type Deleted':        { bg: 'bg-badge-rose-bg',     text: 'text-badge-rose-text',     dot: 'bg-rose-300'     },
+  // Reservation payments
+  'Reservation Payment Recorded':  { bg: 'bg-warning-bg',      text: 'text-warning-text',      dot: 'bg-amber-400'  },
+  'Reservation Payment Applied':   { bg: 'bg-success-bg',      text: 'text-success-text',      dot: 'bg-emerald-400' },
+  'Reservation Payment Forfeited': { bg: 'bg-badge-rose-bg',   text: 'text-badge-rose-text',   dot: 'bg-rose-400'   },
+  'Reservation Payment Voided':    { bg: 'bg-surface-3',       text: 'text-ink-muted',         dot: 'bg-slate-400'  },
+  'Reservation Payment Updated':   { bg: 'bg-badge-sky-bg',    text: 'text-badge-sky-text',    dot: 'bg-sky-400'    },
   // System
   'Bed Status Changed':         { bg: 'bg-surface-3',   text: 'text-ink-muted',    dot: 'bg-slate-300'    },
 }
@@ -66,6 +72,8 @@ const BILLING_TYPES  = new Set([
   'Bed Status Changed', 'Ticket Raised', 'Ticket Resolved',
   'Room Config Updated', 'Bed Rate Updated', 'Bed Removed', 'Room Reconfigured',
   'Add-on Type Created', 'Add-on Type Updated', 'Add-on Type Deleted',
+  'Reservation Payment Recorded', 'Reservation Payment Applied', 'Reservation Payment Forfeited',
+  'Reservation Payment Voided', 'Reservation Payment Updated',
 ])
 
 function TypeBadge({ type }) {
@@ -150,6 +158,13 @@ export default function Activity() {
             <option value="Payment - Electricity">Payment - Electricity</option>
             <option value="Payment - Other">Payment - Other</option>
             <option value="Payment Voided">Payment Voided</option>
+          </optgroup>
+          <optgroup label="Reservation payments">
+            <option value="Reservation Payment Recorded">Reservation Payment Recorded</option>
+            <option value="Reservation Payment Applied">Reservation Payment Applied</option>
+            <option value="Reservation Payment Forfeited">Reservation Payment Forfeited</option>
+            <option value="Reservation Payment Voided">Reservation Payment Voided</option>
+            <option value="Reservation Payment Updated">Reservation Payment Updated</option>
           </optgroup>
           <optgroup label="Approvals">
             <option value="Approval Requested">Approval Requested</option>

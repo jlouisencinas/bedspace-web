@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { notifyAsync } from './notify'
 import { normalizeLines, computeTotals, round2 } from './finalBill'
+import { parseMoney, moneyProblem, centsToNumber } from './receiptLines'
 import { deriveBedStatuses, activeTenantOnBedMessage, isActiveTenantPerBedViolation } from './bedEligibility'
 import { PROFILE_FIELD_LABELS } from '../../supabase/functions/_shared/approval-labels.ts'
 
@@ -291,6 +292,8 @@ export async function fetchPayments(tenantId) {
 // move-out phase. Phase 1 only records receipts and lets admin correct them.
 export const DEPOSIT_KIND_LABEL = { ADVANCE: 'Advance', DEPOSIT: 'Deposit' }
 export const DEPOSIT_REF_LABEL  = { ADVANCE: 'S.I#',    DEPOSIT: 'T.R#'   }
+export const PAYMENT_MODES      = ['BANK', 'CASH']
+export const PAYMENT_MODE_LABEL = { BANK: 'Bank', CASH: 'Cash' }
 
 export async function fetchTenantDeposits(tenantId) {
   const { data, error } = await supabase
@@ -315,9 +318,15 @@ export async function fetchAllTenantDeposits() {
 
 function depositAmount(v) {
   if (v === '' || v == null) throw new Error('Amount is required.')
-  const n = Number(v)
-  if (!Number.isFinite(n) || n < 0) throw new Error('Amount must be a number of 0 or more.')
-  return n
+  const cents = parseMoney(v)
+  if (cents == null) throw new Error(`Amount: ${moneyProblem(v)}.`)
+  return centsToNumber(cents)
+}
+
+function depositMode(v) {
+  const m = blankToNull(v)
+  if (m != null && !PAYMENT_MODES.includes(m)) throw new Error('Payment mode must be BANK or CASH.')
+  return m
 }
 
 function blankToNull(v) {
@@ -348,6 +357,8 @@ export async function addTenantDeposits(tenantId, entries, actorId) {
     kind:          e.kind,
     amount:        depositAmount(e.amount),
     ref_no:        blankToNull(e.refNo),
+    bank_ref:      blankToNull(e.bankRef),
+    payment_mode:  depositMode(e.paymentMode),
     received_date: blankToNull(e.receivedDate),
     notes:         blankToNull(e.notes),
     created_by:    actorId || null,
@@ -375,8 +386,8 @@ export async function addTenantDeposits(tenantId, entries, actorId) {
   return data
 }
 
-export async function addTenantDeposit({ tenantId, kind, amount, refNo, receivedDate, notes }, actorId) {
-  const [row] = await addTenantDeposits(tenantId, [{ kind, amount, refNo, receivedDate, notes }], actorId)
+export async function addTenantDeposit({ tenantId, kind, amount, refNo, bankRef, paymentMode, receivedDate, notes }, actorId) {
+  const [row] = await addTenantDeposits(tenantId, [{ kind, amount, refNo, bankRef, paymentMode, receivedDate, notes }], actorId)
   return row
 }
 
@@ -395,6 +406,8 @@ export async function updateTenantDeposit(id, patch, actorId) {
   const next = {}
   if ('amount' in patch)        next.amount        = depositAmount(patch.amount)
   if ('ref_no' in patch)        next.ref_no        = blankToNull(patch.ref_no)
+  if ('bank_ref' in patch)      next.bank_ref      = blankToNull(patch.bank_ref)
+  if ('payment_mode' in patch)  next.payment_mode  = depositMode(patch.payment_mode)
   if ('received_date' in patch) next.received_date = blankToNull(patch.received_date)
   if ('notes' in patch)         next.notes         = blankToNull(patch.notes)
 
@@ -405,6 +418,9 @@ export async function updateTenantDeposit(id, patch, actorId) {
     if (!same) changes[k] = { old: before, new: v }
   }
   if (!Object.keys(changes).length) return current
+  if (current.reservation_payment_id && (changes.amount || changes.received_date)) {
+    throw new Error('This deposit came from a reservation payment: its amount and date cannot be changed.')
+  }
 
   const { data: updated, error } = await supabase
     .from('tenant_deposits')
@@ -427,6 +443,191 @@ export async function updateTenantDeposit(id, patch, actorId) {
     metadata:      { deposit_id: id, kind: current.kind, changes },
   })
   return updated
+}
+
+// ── Reservation payments (bed_reservation_payments) ───────────────────────────
+// Money paid on a RESERVED bed before move-in. Rows are never deleted. HELD becomes APPLIED at Move In
+// (carried into tenant_deposits by the DB), FORFEITED when the reservation ends (DB trigger on beds),
+// or VOID (admin, with a reason). Reads are admin+user only (RLS).
+const RESERVATION_SELECT = '*, beds!bed_id(bed_letter, rooms(room_no)), tenants!tenant_id(name)'
+
+export async function fetchReservationPayments({ bedId, statuses } = {}) {
+  let q = supabase.from('bed_reservation_payments').select(RESERVATION_SELECT)
+  if (bedId != null) q = q.eq('bed_id', bedId)
+  if (statuses?.length) q = q.in('status', statuses)
+  const { data, error } = await q.order('received_date').order('id')
+  if (error) throw error
+  return data
+}
+
+export function fetchAllReservationPayments({ statuses } = {}) {
+  return fetchReservationPayments({ statuses })
+}
+
+function reservationAmount(v) {
+  const cents = parseMoney(v)
+  if (cents == null) throw new Error(`Reservation payment: ${moneyProblem(v)}.`)
+  if (cents <= 0) throw new Error('Reservation payment: amount must be greater than 0.')
+  return centsToNumber(cents)
+}
+
+function reservationRef(v) {
+  const r = blankToNull(v)
+  if (r == null) throw new Error('Reservation payment: T.R# is required.')
+  return r
+}
+
+function reservationMode(v) {
+  if (!PAYMENT_MODES.includes(v)) throw new Error('Choose how the reservation was paid (BANK or CASH).')
+  return v
+}
+
+async function reservationBedMeta(bedId) {
+  const { data } = await supabase
+    .from('beds')
+    .select('bed_letter, rooms(room_no)')
+    .eq('id', bedId)
+    .maybeSingle()
+  return { room_no: data?.rooms?.room_no, bed_letter: data?.bed_letter }
+}
+
+export async function addReservationPayment({ bedId, amount, refNo, bankRef, paymentMode, receivedDate, notes }, actorId) {
+  const row = {
+    bed_id:        bedId,
+    amount:        reservationAmount(amount),
+    ref_no:        reservationRef(refNo),
+    bank_ref:      blankToNull(bankRef),
+    payment_mode:  reservationMode(paymentMode),
+    received_date: blankToNull(receivedDate) || undefined,
+    notes:         blankToNull(notes),
+    created_by:    actorId || null,
+  }
+  const { data, error } = await supabase.from('bed_reservation_payments').insert(row).select().single()
+  if (error) throw error
+
+  const meta = await reservationBedMeta(bedId)
+  await logActivity({
+    activity_type: 'Reservation Payment Recorded',
+    entity_type:   'BED', entity_id: bedId,
+    room_no:       meta.room_no,
+    bed_letter:    meta.bed_letter,
+    actor_id:      actorId || null,
+    notes:         `Reservation payment ${peso(data.amount)}${data.ref_no ? ` (TR# ${data.ref_no})` : ''} recorded for ${data.reserved_name || 'reserved bed'} (${PAYMENT_MODE_LABEL[data.payment_mode]})`,
+    metadata:      { reservation_payment_id: data.id, amount: data.amount, ref_no: data.ref_no, payment_mode: data.payment_mode, received_date: data.received_date },
+  })
+  return data
+}
+
+// Admin-only (RLS + trigger). Only HELD rows can change.
+export async function updateReservationPayment(id, patch, actorId) {
+  const { data: current, error: cErr } = await supabase
+    .from('bed_reservation_payments').select('*').eq('id', id).single()
+  if (cErr) throw cErr
+  if (current.status !== 'HELD') throw new Error(`This reservation payment is ${current.status} and can no longer be changed.`)
+
+  const next = {}
+  if ('amount' in patch)        next.amount        = reservationAmount(patch.amount)
+  if ('ref_no' in patch)        next.ref_no        = reservationRef(patch.ref_no)
+  if ('bank_ref' in patch)      next.bank_ref      = blankToNull(patch.bank_ref)
+  if ('payment_mode' in patch)  next.payment_mode  = reservationMode(patch.payment_mode)
+  if ('received_date' in patch) {
+    if (!blankToNull(patch.received_date)) throw new Error('Date received is required.')
+    next.received_date = patch.received_date
+  }
+  if ('notes' in patch)         next.notes         = blankToNull(patch.notes)
+
+  const changes = {}
+  for (const [k, v] of Object.entries(next)) {
+    const before = current[k]
+    const same = k === 'amount' ? Number(before) === v : (before ?? null) === v
+    if (!same) changes[k] = { old: before, new: v }
+  }
+  if (!Object.keys(changes).length) return current
+
+  const { data: updated, error } = await supabase
+    .from('bed_reservation_payments')
+    .update(Object.fromEntries(Object.entries(changes).map(([k, c]) => [k, c.new])))
+    .eq('id', id).eq('status', 'HELD')
+    .select().single()
+  if (error) throw error
+
+  const meta = await reservationBedMeta(current.bed_id)
+  await logActivity({
+    activity_type: 'Reservation Payment Updated',
+    entity_type:   'BED', entity_id: current.bed_id,
+    room_no:       meta.room_no,
+    bed_letter:    meta.bed_letter,
+    actor_id:      actorId || null,
+    notes:         `Reservation payment #${id} updated (${Object.keys(changes).join(', ')})`,
+    metadata:      { reservation_payment_id: id, changes },
+  })
+  return updated
+}
+
+export async function voidReservationPayment(id, reason, actorId) {
+  const why = (reason || '').trim()
+  if (!why) throw new Error('A reason is required to void a reservation payment.')
+  const { data, error } = await supabase
+    .from('bed_reservation_payments')
+    .update({ status: 'VOID', settled_note: why })
+    .eq('id', id).eq('status', 'HELD')
+    .select().single()
+  if (error) throw error
+
+  const meta = await reservationBedMeta(data.bed_id)
+  await logActivity({
+    activity_type: 'Reservation Payment Voided',
+    entity_type:   'BED', entity_id: data.bed_id,
+    room_no:       meta.room_no,
+    bed_letter:    meta.bed_letter,
+    actor_id:      actorId || null,
+    notes:         `Reservation payment ${peso(data.amount)}${data.ref_no ? ` (TR# ${data.ref_no})` : ''} voided: ${why}`,
+    metadata:      { reservation_payment_id: id, amount: data.amount, ref_no: data.ref_no, reason: why },
+  })
+  return data
+}
+
+const RPC_MISSING = 'The database update for reservation payments / split receipts (database/migrations/reservation_payments.sql) has not been applied yet. Ask an admin to apply it before moving anyone in.'
+
+function isMissingRpc(error) {
+  return error?.code === 'PGRST202' || error?.code === '42883'
+}
+
+// Harmless probe: an existing function rejects tenant 0 and writes nothing; only "function not found"
+// matters. Lets Move In stop before creating a tenant it could not record receipts for.
+export async function assertMoveInReceiptsAvailable() {
+  const { error } = await supabase.rpc('record_move_in_receipts', {
+    p_tenant_id: 0, p_advance_due: 0, p_deposit_due: 0, p_expected_reservation: 0, p_lines: [],
+  })
+  if (error && isMissingRpc(error)) throw new Error(RPC_MISSING)
+}
+
+// All money here is integer cents from receiptLines.js (line kinds ADVANCE, DEPOSIT, RESERVATION); converted once to exact 2-decimal numbers.
+// The DB re-validates the sums with numeric arithmetic and writes everything in one transaction.
+export async function recordMoveInReceipts(tenantId, { advanceDueCents, depositDueCents, expectedReservationCents, lines }) {
+  const { data, error } = await supabase.rpc('record_move_in_receipts', {
+    p_tenant_id:            tenantId,
+    p_advance_due:          centsToNumber(advanceDueCents),
+    p_deposit_due:          centsToNumber(depositDueCents),
+    p_expected_reservation: centsToNumber(expectedReservationCents),
+    p_lines: lines.map(l => ({
+      kind:          l.kind,
+      amount:        centsToNumber(l.amountCents),
+      payment_mode:  l.paymentMode,
+      ref_no:        l.refNo || null,
+      bank_ref:      l.bankRef || null,
+      received_date: l.receivedDate || null,
+      notes:         l.notes || null,
+    })),
+  })
+  if (error) throw isMissingRpc(error) ? new Error(RPC_MISSING) : error
+  return data
+}
+
+export async function applyReservationPayments(tenantId) {
+  const { data, error } = await supabase.rpc('apply_reservation_payments', { p_tenant_id: tenantId })
+  if (error) throw isMissingRpc(error) ? new Error(RPC_MISSING) : error
+  return data
 }
 
 // ── Final bills (move-out settlement) ─────────────────────────────────────────

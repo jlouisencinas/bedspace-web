@@ -1,9 +1,85 @@
 import { useState, useEffect, useMemo } from 'react'
-import { fetchBeds, updateBedStatus, logBedStatusChange } from '../lib/supabase'
+import {
+  fetchBeds, updateBedStatus, logBedStatusChange,
+  fetchReservationPayments, fetchAllReservationPayments, addReservationPayment, updateReservationPayment,
+  voidReservationPayment, PAYMENT_MODES, PAYMENT_MODE_LABEL,
+} from '../lib/supabase'
 import { useToast } from '../components/Toast'
 import { useAuth } from '../lib/auth'
 import SearchInput from '../components/SearchInput'
+import ReservationLedgerModal from '../components/ReservationLedgerModal'
+import { parseMoney, moneyProblem, dbToCents, fmtCents, centsToInput } from '../lib/receiptLines'
 import { SearchX, X } from 'lucide-react'
+
+function todayISO() { return new Date().toISOString().slice(0, 10) }
+
+function fmtDay(d) {
+  if (!d) return '—'
+  return new Date(d + 'T00:00:00').toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+// "P3,000 held" on the card; exact cents only when the amount is not whole pesos.
+function chipAmount(cents) {
+  return cents % 100 === 0 ? fmtCents(cents).replace(/\.00$/, '') : fmtCents(cents)
+}
+
+const FIELD = 'w-full px-2 py-1.5 text-[13px] rounded-lg border border-line bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors'
+
+function blankPay() { return { amount: '', refNo: '', bankRef: '', mode: '', date: todayISO(), notes: '' } }
+
+function payFormError(v) {
+  const cents = parseMoney(v.amount)
+  if (cents == null) return `Reservation payment: ${moneyProblem(v.amount)}.`
+  if (cents <= 0) return 'Reservation payment: amount must be greater than 0.'
+  if (!PAYMENT_MODES.includes(v.mode)) return 'Choose how the reservation was paid (BANK or CASH).'
+  if (!v.refNo.trim()) return 'Reservation payment: T.R# is required.'
+  if (!v.date) return 'Reservation payment: date is required.'
+  return ''
+}
+
+function PaymentFields({ v, onChange }) {
+  const set = (k, val) => onChange({ ...v, [k]: val })
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <div>
+        <label className="block text-[11px] text-ink-muted mb-0.5">Amount (PHP) *</label>
+        <input type="text" inputMode="decimal" className={FIELD} placeholder="0.00" value={v.amount} onChange={e => set('amount', e.target.value)} />
+      </div>
+      <div>
+        <label className="block text-[11px] text-ink-muted mb-0.5">Mode *</label>
+        <select className={FIELD} value={v.mode} onChange={e => set('mode', e.target.value)}>
+          <option value="" disabled>Select…</option>
+          {PAYMENT_MODES.map(m => <option key={m} value={m}>{PAYMENT_MODE_LABEL[m]}</option>)}
+        </select>
+      </div>
+      <div>
+        <label className="block text-[11px] text-ink-muted mb-0.5">T.R# *</label>
+        <input type="text" className={FIELD} placeholder="Required" value={v.refNo} onChange={e => set('refNo', e.target.value)} />
+      </div>
+      <div>
+        <label className="block text-[11px] text-ink-muted mb-0.5">Date received *</label>
+        <input type="date" className={FIELD} value={v.date} onChange={e => set('date', e.target.value)} />
+      </div>
+      {v.mode === 'BANK' && (
+        <div className="col-span-2">
+          <label className="block text-[11px] text-ink-muted mb-0.5">Bank reference</label>
+          <input type="text" className={FIELD} placeholder="Optional" value={v.bankRef} onChange={e => set('bankRef', e.target.value)} />
+        </div>
+      )}
+      <div className="col-span-2">
+        <label className="block text-[11px] text-ink-muted mb-0.5">Notes</label>
+        <input type="text" className={FIELD} placeholder="Optional" value={v.notes} onChange={e => set('notes', e.target.value)} />
+      </div>
+    </div>
+  )
+}
+
+const PAY_STATUS_CLS = {
+  HELD:      'bg-warning-bg text-warning-text',
+  APPLIED:   'bg-success-bg text-success-text',
+  FORFEITED: 'bg-danger-bg text-danger-text',
+  VOID:      'bg-surface-3 text-ink-muted',
+}
 
 function statusClass(s) {
   if (!s) return 'vacant'
@@ -40,7 +116,8 @@ const STATUS_ACTIONS = {
   'OUT OF ORDER': [{ to: 'VACANT',  label: 'Mark Vacant' }, { to: 'RESERVED', label: 'Reserve' }],
 }
 
-function BedStatusModal({ bed, onClose, onSaved }) {
+function BedStatusModal({ bed, onClose, onSaved, onPaymentsChanged }) {
+  const { isAdmin, user } = useAuth()
   const [pending,  setPending]  = useState(null)
   const [name,     setName]     = useState(bed.reserved_name || '')
   const [saving,   setSaving]   = useState(false)
@@ -50,24 +127,126 @@ function BedStatusModal({ bed, onClose, onSaved }) {
   const actions  = STATUS_ACTIONS[current] || STATUS_ACTIONS.VACANT
   const needName = pending === 'RESERVED'
 
+  const [payments,    setPayments]    = useState([])
+  const [payLoading,  setPayLoading]  = useState(current === 'RESERVED')
+  const [payLoadErr,  setPayLoadErr]  = useState('')
+  const [addOpen,     setAddOpen]     = useState(false)
+  const [addForm,     setAddForm]     = useState(blankPay)
+  const [editing,     setEditing]     = useState(null)
+  const [voiding,     setVoiding]     = useState(null)
+  const [payBusy,     setPayBusy]     = useState(false)
+  const [payError,    setPayError]    = useState('')
+  const [recordNow,   setRecordNow]   = useState(false)
+  const [reserveForm, setReserveForm] = useState(blankPay)
+  const [confirmForfeit, setConfirmForfeit] = useState(false)
+
+  async function loadPayments() {
+    setPayLoading(true); setPayLoadErr('')
+    try { setPayments(await fetchReservationPayments({ bedId: bed.bed_id })) }
+    catch (e) { setPayLoadErr(e.message) }
+    setPayLoading(false)
+  }
+  useEffect(() => { if (current === 'RESERVED') loadPayments() }, [])
+
+  const heldCents = payments.filter(p => p.status === 'HELD').reduce((sum, p) => sum + dbToCents(p.amount), 0)
+  const leaving   = current === 'RESERVED' && (pending === 'VACANT' || pending === 'OUT OF ORDER')
+  useEffect(() => { setConfirmForfeit(false) }, [payments, heldCents])
+
+  const forfeitBlocked = leaving && (payLoading || !!payLoadErr || (heldCents > 0 && !confirmForfeit))
+
   async function handleConfirm() {
     if (!pending) return
     if (needName && !name.trim()) { setError('Please enter the name of the person reserving this bed.'); return }
+    if (needName && recordNow) {
+      const msg = payFormError(reserveForm)
+      if (msg) { setError(msg); return }
+    }
     setSaving(true)
     setError('')
     try {
       const resolvedName = needName ? name.trim() : null
       await updateBedStatus(bed.bed_id, pending, resolvedName)
       logBedStatusChange(bed, pending, resolvedName).catch(() => {})
-      onSaved(bed.bed_id, pending, resolvedName)
+
+      if (needName && recordNow) {
+        try {
+          await addReservationPayment({
+            bedId: bed.bed_id, amount: reserveForm.amount, refNo: reserveForm.refNo, bankRef: reserveForm.bankRef,
+            paymentMode: reserveForm.mode, receivedDate: reserveForm.date, notes: reserveForm.notes,
+          }, user?.id)
+        } catch (pe) {
+          onSaved(bed.bed_id, pending, resolvedName, { error: `Bed reserved, but the payment was NOT recorded: ${pe.message}. Record it from the bed.` })
+          onClose()
+          setSaving(false)
+          return
+        }
+      }
+
+      onSaved(bed.bed_id, pending, resolvedName, leaving && heldCents > 0 ? { forfeitedCents: heldCents } : undefined)
       onClose()
     } catch(e) { setError(e.message) }
     setSaving(false)
   }
 
+  async function savePayment() {
+    const msg = payFormError(addForm)
+    if (msg) { setPayError(msg); return }
+    setPayBusy(true); setPayError('')
+    try {
+      await addReservationPayment({
+        bedId: bed.bed_id, amount: addForm.amount, refNo: addForm.refNo, bankRef: addForm.bankRef,
+        paymentMode: addForm.mode, receivedDate: addForm.date, notes: addForm.notes,
+      }, user?.id)
+      setAddOpen(false); setAddForm(blankPay())
+      await loadPayments()
+      onPaymentsChanged()
+    } catch (e) { setPayError(e.message) }
+    setPayBusy(false)
+  }
+
+  async function saveEdit() {
+    const msg = payFormError(editing.form)
+    if (msg) { setPayError(msg); return }
+    setPayBusy(true); setPayError('')
+    try {
+      const f = editing.form
+      await updateReservationPayment(editing.id, {
+        amount: f.amount, ref_no: f.refNo, bank_ref: f.mode === 'BANK' ? f.bankRef : '',
+        payment_mode: f.mode, received_date: f.date, notes: f.notes,
+      }, user?.id)
+      setEditing(null)
+      await loadPayments()
+      onPaymentsChanged()
+    } catch (e) { setPayError(e.message) }
+    setPayBusy(false)
+  }
+
+  async function saveVoid() {
+    if (!voiding.reason.trim()) { setPayError('A reason is required to void a reservation payment.'); return }
+    setPayBusy(true); setPayError('')
+    try {
+      await voidReservationPayment(voiding.id, voiding.reason, user?.id)
+      setVoiding(null)
+      await loadPayments()
+      onPaymentsChanged()
+    } catch (e) { setPayError(e.message) }
+    setPayBusy(false)
+  }
+
+  function startEdit(p) {
+    setPayError(''); setVoiding(null)
+    setEditing({
+      id: p.id,
+      form: {
+        amount: centsToInput(dbToCents(p.amount)), refNo: p.ref_no || '', bankRef: p.bank_ref || '',
+        mode: p.payment_mode, date: p.received_date, notes: p.notes || '',
+      },
+    })
+  }
+
   return (
     <div className="overlay" onClick={e => e.stopPropagation()}>
-      <div className="modal" style={{ maxWidth: 400 }}>
+      <div className="modal" style={{ maxWidth: current === 'RESERVED' ? 520 : 400 }}>
         <div className="modal-head">
           <h3>Bed {bed.bed_letter} · Room {bed.room_no}</h3>
           <button className="btn-close" onClick={onClose}><X size={16} /></button>
@@ -82,12 +261,93 @@ function BedStatusModal({ bed, onClose, onSaved }) {
             )}
           </div>
 
+          {current === 'RESERVED' && (
+            <div className="mb-4 rounded-xl border border-line p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[12px] font-semibold text-ink-secondary">Reservation payments</span>
+                {!addOpen && (
+                  <button type="button" className="btn-xs blue" onClick={() => { setAddOpen(true); setPayError(''); setEditing(null); setVoiding(null) }}>
+                    + Record payment
+                  </button>
+                )}
+              </div>
+
+              {payLoading && <p className="text-[12px] text-ink-muted">Loading…</p>}
+              {payLoadErr && <p className="text-[12px] text-danger-text">Could not load reservation payments: {payLoadErr}</p>}
+              {!payLoading && !payLoadErr && !payments.some(p => p.status === 'HELD') && (
+                <p className="text-[12px] text-ink-muted">No reservation payment held. It is optional. Earlier payments for this bed are in the Reservation payments ledger.</p>
+              )}
+
+              <div className="flex flex-col gap-2">
+                {payments.filter(p => p.status === 'HELD').map(p => (
+                  <div key={p.id} className="rounded-lg bg-surface-2 px-2.5 py-2 text-[12px]">
+                    {editing?.id === p.id ? (
+                      <div className="flex flex-col gap-2">
+                        <PaymentFields v={editing.form} onChange={form => setEditing(e => ({ ...e, form }))} />
+                        <div className="flex justify-end gap-2">
+                          <button type="button" className="btn-xs gray" onClick={() => { setEditing(null); setPayError('') }}>Cancel</button>
+                          <button type="button" className="btn-xs green" disabled={payBusy} onClick={saveEdit}>{payBusy ? 'Saving…' : 'Save'}</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="text-ink-secondary">
+                            <span className="font-semibold text-ink">{fmtCents(dbToCents(p.amount))}</span>
+                            {' · '}{p.ref_no ? `TR# ${p.ref_no}` : 'No TR#'} · {fmtDay(p.received_date)} · {PAYMENT_MODE_LABEL[p.payment_mode] || p.payment_mode}
+                            {p.bank_ref ? ` (${p.bank_ref})` : ''}
+                          </div>
+                          <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full shrink-0 ${PAY_STATUS_CLS[p.status] || ''}`}>{p.status}</span>
+                        </div>
+                        {p.notes && <div className="text-ink-muted mt-0.5">{p.notes}</div>}
+                        {p.settled_note && <div className="text-ink-muted mt-0.5">{p.settled_note}</div>}
+                        {isAdmin && p.status === 'HELD' && voiding?.id !== p.id && (
+                          <div className="flex justify-end gap-2 mt-1.5">
+                            <button type="button" className="btn-xs gray" onClick={() => startEdit(p)}>Edit</button>
+                            <button type="button" className="btn-xs red" onClick={() => { setPayError(''); setEditing(null); setVoiding({ id: p.id, reason: '' }) }}>Void</button>
+                          </div>
+                        )}
+                        {voiding?.id === p.id && (
+                          <div className="flex flex-col gap-1.5 mt-1.5">
+                            <input
+                              type="text" className={FIELD} autoFocus placeholder="Reason for voiding (required)"
+                              value={voiding.reason} onChange={e => setVoiding(v => ({ ...v, reason: e.target.value }))}
+                            />
+                            <div className="flex justify-end gap-2">
+                              <button type="button" className="btn-xs gray" onClick={() => { setVoiding(null); setPayError('') }}>Cancel</button>
+                              <button type="button" className="btn-xs red" disabled={payBusy} onClick={saveVoid}>{payBusy ? 'Voiding…' : 'Confirm void'}</button>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {addOpen && (
+                <div className="mt-2 flex flex-col gap-2">
+                  <PaymentFields v={addForm} onChange={setAddForm} />
+                  <div className="flex justify-end gap-2">
+                    <button type="button" className="btn-xs gray" onClick={() => { setAddOpen(false); setPayError('') }}>Cancel</button>
+                    <button type="button" className="btn-xs green" disabled={payBusy} onClick={savePayment}>{payBusy ? 'Saving…' : 'Save payment'}</button>
+                  </div>
+                </div>
+              )}
+
+              {payError && <p className="mt-2 text-[12px] text-danger-text">{payError}</p>}
+              {heldCents > 0 && (
+                <p className="mt-2 text-[12px] text-ink-muted">Held: <strong className="text-ink">{fmtCents(heldCents)}</strong>. It becomes the tenant's deposit at Move In.</p>
+              )}
+            </div>
+          )}
+
           <div className="flex flex-col gap-2 mb-4">
             {actions.map(a => (
               <button
                 key={a.to}
                 type="button"
-                onClick={() => { setPending(a.to); setError('') }}
+                onClick={() => { setPending(a.to); setError(''); setConfirmForfeit(false) }}
                 className={`w-full text-left px-4 py-3 rounded-xl border text-[13px] font-medium transition-colors ${
                   pending === a.to
                     ? 'border-navy-600 bg-navy-50 text-navy-800'
@@ -116,7 +376,31 @@ function BedStatusModal({ bed, onClose, onSaved }) {
                 onKeyDown={e => e.key === 'Enter' && handleConfirm()}
                 className="w-full px-3 py-2 text-[13px] rounded-lg border border-line focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
               />
+
+              <label className="flex items-center gap-2 mt-3 text-[12px] text-ink-secondary cursor-pointer">
+                <input type="checkbox" checked={recordNow} onChange={e => { setRecordNow(e.target.checked); setError('') }} />
+                Record reservation payment now (optional)
+              </label>
+              {recordNow && (
+                <div className="mt-2">
+                  <PaymentFields v={reserveForm} onChange={v => { setReserveForm(v); setError('') }} />
+                </div>
+              )}
             </div>
+          )}
+
+          {leaving && heldCents > 0 && (
+            <div className="mb-1 rounded-lg border border-danger-border bg-danger-bg text-danger-text px-3 py-2 text-[12px]">
+              <p className="font-semibold">{fmtCents(heldCents)} reservation payment will be FORFEITED</p>
+              <p className="mt-0.5">It is not refunded. The payment rows are kept as FORFEITED and the Activity log records it.</p>
+              <label className="flex items-center gap-2 mt-2 cursor-pointer">
+                <input type="checkbox" checked={confirmForfeit} onChange={e => setConfirmForfeit(e.target.checked)} />
+                I understand {fmtCents(heldCents)} will be forfeited
+              </label>
+            </div>
+          )}
+          {leaving && payLoadErr && (
+            <p className="text-[12px] text-danger-text">Cannot confirm until the reservation payments could be checked. Close and reopen this bed.</p>
           )}
 
           {error && (
@@ -128,7 +412,7 @@ function BedStatusModal({ bed, onClose, onSaved }) {
           <button className="btn secondary" onClick={onClose}>Cancel</button>
           <button
             className="btn primary"
-            disabled={!pending || saving}
+            disabled={!pending || saving || forfeitBlocked}
             onClick={handleConfirm}
           >
             {saving ? 'Saving…' : 'Confirm'}
@@ -148,22 +432,39 @@ export default function BedMap() {
   const [typeFilter,  setTypeFilter]  = useState('')
   const [statFilter,  setStatFilter]  = useState('')
   const [statusModal, setStatusModal] = useState(null)
+  const [ledgerOpen,  setLedgerOpen]  = useState(false)
+  const [heldByBed,   setHeldByBed]   = useState({})
   const { show, ToastEl } = useToast()
   const { isViewer } = useAuth()
+
+  // Best-effort: a missing table/policy must never break the Bed Map itself.
+  async function loadHeld() {
+    if (isViewer) { setHeldByBed({}); return }
+    try {
+      const rows = await fetchAllReservationPayments({ statuses: ['HELD'] })
+      const map = {}
+      for (const r of rows) map[r.bed_id] = (map[r.bed_id] || 0) + dbToCents(r.amount)
+      setHeldByBed(map)
+    } catch (e) { console.warn('reservation payments lookup skipped:', e.message) }
+  }
 
   async function load() {
     setLoading(true)
     try { setBeds(await fetchBeds()) } catch (e) { show(e.message, 'error') }
+    await loadHeld()
     setLoading(false)
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [isViewer])
 
-  function handleSaved(bedId, newStatus, newName) {
+  function handleSaved(bedId, newStatus, newName, extra) {
     setBeds(prev => prev.map(b =>
       b.bed_id === bedId
         ? { ...b, status: newStatus, reserved_name: newStatus === 'RESERVED' ? newName : null }
         : b
     ))
+    loadHeld()
+    if (extra?.error) { show(extra.error, 'error', { duration: 15000 }); return }
+    if (extra?.forfeitedCents) { show(`Reservation removed. ${fmtCents(extra.forfeitedCents)} forfeited.`, 'success'); return }
     const label = newStatus === 'OUT OF ORDER' ? 'Out of Order' : newStatus.charAt(0) + newStatus.slice(1).toLowerCase()
     show(`Bed updated to ${label}.`, 'success')
   }
@@ -212,6 +513,9 @@ export default function BedMap() {
             {totalBeds} beds · {leased} occupied · {vacant} vacant · {reserved} reserved
           </p>
         </div>
+        {!isViewer && (
+          <button className="btn secondary" onClick={() => setLedgerOpen(true)}>Reservation payments</button>
+        )}
         <div className="hidden md:flex items-center gap-4 text-[11px] font-semibold">
           {[
             { cls: 'bg-blue-500',    label: 'Leased'   },
@@ -306,6 +610,11 @@ export default function BedMap() {
                           ) : b.status === 'RESERVED' && b.reserved_name ? (
                             <div className="bed-name text-navy-600">{b.reserved_name}</div>
                           ) : null}
+                          {!isViewer && b.status === 'RESERVED' && heldByBed[b.bed_id] > 0 && (
+                            <div className="text-[10px] font-semibold text-warning-text bg-warning-bg border border-warning-border rounded-full px-1.5 py-px w-fit">
+                              {chipAmount(heldByBed[b.bed_id])} held
+                            </div>
+                          )}
                           {rate ? (
                             <div className="bed-rate">
                               ₱{Number(rate).toLocaleString('en-PH')}
@@ -328,8 +637,10 @@ export default function BedMap() {
           bed={statusModal}
           onClose={() => setStatusModal(null)}
           onSaved={handleSaved}
+          onPaymentsChanged={loadHeld}
         />
       )}
+      {ledgerOpen && <ReservationLedgerModal onClose={() => setLedgerOpen(false)} />}
     </div>
   )
 }
