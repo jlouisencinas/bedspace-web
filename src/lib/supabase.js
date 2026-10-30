@@ -3,6 +3,7 @@ import { notifyAsync } from './notify'
 import { normalizeLines, computeTotals, round2 } from './finalBill'
 import { parseMoney, moneyProblem, centsToNumber } from './receiptLines'
 import { deriveBedStatuses, activeTenantOnBedMessage, isActiveTenantPerBedViolation } from './bedEligibility'
+import { windowLastDay } from './cutoffDates'
 import { PROFILE_FIELD_LABELS } from '../../supabase/functions/_shared/approval-labels.ts'
 
 const url = import.meta.env.VITE_SUPABASE_URL
@@ -1472,7 +1473,7 @@ export async function openCutoff(p) {
     activity_type: 'Cutoff Opened',
     entity_type:   'CUTOFF',
     entity_id:     data,
-    notes: `"${p.name}" opened. Water ${p.water_start}–${p.water_end} @ ₱${p.water_bedspace_rate}/m³. Electric ${p.electric_start}–${p.electric_end} @ ₱${p.electric_bedspace_rate}/kWh.`,
+    notes: `"${p.name}" opened. Water ${p.water_start}–${windowLastDay(p.water_end)} @ ₱${p.water_bedspace_rate}/m³. Electric ${p.electric_start}–${p.electric_end} @ ₱${p.electric_bedspace_rate}/kWh.`,
   })
   return data
 }

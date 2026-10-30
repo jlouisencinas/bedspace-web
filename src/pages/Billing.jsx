@@ -13,6 +13,7 @@ import { useAuth } from '../lib/auth'
 import { requestApproval } from '../lib/approvals'
 import { Link } from 'react-router-dom'
 import { Printer, Droplets, Zap, Settings2, PlusCircle, Receipt, X, AlertTriangle, Clock, Trash2 } from 'lucide-react'
+import { windowLastDay } from '../lib/cutoffDates'
 
 const peso = n => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const m3   = n => Number(n || 0).toLocaleString('en-PH', { maximumFractionDigits: 2 })
@@ -119,7 +120,7 @@ export default function Billing() {
           <h1 className="page-title">Billing <small>Per-tenant rent &amp; utilities</small></h1>
           {cutoff && (
             <p className="page-sub text-[11px] flex items-center gap-1.5 flex-wrap">
-              <Droplets size={11} className="text-blue-500 shrink-0" /> Water: {cutoff.water_start} → {cutoff.water_end} &nbsp;·&nbsp;
+              <Droplets size={11} className="text-blue-500 shrink-0" /> Water: {cutoff.water_start} → {windowLastDay(cutoff.water_end)} &nbsp;·&nbsp;
               <Zap size={11} className="text-amber-500 shrink-0" /> Electric: {cutoff.electric_start} → {cutoff.electric_end}
               {interims.length > 0 && <> &nbsp;·&nbsp; {interims.length} move-out reading(s)</>}
               {splitFlags.size > 0 && <> &nbsp;·&nbsp; <span className="text-navy-500 font-semibold">⚙ custom split</span> on {splitFlags.size} room-utility(ies)</>}

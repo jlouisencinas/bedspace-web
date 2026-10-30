@@ -12,6 +12,7 @@
  *   kind 'forfeit'   advance / deposit forfeited (amount 0, `original` = the forfeited amount)
  */
 import { computeBilling, dayNum } from './billing'
+import { windowLastDay } from './cutoffDates'
 
 const MS_DAY = 86400000
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December']
@@ -368,7 +369,7 @@ export function buildFinalBillDraft({
     const fromNum = Math.max(sNum, moveInNum ?? sNum)
     let days = moveNum - fromNum + 1
     if (moveNum < sNum || moveNum >= eNum) {
-      warnings.push(`The move-out date is outside the billing period ${cutoff.water_start} to ${cutoff.water_end}; check the rent line.`)
+      warnings.push(`The move-out date is outside the billing period ${cutoff.water_start} to ${windowLastDay(cutoff.water_end)}; check the rent line.`)
     }
     days = Math.max(0, Math.min(days, periodDays))
     const lastDayNum = Math.min(Math.max(moveNum, fromNum), eNum - 1)

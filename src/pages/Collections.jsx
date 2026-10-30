@@ -9,6 +9,7 @@ import { advanceAdjustments } from '../lib/finalBill'
 import { getCachedBilling, cacheBilling } from '../lib/billingCache'
 import { useToast } from '../components/Toast'
 import { Droplets, Zap, Wallet } from 'lucide-react'
+import { windowLastDay } from '../lib/cutoffDates'
 
 const r2 = n => Math.round((Number(n) || 0) * 100) / 100
 
@@ -274,7 +275,7 @@ export default function Collections() {
           {activeCutoff && (
             <p className="page-sub text-[11px] flex items-center gap-1.5 flex-wrap">
               <Droplets size={11} className="text-blue-500 shrink-0" />
-              Water {fmtDate(activeCutoff.water_start)}–{fmtDate(activeCutoff.water_end)}
+              Water {fmtDate(activeCutoff.water_start)}–{fmtDate(windowLastDay(activeCutoff.water_end))}
               {' · '}
               <Zap size={11} className="text-amber-500 shrink-0" />
               Electric {fmtDate(activeCutoff.electric_start)}–{fmtDate(activeCutoff.electric_end)}

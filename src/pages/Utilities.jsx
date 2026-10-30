@@ -4,6 +4,7 @@ import {
   fetchInterimReadings, fetchTenants, fetchAreaReadings, upsertAreaReadings,
 } from '../lib/supabase'
 import { computePnL } from '../lib/pnl'
+import { windowLastDay } from '../lib/cutoffDates'
 import { buildAndSaveSnapshot } from '../lib/snapshot'
 import { recordAdvanceCredits } from '../lib/advanceCredit'
 import { useToast } from '../components/Toast'
@@ -286,7 +287,7 @@ export default function Utilities() {
   )
 
   const win = cutoff ? (utility === 'WATER'
-    ? `${cutoff.water_start} → ${cutoff.water_end}` : `${cutoff.electric_start} → ${cutoff.electric_end}`) : ''
+    ? `${cutoff.water_start} → ${windowLastDay(cutoff.water_end)}` :`${cutoff.electric_start} → ${cutoff.electric_end}`) : ''
   const accent = utility === 'WATER' ? 'var(--blue)' : 'var(--amber)'
 
   return (
@@ -498,7 +499,11 @@ function PnLCard({ pnl, utility }) {
 // ── Open New Cutoff modal ───────────────────────────────────────────────────────
 function OpenCutoffModal({ cutoffs, actorId, isAdmin, onClose, onDone, show }) {
   const last = cutoffs[0]
-  const sW = last?.water_end || '', sE = last?.electric_end || ''
+  // Windows are fixed by the business: water = 1st to end of month (stored as the 1st of the next month; the
+  // end date itself is not billed), electric = 10th to the 10th of the next month. Starts snap to those days.
+  const snapDay = (v, day) => (v ? `${v.slice(0, 8)}${String(day).padStart(2, '0')}` : v)
+  const sW = last?.water_start ? addMonths(snapDay(last.water_start, 1), 1) : ''
+  const sE = last?.electric_start ? addMonths(snapDay(last.electric_start, 10), 1) : ''
   const [f, setF] = useState({
     name: periodName(sW), water_start: sW, water_end: addMonths(sW, 1),
     electric_start: sE, electric_end: addMonths(sE, 1),
@@ -506,8 +511,8 @@ function OpenCutoffModal({ cutoffs, actorId, isAdmin, onClose, onDone, show }) {
   })
   const [busy, setBusy] = useState(false)
   const set = (k, v) => setF(s => ({ ...s, [k]: v }))
-  const onW = v => setF(s => ({ ...s, water_start: v, water_end: addMonths(v, 1), name: periodName(v) }))
-  const onE = v => setF(s => ({ ...s, electric_start: v, electric_end: addMonths(v, 1) }))
+  const onW = v => { const st = snapDay(v, 1); setF(s => ({ ...s, water_start: st, water_end: addMonths(st, 1), name: periodName(st) })) }
+  const onE = v => { const st = snapDay(v, 10); setF(s => ({ ...s, electric_start: st, electric_end: addMonths(st, 1) })) }
 
   async function submit(e) {
     e.preventDefault()
@@ -545,15 +550,16 @@ function OpenCutoffModal({ cutoffs, actorId, isAdmin, onClose, onDone, show }) {
             <div className="form-grid">
               <div className="fg full"><label>Period Name *</label><input type="text" value={f.name} onChange={e => set('name', e.target.value)} required /></div>
               <div className="form-section flex items-center gap-1"><Droplets size={12} /> Water window</div>
-              <div className="fg"><label>Start *</label><input type="date" value={f.water_start} onChange={e => onW(e.target.value)} /></div>
+              <div className="fg"><label>Start * <span className="text-[9px] text-ink-faint font-semibold">(always the 1st)</span></label><input type="date" value={f.water_start} onChange={e => onW(e.target.value)} /></div>
               <div className="fg">
-                <label>End <span className="text-[9px] text-ink-faint font-semibold">(auto +1mo)</span></label>
-                <input type="date" value={f.water_end} disabled className="bg-surface-2" />
+                <label>End <span className="text-[9px] text-ink-faint font-semibold">(auto: end of month)</span></label>
+                <input type="date" value={windowLastDay(f.water_end)} disabled className="bg-surface-2" />
+                <span className="text-[10px] text-ink-faint">Last billed day. Saved as {f.water_end || '—'} (the end date itself is not billed).</span>
               </div>
               <div className="form-section flex items-center gap-1"><Zap size={12} /> Electric window</div>
-              <div className="fg"><label>Start *</label><input type="date" value={f.electric_start} onChange={e => onE(e.target.value)} /></div>
+              <div className="fg"><label>Start * <span className="text-[9px] text-ink-faint font-semibold">(always the 10th)</span></label><input type="date" value={f.electric_start} onChange={e => onE(e.target.value)} /></div>
               <div className="fg">
-                <label>End <span className="text-[9px] text-ink-faint font-semibold">(auto +1mo)</span></label>
+                <label>End <span className="text-[9px] text-ink-faint font-semibold">(auto: 10th of next month)</span></label>
                 <input type="date" value={f.electric_end} disabled className="bg-surface-2" />
               </div>
             </div>
