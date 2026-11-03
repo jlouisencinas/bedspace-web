@@ -188,6 +188,35 @@ const forgeAction = row(ID(24), {
 })
 const forgeProto = row(ID(25), { field_name: 'constructor', entity_type: 'toString', new_value: JSON.parse('{"constructor": "x"}') })
 
+// Visitor Log overnight requests (built server-side by _visitor_raise_overnight).
+const overnightNv = {
+  _visit_id: 77, _tenant_name: 'Juan Bringino', _room_no: '405', _bed_letter: 'A/B',
+  visitor_name: 'Maria Santos', visit_kind: 'TENANT', purpose: null, night: '2026-09-21',
+  check_in_at: iso(-4 * 60 * 60 * 1000), guard_name: 'Pedro Reyes',
+}
+const overnight = row(ID(27), {
+  entity_type: 'VISITOR_LOG', entity_id: '77', field_name: 'overnight_visitor',
+  old_value: { overnight_status: 'NONE' }, new_value: overnightNv, reason: 'Sister visiting from the province.',
+})
+const overnightOffice = row(ID(28), {
+  entity_type: 'VISITOR_LOG', entity_id: '78', field_name: 'overnight_visitor',
+  old_value: { overnight_status: 'REJECTED' },
+  new_value: { _visit_id: 78, _tenant_name: null, _room_no: null, _bed_letter: null, visitor_name: 'Leo Cruz', visit_kind: 'OFFICE', purpose: 'Aircon repair, unit 3', night: '2026-09-21', check_in_at: iso(-2 * 60 * 60 * 1000), guard_name: 'Pedro Reyes' },
+  reason: 'Repair runs past midnight.',
+})
+// A row that somehow carries visitor PII: none of it may reach the email.
+const overnightPii = row(ID(29), {
+  entity_type: 'VISITOR_LOG', entity_id: '77', field_name: 'overnight_visitor',
+  new_value: { ...overnightNv, contact_no: '0917 555 8642', contact_key: '09175558642', email: 'maria.santos@example.com', id_number: 'N01-23-456789', id_photo_path: '2026/09/0f0e0d0c-0b0a-4908-8706-050403020100.jpg' },
+})
+const X = 'X'.repeat(BIG)
+const overnightHuge = row(ID(30), {
+  entity_type: 'VISITOR_LOG', entity_id: X, field_name: 'overnight_visitor', reason: X,
+  old_value: { overnight_status: X },
+  new_value: { _visit_id: X, _tenant_name: X, _room_no: X, _bed_letter: X, visitor_name: X, visit_kind: X, purpose: X, night: X, check_in_at: X, guard_name: X },
+})
+const OVERNIGHT_PII = { absent: ['0917 555 8642', '5558642', 'maria.santos', 'N01-23-456789', '2026/09/', '0f0e0d0c'] }
+
 const REQ = { appUrl: APP_URL, requesterEmail: SAMPLE_REQUESTER, lookups: { destBed: { room_no: '405', bed_letter: 'A' } } }
 const DEC = { ...REQ, deciderEmail: SAMPLE_DECIDER }
 
@@ -221,6 +250,10 @@ request('request-forged-profile', forgeProfile, REQ, { forge: true })
 request('request-forged-room-config', forgeRoom, REQ, { forge: true })
 request('request-forged-action', forgeAction, REQ, { forge: true })
 request('request-prototype-keys', forgeProto, REQ, { forge: true })
+request('request-overnight', overnight, REQ, { topic: 'Overnight Visitor', present: ['Maria Santos', 'Night of Sep 21, 2026 (10:00 PM onward)', 'Not approved', 'Pedro Reyes', 'Juan Bringino', 'Room 405 · Bed A/B', 'Visiting'] })
+request('request-overnight-office', overnightOffice, REQ, { topic: 'Overnight Visitor', present: ['Management / Office', 'Aircon repair, unit 3', 'Leo Cruz'] })
+request('request-overnight-pii', overnightPii, REQ, { topic: 'Overnight Visitor', expect: OVERNIGHT_PII })
+request('request-overnight-huge', overnightHuge, REQ, { huge: true })
 
 outcome('outcome-approved-admin', decided(profile, 'APPROVED', 'Verified with the tenant.'), 'admin', DEC, { expect: MASKED })
 outcome('outcome-approved-requester', decided(profile, 'APPROVED'), 'requester', DEC, { expect: MASKED, present: ['No note provided'] })
@@ -235,6 +268,12 @@ outcome('outcome-huge-approved-admin', decided(hugeEmail, 'APPROVED', 'N'.repeat
 outcome('outcome-huge-rejected-requester', decided(hugeMisc, 'REJECTED', 'N'.repeat(BIG)), 'requester', DEC, { huge: true })
 outcome('outcome-forged-approved-admin', decided(forgeProfile, 'APPROVED', `n\n${FORGED}`), 'admin', DEC, { forge: true })
 outcome('outcome-forged-rejected-requester', decided(forgeAction, 'REJECTED', `n\n${FORGED}`), 'requester', DEC, { forge: true })
+outcome('outcome-overnight-approved-requester', decided(overnight, 'APPROVED', 'OK for tonight.'), 'requester', DEC, { topic: 'Overnight Visitor', present: ['Overnight stay', 'Night of Sep 21, 2026 (10:00 PM onward)', 'OK for tonight.'] })
+outcome('outcome-overnight-approved-admin', decided(overnight, 'APPROVED'), 'admin', DEC, { topic: 'Overnight Visitor' })
+outcome('outcome-overnight-rejected-requester', decided(overnight, 'REJECTED', 'Visitors must leave by 10 PM on weekdays.'), 'requester', DEC, { topic: 'Overnight Visitor', present: ['Visitors must leave by 10 PM on weekdays.'] })
+outcome('outcome-overnight-rejected-admin-office', decided(overnightOffice, 'REJECTED', 'No'), 'admin', DEC, { present: ['Management / Office'] })
+outcome('outcome-overnight-pii-approved-admin', decided(overnightPii, 'APPROVED'), 'admin', DEC, { expect: OVERNIGHT_PII })
+outcome('outcome-overnight-huge-rejected-requester', decided(overnightHuge, 'REJECTED', X), 'requester', DEC, { huge: true })
 
 const sampleBuilt =['approval_request', 'approval_decision_approved', 'approval_decision_rejected']
   .map(kind => ({ name: `sample-${kind}`, kind: 'sample', built: buildSampleEmail(kind, APP_URL, NOW), sampleKind: kind }))

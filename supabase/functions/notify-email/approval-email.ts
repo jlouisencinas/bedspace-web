@@ -165,6 +165,7 @@ export function describeRequest(row: ApprovalRow, lookups: Lookups = {}, lim: Li
   const out: ChangeRow[] = []
   const add = (label: string, current: string, requested: string) => out.push({ label, current, requested })
   const sv = (v: unknown) => show(v, lim.val)
+  let visiting: KV | null = null
 
   if (f === 'tenant_profile') {
     const ofields = asObj(ov.fields)
@@ -223,6 +224,16 @@ export function describeRequest(row: ApprovalRow, lookups: Lookups = {}, lim: Li
     add('Add-on', '—', parts.filter(Boolean).join(' · '))
   } else if (f === 'delete_addon') {
     add('Add-on', has(nv._addon_id) ? `#${line(nv._addon_id, 20)}` : '—', 'Delete')
+  } else if (f === 'overnight_visitor') {
+    // Reads only these keys: a visitor's contact, email, ID number or photo is never put in an email.
+    add('Visitor', '—', sv(nv.visitor_name))
+    add('Overnight stay', 'Not approved', has(nv.night) ? `Night of ${dateOnly(nv.night)} (10:00 PM onward)` : '—')
+    add('Checked in', '—', line(fmtManila(nv.check_in_at), 60))
+    add('Front desk', '—', sv(nv.guard_name))
+    if (has(nv.purpose)) add('Purpose', '—', sv(nv.purpose))
+    visiting = nv.visit_kind === 'OFFICE' || !has(nv._tenant_name)
+      ? { label: 'Visiting', value: 'Management / Office' }
+      : { label: 'Visiting', value: line(nv._tenant_name, 80) }
   }
 
   if (!out.length) {
@@ -242,9 +253,9 @@ export function describeRequest(row: ApprovalRow, lookups: Lookups = {}, lim: Li
     rows,
     topic: topicFor(row),
     action: labelFor(FIELD_LABELS, f, 60),
-    tenant: has(name)
+    tenant: visiting ?? (has(name)
       ? { label: 'Tenant', value: line(name, 80) }
-      : { label: 'Target', value: line(`${labelFor(ENTITY_LABELS, String(row.entity_type), 20)} #${row.entity_id}`, 80) },
+      : { label: 'Target', value: line(`${labelFor(ENTITY_LABELS, String(row.entity_type), 20)} #${row.entity_id}`, 80) }),
     roomBed: { label: 'Room / bed', value: roomBed(nv._room_no, nv._bed_letter) || '—' },
   }
 }

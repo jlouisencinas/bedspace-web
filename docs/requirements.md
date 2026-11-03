@@ -680,6 +680,12 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   "any authenticated session" policy). Applied and empirically verified live. Two known follow-ups
   remain open separately: a `profiles` RLS gap blocking the admin user-management page, and the
   `tenants_update` policy for payment-date bookkeeping (the latter already fixed this cycle).
+- **Roles:** `admin`, `user`, `viewer` and `guard` ("Security / Front desk"). The `guard` role sees
+  only the Visitor Log (§17): no sidebar, every other route redirects to `/visitors`, and in the
+  database it is locked out of every existing table (`not (select public.is_guard())` on the
+  any-signed-in-user policies, so admin/user/viewer access is unchanged). Its only reads and writes
+  are the `visitor_*` SECURITY DEFINER RPCs plus uploading ID photos to the private `visitor-ids`
+  bucket. `public.app_role()` returns the caller's role for RPC and storage-policy checks.
 - General principle: whatever is visible/accessible to the `user` role in the UI, they may do
   directly, **provided it's captured in `activity_log`**. A specific subset of actions additionally
   requires the approval workflow (current scope: move-out, transfer, room config, bed rate
@@ -1018,14 +1024,12 @@ in another module.**
   places, each answering a different question: the merged Occupancy card (right now + calendar-month
   average so far), the segmented bar (right now, by status), and the YTD bar graph (day-weighted
   per-month history from stored snapshots).
-- **Occupancy data check (Dashboard banner, admin and user).** The day-weighted formula counts a tenant
-  record by its dates, active or not, so an inactive tenant whose move-out date is still in the future
-  counts until that date, possibly alongside the same person's current bed. The banner lists these,
-  and two records on one bed for more than a day this month (from the transfer-aware intervals; a
-  one-day overlap looks like a same-day turnover and isn't flagged), with the month figure with and
-  without the moved-out records. These records may be correct, and billing uses these dates, so staff
-  check them and change a date only if it is wrong. An active tenant whose planned date has passed
-  stops counting in the month average until moved out or extended.
+- **Occupancy counts records by their dates.** The day-weighted formula counts a tenant record by its
+  dates, active or not, so an inactive tenant whose move-out date is still in the future counts until
+  that date, possibly alongside the same person's current bed. An active tenant whose planned date has
+  passed stops counting in the month average until moved out or extended. A Dashboard "Occupancy data
+  check" banner that listed such records was removed at the owner's request (2026-11-03): the six rows
+  it flagged have real dates and are kept as they are.
 - **KPI tile drill-downs — DONE.** All KPI tiles (Occupancy [occupied beds; its "Month detail" link opens
   the calendar-month occupancy list], Vacant, Reserved, Monthly
   Revenue, Moving Out This Month, Move-ins This Month, Lease
@@ -1288,3 +1292,65 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
   low-stakes sandbox with no financial consequence.
 - **Out of scope for v1.** A "reset to CSV baseline" affordance (would need an import-history
   table).
+
+## 17. Visitor Log
+- **Purpose.** A guard/front-desk log of every visitor: who, contact, email, tenant (or office)
+  visited, ID type + a required ID photo, check-in and check-out. Schema and functions:
+  `database/migrations/visitor_log.sql` (mirrored in `init.sql` section 8c). Page `/visitors`
+  (`src/pages/VisitorLog.jsx`).
+- **Roles.** `guard` ("Security / Front desk", one shared account with a real inbox): Visitor Log
+  only, mobile-first layout with a bottom tab bar (Check in | Inside (N) | Today) and no sidebar.
+  `admin` / `user`: the same front desk inside the normal app (full contact shown) plus History
+  with Correct and Void. `viewer`: no access (`/visitors` redirects to `/`) and no visitor data
+  anywhere: `activity_log` and `approval_requests` rows with `entity_type = 'VISITOR_LOG'` (overnight
+  requests and their decisions, void/correct/purge lines) are readable by admin/user only.
+- **Who is on duty.** Because the guard account is shared, a full-screen "Who is on duty?" prompt
+  appears after every sign-in (also signing in again on the same device), after 12 hours, and
+  after End shift; recent names (max 5) are chips on the device. The name is sent with every
+  check-in, check-out and overnight request and stored on the row (`check_in_guard_name`,
+  `check_out_guard_name`). Admin/user are recorded under their account email.
+- **Check-in.** Required: target (an active tenant from the picker, or Office / delivery / repair
+  with a purpose), contact number, full name, email or an explicit "No email", ID type ("Other"
+  needs a description) and an uploaded ID photo; optional "Staying overnight" with a reason. The
+  ID number is not asked of the guard; admin/user can add it later through Correct. Check-in and
+  check-out times are server time (`now()`), never typed. The tenant, room and bed letters are a
+  snapshot (a two-bed tenant appears once, e.g. "405 · Bed A/B"), so the log stays right after
+  transfers/move-outs. The same name + number cannot be inside twice. A known contact number fills
+  name, email and ID type from the latest non-voided visit (never the ID number or photo, never
+  over typed fields). One check-in and one photo per person; "Same as last" re-selects the target.
+- **ID photo.** Taken with the back camera (file picker on desktop), compressed on the device
+  (long edge ≤ 1280 px, JPEG, about 150 KB, ≤ 1 MB; re-encoding strips EXIF/GPS) and uploaded when
+  taken to the private `visitor-ids` bucket as `yyyy/mm/<uuid>.jpg`. `visitor_check_in` links it only
+  if it exists, was uploaded by the same account in the last 30 minutes, is a JPEG ≤ 1 MB and is not
+  used by another visit. Only admins can view photos (2-minute signed URLs); users see "Photo on
+  file — visible to admin only"; guards never see a saved photo.
+- **90-day retention, no scheduled job.** When an admin opens the Visitor Log (at most every 6
+  hours per browser) or presses "Purge old ID photos", photos older than 90 days of visits that are
+  checked out or voided, plus unlinked uploads older than 24 hours, are removed through the Storage
+  API; a visit is marked `id_photo_purged_at` only once its object is confirmed gone. A visitor
+  still inside never loses the photo. Photos can stay past 90 days if no admin opens the page.
+- **Overnight rule (Asia/Manila).** The log day / night N runs 06:00 on N to 05:59 on N+1; its
+  curfew is 22:00 on N. First curfew of a visit = max(check-in, 22:00 of its log day), so a
+  check-in from 22:00 to 05:59 is overnight immediately. A request always targets tonight
+  (`visitor_log_day(now())`) and goes through the normal Approvals page and approval emails
+  (`entity_type = 'VISITOR_LOG'`, `field_name = 'overnight_visitor'`; one pending per visit). An open
+  visit turns RED ("Overnight not approved – must leave") once now ≥ its first curfew and no
+  approved night is on or after the last passed night; an approval for night N clears it through
+  the next day and it turns red again at 22:00 on N+1. Amber: request pending, or 21:00–21:59 with
+  tonight not approved. The guard cannot re-request a night the admin rejected; admin/user can.
+  Approve/reject updates the visit atomically in the same UPDATE (`trg_approval_overnight_sync`).
+  The app never checks anyone out automatically.
+- **Guard data limits.** The guard sees only "Inside now" (every open visit, any day) and today's
+  log (since 06:00), with the contact masked to the last 4 digits and the email to first letter +
+  domain, no ID number and no photo; voided entries are hidden. The tenant picker returns only
+  active tenants' name, room and bed letters.
+- **Correct / void (admin, user).** Never delete. Void needs a reason, keeps the row (greyed in
+  History, hidden from the front desk) and is final. Correct needs a reason and can change name,
+  contact, email/No email, ID type, ID number, visiting and the check-out time (between check-in
+  and now, never cleared); the check-in time and photo are never editable. Every correction or
+  void writes `visitor_log_edits` (old → new) and a non-PII `activity_log` line. Direct writes to
+  `visitor_logs` are impossible (no grants/policies; a trigger rejects anything outside the RPCs
+  and every DELETE).
+- **PII.** The visitor's contact number, email, ID number, photo and photo path never appear in
+  `approval_requests.new_value`, `activity_log` or any email. Check-ins/check-outs are not written to
+  `activity_log`; `visitor_logs` is that audit.

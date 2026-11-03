@@ -250,6 +250,8 @@
     border: 1px solid var(--border);
   }
   .fg textarea { @apply resize-y min-h-[70px]; }
+  /* Visitor Log / guard screens: phone-readable field labels (the rest of the app keeps the compact uppercase style). */
+  .guard-form .fg label { @apply text-[14px] font-semibold text-ink normal-case tracking-normal; }
   .form-section {
     @apply col-span-2 text-[10px] font-bold text-navy-600 uppercase tracking-widest
            pb-1.5 mt-2;

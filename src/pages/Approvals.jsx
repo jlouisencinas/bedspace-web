@@ -12,19 +12,22 @@ import { useToast } from '../components/Toast'
 import AdvanceCheckBox from '../components/AdvanceCheckBox'
 import CombinedBillSummary from '../components/CombinedBillSummary'
 import FinalBillPreview from '../components/FinalBillPreview'
+import VisitorIdPhoto from '../components/VisitorIdPhoto'
+import { fetchVisit, fmtDateTime as fmtManilaDateTime, fmtNight, fmtTime as fmtManilaTime, visitTargetText } from '../lib/visitors'
 import { CheckCircle, XCircle, Clock, X, ClipboardList } from 'lucide-react'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmtDate(d) {
   if (!d) return '—'
-  return new Date(d).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })
+  return new Date(d).toLocaleDateString('en-PH', { timeZone: 'Asia/Manila', month: 'short', day: 'numeric', year: 'numeric' })
 }
 const pesoText = n => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 function fmtDateTime(d) {
   if (!d) return '—'
   return new Date(d).toLocaleString('en-PH', {
+    timeZone: 'Asia/Manila',
     month: 'short', day: 'numeric', year: 'numeric',
     hour: 'numeric', minute: '2-digit',
   })
@@ -40,11 +43,17 @@ function requesterLabel(r) {
 function entityDesc(r) {
   const nv = r.new_value || {}
   const name = nv._tenant_name, room = nv._room_no, bed = nv._bed_letter
+  if (r.field_name === 'overnight_visitor') {
+    const target = nv.visit_kind === 'OFFICE' || !name
+      ? 'Management / Office'
+      : [name, room && `Room ${room}`, bed && `Bed ${bed}`].filter(Boolean).join(' · ')
+    return `${nv.visitor_name || 'Visitor'} → ${target}`
+  }
   if (name) {
     const beds = [bed, ...(nv._siblings || []).map(x => x._bed_letter)].filter(Boolean)
     return [name, room && `Room ${room}`, beds.length && `Bed ${beds.join(' & ')}`].filter(Boolean).join(' · ')
   }
-  const typeLabel = { TENANT: 'Tenant', TENANT_STAY: 'Tenant', BED: 'Bed', ROOM: 'Room', PAYMENT: 'Payment', ADDON: 'Add-on', INTERIM_READING: 'Meter Reading' }
+  const typeLabel = { TENANT: 'Tenant', TENANT_STAY: 'Tenant', BED: 'Bed', ROOM: 'Room', PAYMENT: 'Payment', ADDON: 'Add-on', INTERIM_READING: 'Meter Reading', VISITOR_LOG: 'Visitor' }
   return `${typeLabel[r.entity_type] || r.entity_type} #${r.entity_id}`
 }
 
@@ -80,6 +89,7 @@ function moveOutNetCents(nv) {
 
 function proposedLabel(r) {
   const nv = r.new_value || {}
+  if (r.field_name === 'overnight_visitor') return `Overnight, night of ${fmtNight(nv.night)} (front desk: ${nv.guard_name || '—'})`
   if (r.field_name === 'tenant_profile') return profileSummary(nv)
   if (r.field_name === 'move_out') {
     return [
@@ -152,6 +162,7 @@ function proposedLabel(r) {
 
 function currentLabel(r) {
   const ov = r.old_value || {}
+  if (r.field_name === 'overnight_visitor') return 'Not approved'
   if (r.field_name === 'tenant_profile') return profileSummary(ov)
   if (r.field_name === 'move_out') return 'Active tenant'
   if (r.field_name === 'interim_reading_delete') {
@@ -351,6 +362,42 @@ function MoveOutBillBlock({ b, multi, rec, ctx, waived, onWaive, waiveReason, on
           {totals.net_amount < 0 ? `Amount to be returned ${pesoText(-totals.net_amount)}` : `Total amount due ${pesoText(totals.net_amount)}`}
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Overnight visitor request: the visit as it is now ────────────────────────
+function OvernightVisitPanel({ request }) {
+  const nv = request.new_value || {}
+  const [visit, setVisit] = useState(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let cancelled = false
+    fetchVisit(request.entity_id)
+      .then(v => { if (!cancelled) { if (v) setVisit(v); else setError('Visit not found.') } })
+      .catch(e => { if (!cancelled) setError(`Could not load the visit: ${e.message}`) })
+    return () => { cancelled = true }
+  }, [request.entity_id])
+
+  let status = null
+  if (visit?.voided_at) status = { tone: 'bg-danger-bg border-danger-border text-danger-text', text: `Voided: ${visit.void_reason} — reject this request` }
+  else if (visit?.check_out_at) status = { tone: 'bg-surface-3 border-line text-ink-secondary', text: `Checked out ${fmtManilaTime(visit.check_out_at)} — approving only records it` }
+  else if (visit) status = visit.state === 'RED'
+    ? { tone: 'bg-warning-bg border-warning-border text-warning-text', text: 'Still inside — past the 10:00 PM cut-off' }
+    : { tone: 'bg-surface-3 border-line text-ink-secondary', text: 'Still inside' }
+
+  return (
+    <div className="bg-surface-2 border border-line-subtle rounded-xl p-4 space-y-3 text-[13px]">
+      <div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider">Visit</div>
+      {error && <div className="text-danger-text">{error}</div>}
+      {visit && <VisitorIdPhoto path={visit.id_photo_path} purgedAt={visit.id_photo_purged_at} isAdmin className="h-28" />}
+      <div className="grid grid-cols-2 gap-x-6 gap-y-2">
+        <div><div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider">Visitor</div><div className="text-ink font-medium break-words">{visit?.visitor_name || nv.visitor_name || '—'}</div></div>
+        <div><div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider">Visiting</div><div className="text-ink break-words">{visit ? visitTargetText(visit) : nv.visit_kind === 'OFFICE' ? `Office: ${nv.purpose || '—'}` : [nv._tenant_name, nv._room_no].filter(Boolean).join(' · ')}</div></div>
+        <div><div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider">Checked in</div><div className="text-ink">{fmtManilaDateTime(visit?.check_in_at || nv.check_in_at)} by {visit?.check_in_guard_name || '—'}</div></div>
+        <div><div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider">Night requested</div><div className="text-ink">{fmtNight(nv.night, true)} (10:00 PM onward)</div></div>
+      </div>
+      {status && <div className={`rounded-lg border px-3 py-2 font-medium ${status.tone}`}>Visit now: {status.text}</div>}
     </div>
   )
 }
@@ -607,6 +654,8 @@ function DecideModal({ request, onClose, onDone }) {
   }
 
   async function applyApprovedChange(approved) {
+    // trg_approval_overnight_sync already updated the visit inside the approve UPDATE (atomic); nothing to apply here.
+    if (approved.field_name === 'overnight_visitor') return
     const nv = approved.new_value
 
     if (nv?._action === 'process_transfer') {
@@ -766,6 +815,8 @@ function DecideModal({ request, onClose, onDone }) {
               </div>
             </div>
           )}
+
+          {request.field_name === 'overnight_visitor' && <OvernightVisitPanel request={request} />}
 
           {moveOutBill && (
             <div className="space-y-3">

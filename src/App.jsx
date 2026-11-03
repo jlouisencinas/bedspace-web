@@ -25,6 +25,9 @@ import Property      from './pages/Property'
 import PaymentMonitoring from './pages/PaymentMonitoring'
 import OccupancySimulator from './pages/OccupancySimulator'
 import Occupancy      from './pages/Occupancy'
+import VisitorLog     from './pages/VisitorLog'
+import GuardShiftPrompt from './components/GuardShiftPrompt'
+import { useGuardShift } from './lib/guardShift'
 
 function SetupScreen() {
   return (
@@ -70,6 +73,7 @@ function Layout() {
               <Route path="/activity"    element={<Activity />}    />
               <Route path="/property"   element={<Property />}    />
               <Route path="/occupancy-simulator" element={<OccupancySimulator />} />
+              <Route path="/visitors"    element={<VisitorLog />}  />
             </>}
 
             {/* admin only */}
@@ -90,8 +94,22 @@ function Layout() {
   )
 }
 
+// The guard role never mounts the sidebar, the Dashboard or any other route; the duty-name prompt
+// takes over the whole screen after every sign-in before anything else renders.
+function GuardApp() {
+  const { user, signInAt } = useAuth()
+  const shift = useGuardShift(user?.id, signInAt)
+  if (!shift) return <GuardShiftPrompt />
+  return (
+    <Routes>
+      <Route path="/visitors" element={<VisitorLog />} />
+      <Route path="*" element={<Navigate to="/visitors" replace />} />
+    </Routes>
+  )
+}
+
 function Gate() {
-  const { session, loading } = useAuth()
+  const { session, loading, isGuard } = useAuth()
   if (isMissingConfig) return <SetupScreen />
   if (loading) return (
     <div className="loading-screen">
@@ -102,7 +120,7 @@ function Gate() {
   if (!session) return <Login />
   return (
     <BrowserRouter>
-      <Layout />
+      {isGuard ? <GuardApp /> : <Layout />}
     </BrowserRouter>
   )
 }

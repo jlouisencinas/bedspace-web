@@ -15,6 +15,7 @@ export const FIELD_LABELS: Record<string, string> = {
   add_addon:      'Add Add-on',
   delete_addon:   'Delete Add-on',
   interim_reading_delete: 'Delete Interim Reading',
+  overnight_visitor: 'Overnight Visitor',
 }
 
 export const PROFILE_FIELD_LABELS: Record<string, string> = {
@@ -40,6 +41,7 @@ export const ENTITY_LABELS: Record<string, string> = {
   PAYMENT:         'Payment',
   ADDON:           'Add-on',
   INTERIM_READING: 'Meter Reading',
+  VISITOR_LOG:     'Visitor',
 }
 
 export const ROOM_CONFIG_LABELS: Record<string, string> = {

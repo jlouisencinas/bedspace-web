@@ -22,12 +22,18 @@ npm run preview
 ## Layout
 - `src/pages/` — one file per route (Dashboard, BedMap, Tenants, EditTenantProfile, Billing,
   Utilities, Collections, PaymentMonitoring, Maintenance, Approvals, Reports, Occupancy, Property, Activity,
-  Users, NotificationSettings, PrintElectricity, PrintRentWater, PrintFinalBill, Login, OccupancySimulator).
+  Users, NotificationSettings, PrintElectricity, PrintRentWater, PrintFinalBill, Login, OccupancySimulator, VisitorLog).
   `Occupancy.jsx` is the per-month daily-weighted occupancy module (`requirements.md` §9), all roles,
   built on `computeDailyOccupancy()` in `_shared/occupancy.ts`.
 - `src/components/` — shared UI (MoveInModal, MoveOutModal, TransferModal, Statement, MultiEntryInput,
   SearchInput, TicketDetailModal, Sidebar, Toast, RoomReconfigureModal, AddRoomModal, RetireRoomModal,
   DrillDownModal, ReceiptLinesInput, ReservationLedgerModal, …).
+  Visitor Log (`VisitorLog.jsx`, `/visitors`, requirements §17): `GuardShell` (guard top bar, menu sheet, red banner, bottom
+  tabs; also exports `BottomSheet`), `GuardShiftPrompt`, `VisitorCheckIn`, `VisitTargetPicker`, `IdPhotoCapture`,
+  `VisitorInsideList`, `VisitorTodayLog`, `VisitorHistory`, `VisitorDetailDrawer`, `VisitorCorrectModal`, `VisitorVoidModal`,
+  `VisitorIdPhoto`; libs `src/lib/visitors.js` (RPC wrappers, Manila formatters, ID types), `src/lib/idPhoto.js` (compress,
+  upload, signed URL, 90-day purge) and `src/lib/guardShift.js` (duty name per sign-in, recent names). Schema:
+  `database/migrations/visitor_log.sql` (apply by hand, run its §0 audit first; mirrored in `init.sql` section 8c).
   Property.jsx has room reconfiguration split across two tabs: "Reconfigure" (rebalance bed count/
   rates) is in the Bed Rates tab; "+ Add Room" / "Retire" (create/retire a room entirely) are in the
   Room Config tab.
@@ -67,12 +73,20 @@ npm run preview
 - `scripts/` — one-time Node migration scripts from the old Google Sheets.
 
 ## Roles
-`admin` / `user` / `viewer`, defined in `public.profiles.role` and enforced via **Supabase RLS
+`admin` / `user` / `viewer` / `guard`, defined in `public.profiles.role` and enforced via **Supabase RLS
 policies** (`database/init.sql`), not just client-side checks in `src/lib/auth.jsx` /
 `src/components/Sidebar.jsx`. Route gating lives in `src/App.jsx` and waits for the role
 (`useAuth().loading` stays true until it resolves) so deep links land correctly; a failed role
 lookup falls back to `viewer`. `owner` was a legacy role, migrated away from — if you see it
 mentioned anywhere (old commits, old docs), treat it as stale.
+- `guard` ("Security / Front desk") sees only the Visitor Log: `App.jsx` renders `GuardApp` (no Sidebar, duty-name prompt,
+  `/visitors`, everything else redirects there). In the DB it is locked out of every existing table via
+  `not (select public.is_guard())` on the any-signed-in-user policies (admin/user/viewer unchanged); new policies that
+  let any signed-in user in must add the same clause. `public.app_role()` (SECURITY DEFINER) returns the caller's role.
+- `visitor_logs` / `visitor_log_edits` have no write grants or policies: every write goes through the `visitor_*`
+  SECURITY DEFINER RPCs (a trigger rejects anything else and every DELETE; void/correct only). The private
+  `visitor-ids` storage bucket (ID photos) is upload-only for guard/admin/user and read/delete for admin only;
+  photos are removed only through the Storage API by the admin purge, never by SQL.
 
 ## Notifications
 Email on new approval requests, approval decisions (approved/rejected) and maintenance tickets. Client

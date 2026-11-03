@@ -6,7 +6,7 @@ import {
   LayoutDashboard, LayoutGrid, Users, Wrench, Zap,
   CreditCard, BarChart2, History, CheckSquare, UserCog,
   Menu, X, LogOut, Wallet, Building2, TrendingUp, UserPen,
-  Sun, Moon, Bell, Calculator, PieChart,
+  Sun, Moon, Bell, Calculator, PieChart, DoorOpen,
 } from 'lucide-react'
 import BrandIcon from './BrandIcon'
 
@@ -18,6 +18,7 @@ const ALL_NAV = [
   { to: '/collections', label: 'Collections',  icon: Wallet,         roles: ['admin','user'] },
   { to: '/payment-monitoring', label: 'Payment Monitoring', icon: TrendingUp, roles: ['admin','user'] },
   { to: '/maintenance', label: 'Maintenance',  icon: Wrench,         roles: ['admin','user'] },
+  { to: '/visitors',    label: 'Visitor Log',  icon: DoorOpen,       roles: ['admin','user'] },
   { to: '/utilities',   label: 'Utilities',    icon: Zap,            roles: ['admin','user'] },
   { to: '/billing',     label: 'Billing',      icon: CreditCard,     roles: ['admin','user'] },
   { to: '/reports',     label: 'Reports',      icon: BarChart2 },
@@ -79,12 +80,14 @@ function ThemeToggle({ className = '' }) {
 }
 
 function SidebarContent({ role, user, signOut, navItems, onClose }) {
-  const roleLabel = role === 'admin' ? 'Admin' : role === 'user' ? 'User' : 'Viewer'
+  const roleLabel = role === 'admin' ? 'Admin' : role === 'user' ? 'User' : role === 'guard' ? 'Security / Front desk' : 'Viewer'
   const roleColor = role === 'admin'
     ? 'bg-navy-100 text-navy-700'
     : role === 'user'
       ? 'bg-info-bg text-info-text'
-      : 'bg-surface-3 text-ink-muted'
+      : role === 'guard'
+        ? 'bg-success-bg text-success-text'
+        : 'bg-surface-3 text-ink-muted'
 
   return (
     <div className="flex flex-col h-full">
@@ -135,10 +138,11 @@ function SidebarContent({ role, user, signOut, navItems, onClose }) {
 }
 
 export default function Sidebar() {
-  const { isAdmin, isUser, role, user, signOut } = useAuth()
+  const { isAdmin, isUser, isGuard, role, user, signOut } = useAuth()
   const [mobileOpen, setMobileOpen] = useState(false)
 
   const navItems = ALL_NAV.filter(item => {
+    if (isGuard) return false
     if (!item.roles) return true
     if (isAdmin) return true
     if (isUser && item.roles.includes('user')) return true

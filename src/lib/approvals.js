@@ -13,6 +13,9 @@ function fmtD(d) {
   return new Date(d).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+// Visitor Log rows in activity_log are admin/user-only by RLS (entity_type = 'VISITOR_LOG').
+const visitorEntity = r => (r.entity_type === 'VISITOR_LOG' ? { entity_type: 'VISITOR_LOG', entity_id: Number(r.entity_id) } : {})
+
 function moveOutNoteParts(nv) {
   const parts = []
   if (nv?.move_out_date)        parts.push(`Move-out: ${fmtD(nv.move_out_date)}`)
@@ -143,6 +146,7 @@ export async function approveRequest(id, decisionNotes = null) {
 
   const nv = data.new_value || {}
   await logActivity({
+    ...visitorEntity(data),
     activity_type: 'Approval Approved',
     tenant_name:   nv._tenant_name ?? null,
     room_no:       nv._room_no     ?? null,
@@ -180,6 +184,7 @@ export async function rejectRequest(id, decisionNotes = null) {
 
   const nv = data.new_value || {}
   await logActivity({
+    ...visitorEntity(data),
     activity_type: 'Approval Rejected',
     tenant_name:   nv._tenant_name ?? null,
     room_no:       nv._room_no     ?? null,

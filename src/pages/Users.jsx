@@ -4,12 +4,13 @@ import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
 import { UserPlus, X, AlertTriangle } from 'lucide-react'
 
-const ROLES = ['admin', 'user', 'viewer']
+const ROLES = ['admin', 'user', 'viewer', 'guard']
 
 const ROLE_CONFIG = {
   admin:  { bg: 'bg-warning-bg',   text: 'text-warning-text',  label: 'Admin'  },
   user:   { bg: 'bg-info-bg',    text: 'text-info-text',   label: 'User'   },
   viewer: { bg: 'bg-surface-3',  text: 'text-ink-muted',  label: 'Viewer' },
+  guard:  { bg: 'bg-success-bg', text: 'text-success-text', label: 'Security / Front desk' },
 }
 
 function RoleBadge({ role }) {
@@ -83,7 +84,7 @@ function CreateUserModal({ onClose, onCreated }) {
                 <label>Role</label>
                 <select value={form.role} onChange={e => set('role', e.target.value)}>
                   {ROLES.map(r => (
-                    <option key={r} value={r}>{r.charAt(0).toUpperCase() + r.slice(1)}</option>
+                    <option key={r} value={r}>{ROLE_CONFIG[r].label}</option>
                   ))}
                 </select>
               </div>
@@ -160,6 +161,7 @@ export default function Users() {
           ['Admin',  'Full access + approvals management',    'text-warning-text'],
           ['User',   'Day-to-day ops (Tenants, Billing, Utilities)', 'text-info-text'],
           ['Viewer', 'Read-only (Dashboard, Bed Map, Reports)', 'text-ink-muted'],
+          ['Security / Front desk', 'Visitor Log only (check-in/out with ID photo, overnight requests). Use a real inbox for this account.', 'text-success-text'],
         ].map(([r, desc, c]) => (
           <div key={r} className="flex items-start gap-2">
             <span className={`font-bold text-[12px] ${c} shrink-0 mt-px`}>{r}</span>
@@ -206,7 +208,7 @@ export default function Users() {
                       {isMe ? (
                         <span className="text-[12px] text-ink-faint italic">Cannot change own role</span>
                       ) : (
-                        <div className="flex gap-2">
+                        <div className="flex flex-wrap gap-2">
                           {ROLES.filter(r => r !== p.role).map(r => {
                             const c = ROLE_CONFIG[r]
                             return (

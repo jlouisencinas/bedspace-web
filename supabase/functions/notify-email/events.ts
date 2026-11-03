@@ -65,6 +65,7 @@ const approvalRequest: Handler<any> = {
     if (error) { console.error('notify-email: approval load failed', error.code); throw new NotifyError('load_failed', 500) }
     if (!data) throw new NotifyError('record_not_found', 404)
     if (data.requester_id !== caller.id) throw new NotifyError('forbidden', 403)
+    if (caller.role === 'guard' && !(data.entity_type === 'VISITOR_LOG' && data.field_name === 'overnight_visitor')) throw new NotifyError('forbidden', 403)
     if (data.status !== 'PENDING') throw new NotifyError('not_pending', 409)
     assertFresh(data.created_at)
     return { row: data, requesterEmail: caller.email, lookups: await loadLookups(admin, data) }
