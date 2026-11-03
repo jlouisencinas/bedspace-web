@@ -21,17 +21,17 @@ export default function FinalBillPages({ propsFor, voidText }) {
   if (split) {
     return (
       <>
-        <div className="a4page" ref={ref}>{banner}<Statement {...propsFor("Tenant's Copy")} /></div>
-        <div className="a4page">{banner}<Statement {...propsFor("Owner's Copy")} /></div>
+        <div className="a4page" ref={ref}>{banner}<Statement {...propsFor("Tenant's Copy")} lateFee={false} /></div>
+        <div className="a4page">{banner}<Statement {...propsFor("Owner's Copy")} lateFee={false} /></div>
       </>
     )
   }
   return (
     <div className="a4page" ref={ref}>
       {banner}
-      <Statement {...propsFor("Tenant's Copy")} />
+      <Statement {...propsFor("Tenant's Copy")} lateFee={false} />
       <div className="cutline" />
-      <Statement {...propsFor("Owner's Copy")} />
+      <Statement {...propsFor("Owner's Copy")} lateFee={false} />
     </div>
   )
 }

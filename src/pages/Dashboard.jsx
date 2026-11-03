@@ -199,59 +199,6 @@ export default function Dashboard() {
     return { ...result, monthStartISO, todayISO: todayManilaISO, tomorrowISO }
   }, [beds, tenants])
 
-  // Data check: tenant records that can make the occupancy average read higher. They may be correct, so
-  // the banner only asks staff to check them (billing uses these dates).
-  //  - an inactive tenant whose move-out date is still in the future: counted until that date;
-  //  - two tenant records on the same bed at the same time this month. Uses the transfer-aware intervals.
-  //    Intervals are clamped to the month, so a one-day overlap cannot be told from a same-day turnover
-  //    and is not flagged (this includes any overlap on the 1st of the month).
-  const occupancyFlags = useMemo(() => {
-    const { monthStartISO, tomorrowISO, todayISO } = occupancyMTD
-    const bedMap = new Map(beds.map(b => [b.bed_id, b]))
-    const endOf = t => String(t.actual_move_out_date || t.move_out_date || '').slice(0, 10)
-    const rows = tenants.filter(t => t.bed_id != null && t.move_in_date)
-    const flagged = new Map()
-    const add = (t, why) => {
-      const cur = flagged.get(t.id) || { tenant: t, reasons: new Set() }
-      cur.reasons.add(why)
-      flagged.set(t.id, cur)
-    }
-    const staleIds = new Set()
-    rows.forEach(t => {
-      const end = endOf(t)
-      if (!t.is_active && end && end > todayISO) {
-        add(t, 'Moved out, but the move-out date is still in the future')
-        staleIds.add(t.id)
-      }
-    })
-    const byId = new Map(rows.map(t => [t.id, t]))
-    const byBed = new Map()
-    occupancyMTD.detail.forEach(iv => { if (!byBed.has(iv.bedId)) byBed.set(iv.bedId, []); byBed.get(iv.bedId).push(iv) })
-    byBed.forEach(list => {
-      for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
-        const a = list[i], b = list[j]
-        if (a.tenantId === b.tenantId) continue
-        const from = a.startISO > b.startISO ? a.startISO : b.startISO
-        const to = a.endISO < b.endISO ? a.endISO : b.endISO
-        if (from < to) for (const iv of [a, b]) {
-          const t = byId.get(iv.tenantId)
-          if (t) add(t, 'Two tenant records on the same bed at the same time')
-        }
-      }
-    })
-    const rowsOut = [...flagged.values()].map(({ tenant: t, reasons }) => {
-      const bed = bedMap.get(t.bed_id)
-      return {
-        id: t.id, tenantName: t.name, room_no: bed?.room_no || '', bed_letter: bed?.bed_letter || '',
-        move_in_date: t.move_in_date, end: endOf(t), issue: [...reasons].join(' · '),
-      }
-    }).sort((x, y) => String(x.room_no).localeCompare(String(y.room_no)) || String(x.bed_letter).localeCompare(String(y.bed_letter)))
-    const without = staleIds.size
-      ? computeOccupancySnapshot(monthStartISO, tomorrowISO, beds, tenants.filter(t => !staleIds.has(t.id))).occupancyPct
-      : null
-    return { rows: rowsOut, withoutPct: without }
-  }, [beds, tenants, occupancyMTD])
-
   // Occupancy This Month drill-down rows — join detail's bedId against beds
   // (same join style as typeMap below) for room_no/bed_letter display.
   const occupancyMTDDetail = useMemo(() => {
@@ -453,26 +400,6 @@ export default function Dashboard() {
     })
   }
 
-  function openOccupancyFlags() {
-    setDrillDown({
-      shape: 'table',
-      icon: AlertTriangle,
-      title: 'Occupancy data check',
-      subtitle: `${occupancyFlags.rows.length} tenant record(s) that can overstate occupancy`,
-      rows: occupancyFlags.rows,
-      rowKey: row => row.id,
-      emptyMessage: 'No records to review.',
-      columns: [
-        { key: 'tenantName', label: 'Tenant', render: row => <span className="max-w-[160px] truncate inline-block align-bottom">{row.tenantName}</span> },
-        { key: 'room_bed', label: 'Room · Bed', render: row => `${row.room_no} · ${row.bed_letter}` },
-        { key: 'move_in_date', label: 'Move-in', render: row => fmtDate(row.move_in_date) },
-        { key: 'end', label: 'Move-out', render: row => fmtDate(row.end) },
-        { key: 'issue', label: 'Issue' },
-      ],
-      onRowClick: canAct ? row => navigate('/tenants', { state: { openTenantId: row.id } }) : undefined,
-    })
-  }
-
   function openMovingOutThisMonth() {
     setDrillDown({
       shape: 'list',
@@ -613,21 +540,6 @@ export default function Dashboard() {
         <KpiCard label="Reserved"        value={reserved}            sub="pending move-in"                icon={Clock}       color="amber" onClick={openReserved} />
         <KpiCard label="Monthly Revenue" value={`₱${fmt(revenue)}`} sub="leased beds, monthly rates"     icon={PhilippinePeso}  color="navy"  onClick={openMonthlyRevenue} />
       </div>
-
-      {canAct && occupancyFlags.rows.length > 0 && (
-        <div className="card p-4 mb-5 bg-warning-bg text-warning-text flex items-start gap-3">
-          <AlertTriangle size={16} className="shrink-0 mt-0.5" />
-          <div className="text-[13px] flex-1">
-            <div className="font-semibold">Occupancy data check: {occupancyFlags.rows.length} tenant record{occupancyFlags.rows.length === 1 ? '' : 's'} to review</div>
-            <div className="text-[12px] mt-0.5">
-              These can make occupancy read higher: {occupancyMTD.occupancyPct}% this month
-              {occupancyFlags.withoutPct != null && <> ({occupancyFlags.withoutPct}% without the moved-out records)</>}.
-              {' '}Billing uses these dates, so only change one if it is wrong.
-            </div>
-          </div>
-          <button type="button" className="btn-xs amber shrink-0" onClick={openOccupancyFlags}>Review</button>
-        </div>
-      )}
 
       {/* ── Monthly metrics (§9/§10) ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">

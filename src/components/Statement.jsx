@@ -17,6 +17,7 @@
  *   checkNote string, optional note under the table (the final bill's advance check)
  *   footNotes array of strings, optional (rate fallbacks, rounding rule, start readings), rendered like asOfNote
  *   draftBanner string, optional: printed at the top of the copy (an unsaved preview must not pass for an issued bill)
+ *   lateFee   boolean, default true: print the 2% late-fee line (off on the final bill, which is settled at move-out)
  *   flow      boolean, optional: the copy grows with its content (no fixed half-page height, nothing is clipped) and the charges
  *             table gets wider label / narrower rate and amount columns; used by the final bill, whose line count varies
  *   peso      formatter fn
@@ -24,7 +25,7 @@
 export default function Statement({
   company, copyLabel, name, room, asOf, due, billNo, preparedBy,
   charges, total, details, asOfNote, checkNote, footNotes, splitNote, peso,
-  totalLabel = 'Total amount due', totalColor, flow = false, draftBanner,
+  totalLabel = 'Total amount due', totalColor, flow = false, draftBanner, lateFee = true,
 }) {
   const hasRate = charges.some(c => c.rateText)
   return (
@@ -114,9 +115,11 @@ export default function Statement({
       {(footNotes || []).map((n, i) => <div key={i} className="asof-note">{n}</div>)}
       {splitNote && <div className="asof-note" style={{ color: '#f4a522', fontWeight: 700 }}>{splitNote}</div>}
 
-      <div className="latefee">
-        Please pay on or before the due date. Otherwise, a 2% late fee will be added to your next bill.
-      </div>
+      {lateFee && (
+        <div className="latefee">
+          Please pay on or before the due date. Otherwise, a 2% late fee will be added to your next bill.
+        </div>
+      )}
     </div>
   )
 }
