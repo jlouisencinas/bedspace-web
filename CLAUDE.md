@@ -61,6 +61,10 @@ npm run preview
   The advance can never be credited twice: `advanceCheck`/`verifyBillAgainstDb` re-check it from fresh DB data
   at draft, Confirm and approval apply (stamped in `details.advance_check`), backed by triggers G1-G3 in
   `database/migrations/advance_credit_guards.sql` (run its audit queries first; also in `init.sql`).
+  Receipt numbers: every receipt the final bill credits/forfeits needs its S.I#/T.R# (`normalizeReceiptRef`/`applyReceiptRefs`/
+  `applyCheckRefs` in `finalBill.js`, inputs in `ReceiptRefInputs`); admin Confirm writes them to the HELD receipts first, staff send
+  `_bill.receipt_refs`; a settled receipt's number is fixed after move-out only via the admin RPC `correct_receipt_ref`
+  (`database/migrations/final_bill_receipt_refs.sql`, also in `init.sql`; text-only, refuses any amount change).
 - `src/lib/stay.js` (stay kind: one-month / whole-months / odd; per-utility cutoff coverage), `src/lib/utilityPieces.js`
   (stay-anchored utility split, integer-cent allocation, rate fallback) and `src/lib/moveOutData.js` (data loader shared by
   `MoveOutModal` and `Approvals`) back the final bill; `database/migrations/final_bill_covered_cutoffs.sql` adds

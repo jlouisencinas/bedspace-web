@@ -1,17 +1,19 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { Fragment, useState, useEffect, useMemo, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { requestApproval, fetchPendingMoveOutRequests } from '../lib/approvals'
-import { verifyAdvanceFresh } from '../lib/supabase'
+import { verifyAdvanceFresh, fetchReceiptRefIndex } from '../lib/supabase'
 import { loadMoveOutBundle } from '../lib/moveOutData'
 import {
   buildFinalBillDrafts, rebuildCreditLines, normalizeLines, computeTotals, round2, isSystemLine, isComputedLine,
   siblingGroup, siblingMismatch, toCents, pendingMoveOutFor,
+  normalizeReceiptRef, receiptRefsNeeded, missingReceiptRefs, applyReceiptRefs, applyCheckRefs,
 } from '../lib/finalBill'
 import { classifyStay, computeCoverage, appStart, localToday } from '../lib/stay'
 import AdvanceCheckBox from './AdvanceCheckBox'
 import CombinedBillSummary from './CombinedBillSummary'
 import FinalBillPreview from './FinalBillPreview'
+import ReceiptRefInputs from './ReceiptRefInputs'
 import { LogOut, Clock, AlertTriangle, X, CheckCircle, Pencil, Plus, Printer } from 'lucide-react'
 
 const today = localToday
@@ -65,6 +67,11 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
   const [startInfo, setStartInfo] = useState({ WATER: null, ELECTRIC: null })
   const [overrides, setOverrides] = useState({ WATER: '', ELECTRIC: '' })
   const [applied, setApplied] = useState({ WATER: '', ELECTRIC: '' })
+  const [refs, setRefs] = useState({})
+  const [refIndex, setRefIndex] = useState([])
+  const refsNow = useRef(refs)
+  refsNow.current = refs
+  const refIndexLoaded = useRef(false)
   const seq = useRef(0)
   const todo = group.filter(g => outcomes?.[g.id]?.status !== 'ok')
 
@@ -82,6 +89,29 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
       .then(b => { if (n === seq.current) setPre({ ...b, date: form.actual_move_out_date }) })
       .catch(e => { if (n === seq.current) { setPre(null); setPreErr(e.message) } })
   }, [form.actual_move_out_date])
+
+  // Typed numbers are never overwritten by a reload: only receipts not seen yet are seeded from ref_no.
+  useEffect(() => {
+    if (!pre) return
+    setRefs(prev => {
+      let next = prev
+      for (const list of pre.deposits.values()) {
+        for (const d of list || []) {
+          if (Object.prototype.hasOwnProperty.call(prev, d.id)) continue
+          if (next === prev) next = { ...prev }
+          const n = normalizeReceiptRef(d.kind, d.ref_no)
+          next[d.id] = n.error ? (d.ref_no ?? '') : n.value
+        }
+      }
+      return next
+    })
+  }, [pre])
+
+  useEffect(() => {
+    if (step !== 2 || refIndexLoaded.current) return
+    refIndexLoaded.current = true
+    fetchReceiptRefIndex().then(setRefIndex).catch(e => console.warn('duplicate receipt number check skipped:', e.message))
+  }, [step])
 
   const coverage = useMemo(() => {
     if (!pre || pre.date !== form.actual_move_out_date) return null
@@ -156,6 +186,7 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
         } else {
           lines = compose(d.lines, old ? old.lines.filter(l => l.kind === 'unsettled') : [])
         }
+        lines = applyReceiptRefs(lines, b.deposits.get(g.id), refsNow.current)
         next[g.id] = { draft: d, lines, waived: old?.waived || false, waiveReason: old?.waiveReason || '', preparedBy: old?.preparedBy || '', verified: null, editIdx: null }
       }
       return next
@@ -204,10 +235,37 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
 
   const patchBed = (id, patch) => setBeds(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }))
   const patchLine = (id, i, patch) => setBeds(prev => ({ ...prev, [id]: { ...prev[id], lines: prev[id].lines.map((l, j) => (j === i ? { ...l, ...patch } : l)) } }))
+  const withRefs = (id, lines, r = refs) => applyReceiptRefs(lines, pre?.deposits.get(id), r)
+  const checkWithRefs = (id, check) => applyCheckRefs(check, pre?.deposits.get(id), refs)
+  function setRef(depositId, value) {
+    const next = { ...refs, [depositId]: value }
+    setRefs(next)
+    setBeds(prev => Object.fromEntries(Object.entries(prev).map(([tid, s]) => [tid, { ...s, lines: withRefs(Number(tid), s.lines, next) }])))
+  }
+  // Every bed's receipts in this flow, for the "also used for Bed B" note.
+  const refFlow = useMemo(() => {
+    const m = new Map()
+    for (const g of todo) {
+      const s = beds[g.id]
+      if (!s || !pre) continue
+      for (const e of receiptRefsNeeded(s.lines, pre.deposits.get(g.id))) m.set(e.deposit_id, { tenantId: g.id, bed: bedOf(g), kind: e.kind, current: e.current })
+    }
+    return m
+  }, [beds, pre, outcomes])
+  // The typed numbers of one bed's receipts, normalized; invalid or locked ones are left out (the DB value stays).
+  function refsFor(g) {
+    const out = {}
+    for (const e of receiptRefsNeeded(beds[g.id].lines, pre.deposits.get(g.id))) {
+      if (e.locked) continue
+      const n = normalizeReceiptRef(e.kind, refs[e.deposit_id] ?? e.current)
+      if (!n.error) out[e.deposit_id] = n.value
+    }
+    return out
+  }
   function toggleWaive(id, next) {
     const s = beds[id]
     const r = rebuildCreditLines(s.lines, pre.deposits.get(id), { earlyTermination: s.draft.earlyTermination, waived: next, prior: s.draft.prior })
-    patchBed(id, { waived: next, lines: r.lines, draft: { ...s.draft, check: r.check, notes: r.notes }, verified: null })
+    patchBed(id, { waived: next, lines: withRefs(id, r.lines), draft: { ...s.draft, check: r.check, notes: r.notes }, verified: null })
   }
   function setAmount(id, i, raw) {
     const l = beds[id].lines[i]
@@ -227,7 +285,7 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
     const s = beds[g.id]
     const w = isAdmin && s.draft.earlyTermination && s.waived
     return {
-      cutoff_id: s.draft.cutoff_id, covered_cutoffs: s.draft.covered_cutoffs, lines: normalizeLines(s.lines.map(strip)), details: s.draft.details,
+      cutoff_id: s.draft.cutoff_id, covered_cutoffs: s.draft.covered_cutoffs, lines: normalizeLines(withRefs(g.id, s.lines).map(strip)), details: s.draft.details,
       early_termination: s.draft.earlyTermination, forfeit_waived: w, waived_reason: w ? s.waiveReason.trim() : null,
       prepared_by: s.preparedBy.trim() || null,
     }
@@ -243,6 +301,8 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
         if (l._amt !== undefined && l._amt !== '' && !Number.isFinite(Number(l._amt))) return `${tag}"${l.label}" has an invalid amount.`
       }
       if (s.draft.earlyTermination && s.waived && !s.waiveReason.trim()) return `${tag}enter the reason management approved waiving the forfeiture.`
+      const missing = missingReceiptRefs(s.lines, pre.deposits.get(g.id), refs)
+      if (missing.length) return `${tag}${missing.join('\n' + tag)}`
     }
     return null
   }
@@ -301,13 +361,20 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
 
   async function confirm() {
     const moveOut = moveOutPayload()
+    for (const g of todo) {
+      const missing = missingReceiptRefs(beds[g.id].lines, pre.deposits.get(g.id), refs)
+      if (missing.length) { setError(`${multi ? `Bed ${bedOf(g)}: ` : ''}${missing.join(' ')}`); return }
+    }
     setBusy(true); setError('')
     try {
       if (!isAdmin) {
         if (!reason.trim()) { setError('Please provide a reason for the move-out.'); setBusy(false); return }
         const mkBill = (g) => {
           const s = beds[g.id]
-          return { ...billFor(g), ...totalsOf(s.lines), planned_move_out: iso10(g.move_out_date) || null, prior_cutoff: s.draft.prior?.name ? { name: s.draft.prior.name } : null, advance_check: s.verified?.check ?? s.draft.check }
+          return {
+            ...billFor(g), ...totalsOf(s.lines), planned_move_out: iso10(g.move_out_date) || null, prior_cutoff: s.draft.prior?.name ? { name: s.draft.prior.name } : null,
+            advance_check: checkWithRefs(g.id, s.verified?.check ?? s.draft.check), receipt_refs: refsFor(g),
+          }
         }
         const first = todo[0]
         const ref = (g) => ({
@@ -327,7 +394,7 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
         })
         setSubmitted(true)
       } else {
-        const items = todo.map(g => ({ tenant: g, bill: billFor(g), withPayment: g.id === group[0].id }))
+        const items = todo.map(g => ({ tenant: g, bill: billFor(g), withPayment: g.id === group[0].id, receiptRefs: refsFor(g) }))
         const res = await onSubmit({ moveOut, items, groupTenantIds: groupIds, vacated: { confirmed: vacated, at: new Date().toISOString() } })
         finishRun(res)
       }
@@ -356,7 +423,7 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
       for (const g of failed) {
         const v = await verifyAdvanceFresh(g, form.actual_move_out_date, billFor(g))
         if (!v.ok) { await goBackForStale({ [g.id]: [...v.errors, ...v.stale] }); setBusy(false); return }
-        items.push({ tenant: g, bill: billFor(g), withPayment: g.id === group[0].id })
+        items.push({ tenant: g, bill: billFor(g), withPayment: g.id === group[0].id, receiptRefs: refsFor(g) })
       }
       const res = await onSubmit({ moveOut: moveOutPayload(), items, groupTenantIds: groupIds, vacated: { confirmed: vacated, at: new Date().toISOString() } })
       finishRun(res)
@@ -474,11 +541,11 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
 
   const summedItems = todo.filter(g => beds[g.id]).map(g => ({ bed: bedOf(g), bill: { lines: beds[g.id].lines.map(strip), details: beds[g.id].draft.details } }))
   const previewList = () => todo.filter(g => beds[g.id]).map(g => {
-    const s = beds[g.id], lines = normalizeLines(s.lines.map(strip))
+    const s = beds[g.id], lines = normalizeLines(withRefs(g.id, s.lines).map(strip))
     return {
       bill: {
         id: g.id, status: 'DRAFT', move_out_date: form.actual_move_out_date, lines, net_amount: computeTotals(lines).net_amount,
-        details: { ...s.draft.details, advance_check: s.verified?.check ?? s.draft.check }, prepared_by: s.preparedBy.trim(),
+        details: { ...s.draft.details, advance_check: checkWithRefs(g.id, s.verified?.check ?? s.draft.check) }, prepared_by: s.preparedBy.trim(),
       },
       tenant: { name: g.name, beds: { bed_letter: bedOf(g), rooms: { room_no: g.room_no } } },
     }
@@ -587,7 +654,8 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
               <CombinedBillSummary items={summedItems} />
               {todo.map(g => beds[g.id] && (
                 <BedBill key={g.id} g={g} s={beds[g.id]} multi={multi} isAdmin={isAdmin} staleNote={staleNotes[g.id]}
-                  actual={form.actual_move_out_date}
+                  actual={form.actual_move_out_date} check={checkWithRefs(g.id, beds[g.id].draft.check)}
+                  refNeeded={receiptRefsNeeded(beds[g.id].lines, pre?.deposits.get(g.id))} refs={refs} setRef={setRef} refFlow={refFlow} refIndex={refIndex}
                   patchBed={patchBed} patchLine={patchLine} toggleWaive={toggleWaive} setAmount={setAmount}
                   addLine={addLine} removeLine={removeLine} />
               ))}
@@ -634,7 +702,7 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
               {todo.map(g => beds[g.id] && (
                 <div key={g.id} className="space-y-1">
                   {multi && <div className="text-[11px] font-bold uppercase tracking-wider text-ink-faint">Bed {bedOf(g)}</div>}
-                  <AdvanceCheckBox check={beds[g.id].verified?.check ?? beds[g.id].draft.check} checkedAt={beds[g.id].verified?.at} />
+                  <AdvanceCheckBox check={checkWithRefs(g.id, beds[g.id].verified?.check ?? beds[g.id].draft.check)} checkedAt={beds[g.id].verified?.at} />
                 </div>
               ))}
               {isAdmin && (
@@ -692,7 +760,7 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
 }
 
 // One bed's section of the final bill editor.
-function BedBill({ g, s, multi, isAdmin, staleNote, actual, patchBed, patchLine, toggleWaive, setAmount, addLine, removeLine }) {
+function BedBill({ g, s, multi, isAdmin, staleNote, actual, check, refNeeded, refs, setRef, refFlow, refIndex, patchBed, patchLine, toggleWaive, setAmount, addLine, removeLine }) {
   const { draft, lines, waived, waiveReason, preparedBy, editIdx } = s
   const totals = totalsOf(lines)
   const net = totals.net_amount
@@ -711,7 +779,7 @@ function BedBill({ g, s, multi, isAdmin, staleNote, actual, patchBed, patchLine,
           {staleNote.map((x, i) => <div key={i}>{x}</div>)}
         </div>
       )}
-      <AdvanceCheckBox check={draft.check} />
+      <AdvanceCheckBox check={check} />
       {draft.errors.length > 0 && (
         <div className="bg-danger-bg border border-danger-border rounded-xl px-3 py-2 text-danger-text space-y-1">
           {draft.errors.map((w, i) => <div key={i}><AlertTriangle size={12} className="inline mr-1" />{w}</div>)}
@@ -766,8 +834,11 @@ function BedBill({ g, s, multi, isAdmin, staleNote, actual, patchBed, patchLine,
             const credit = l.kind === 'credit' || l.kind === 'payment', forfeit = l.kind === 'forfeit'
             const system = isSystemLine(l)
             const noDelete = system || isComputedLine(l)
+            const lineRefs = (credit || forfeit) && (l.source === 'ADVANCE' || l.source === 'DEPOSIT')
+              ? refNeeded.filter(e => (l.deposit_ids || []).includes(e.deposit_id)) : []
             return (
-              <tr key={i} className="border-t border-line-subtle align-top">
+              <Fragment key={i}>
+              <tr className="border-t border-line-subtle align-top">
                 {editing ? (
                   <>
                     <td className="py-1 pr-2"><input type="text" className="w-full" value={l.label} onChange={e => patchLine(g.id, i, { label: e.target.value })} /></td>
@@ -802,6 +873,16 @@ function BedBill({ g, s, multi, isAdmin, staleNote, actual, patchBed, patchLine,
                   </>
                 )}
               </tr>
+              {lineRefs.length > 0 && (
+                <tr>
+                  <td colSpan={4} className="pb-2 pt-1">
+                    <div className="rounded-lg bg-surface-2 border border-line-subtle px-3 py-2">
+                      <ReceiptRefInputs entries={lineRefs} refs={refs} onChange={setRef} tenantId={g.id} flow={refFlow} index={refIndex} />
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             )
           })}
         </tbody>

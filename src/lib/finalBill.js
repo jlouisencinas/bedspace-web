@@ -68,6 +68,140 @@ export function refText(kind, receipts) {
   return refs.map(r => (REF_ALREADY[kind].test(r) ? r : `${REF_PREFIX[kind]} ${r}`)).join(' & ')
 }
 
+const REF_PART = /^\s*(S\.?\s?I|T\.?\s?R)\s*#/i
+const REF_LABEL = { ADVANCE: 'S.I#', DEPOSIT: 'T.R#' }
+const REF_MAX = 30
+// Own-field prefix: S.I# / SI / SI# / S.I. / S.I. No. (T.R likewise), then an optional ':' '.' '-'. Never eats letters of the number.
+const prefixRe = (a, b) => new RegExp(`^${a}\\s*\\.?\\s*${b}(?:\\s*\\.?\\s*(?:#|no\\.?(?![a-z])))?(?![a-z])\\s*\\.?\\s*[:.\\-]?\\s*`, 'i')
+const REF_OWN = { ADVANCE: prefixRe('S', 'I'), DEPOSIT: prefixRe('T', 'R') }
+// Mirrors the correct_receipt_ref RPC: a value still starting with '#' or S.I#/T.R#/SI No is refused there.
+const REF_DB_REFUSED = /^(#|(s\s*\.?\s*i|t\s*\.?\s*r)\s*\.?\s*(#|no\b))/i
+const REF_CONTROL = /[\u0000-\u001f\u007f-\u009f]/
+
+/**
+ * A typed S.I# (advance) / T.R# (deposit) number -> { value, error }. The value is the bare number (no prefix) that is stored in
+ * tenant_deposits.ref_no; refText() adds the prefix when it is printed. '&' and an inner '#' are allowed ("121 & TR# 133").
+ */
+export function normalizeReceiptRef(kind, raw) {
+  const label = REF_LABEL[kind] || 'receipt'
+  const fail = (error) => ({ value: null, error })
+  let v = String(raw ?? '').replace(/\s+/g, ' ').trim()
+  const other = kind === 'ADVANCE' ? 'DEPOSIT' : 'ADVANCE'
+  if (REF_OWN[other] && REF_OWN[other].test(v) && !REF_OWN[kind].test(v)) {
+    return fail(kind === 'ADVANCE'
+      ? 'That looks like a T.R#; the advance is documented by an S.I#.'
+      : 'That looks like an S.I#; the deposit is documented by a T.R#.')
+  }
+  if (REF_OWN[kind]) v = v.replace(REF_OWN[kind], '')
+  v = v.replace(/^#\s*/, '').trim()
+  if (!v) return fail(`Enter the ${label} number.`)
+  if (REF_CONTROL.test(v) || v.includes('·')) return fail(`The ${label} number cannot contain '·' or control characters.`)
+  if (v.length > REF_MAX) return fail(`The ${label} number is too long (max ${REF_MAX} characters).`)
+  if (!/[0-9]/.test(v)) return fail(`The ${label} number must contain at least one digit.`)
+  if (REF_DB_REFUSED.test(v)) return fail(`Enter the ${label} number only, without a prefix.`)
+  return { value: v, error: null }
+}
+
+/** Duplicate-compare key of a receipt number. */
+export const refKey = (v) => String(v ?? '').toLowerCase().replace(/\s+/g, '')
+
+const isRefLine = (l) => (l?.kind === 'credit' || l?.kind === 'forfeit') && (l?.source === 'ADVANCE' || l?.source === 'DEPOSIT')
+const isLockedRef = (d) => d?.reservation_payment_id != null && String(d?.ref_no ?? '').trim() !== ''
+const validRef = (kind, refs, id) => {
+  if (!refs || !Object.prototype.hasOwnProperty.call(refs, id)) return undefined
+  const n = normalizeReceiptRef(kind, refs[id])
+  return n.error ? undefined : n.value
+}
+
+/**
+ * The receipts this bill credits or forfeits, one entry per receipt id: { deposit_id, kind, amount, received_date, payment_mode,
+ * fromReservation, locked, current, required }. locked = a reservation-carried T.R# (read-only); required = amount > 0 and not locked.
+ */
+export function receiptRefsNeeded(lines, deposits) {
+  const byId = new Map((deposits || []).map(d => [d.id, d]))
+  const out = []
+  const seen = new Set()
+  for (const l of lines || []) {
+    if (!isRefLine(l)) continue
+    for (const id of l.deposit_ids || []) {
+      const d = byId.get(id)
+      if (!d || seen.has(id)) continue
+      seen.add(id)
+      const locked = isLockedRef(d)
+      out.push({
+        deposit_id: id, kind: d.kind, amount: Number(d.amount), received_date: d.received_date ?? null, payment_mode: d.payment_mode ?? null,
+        fromReservation: d.reservation_payment_id != null, locked, current: d.ref_no ?? '', required: toCents(d.amount) > 0 && !locked,
+      })
+    }
+  }
+  return out
+}
+
+/** One message per required receipt whose number (refs[id] when typed, else the one on file) is not a valid S.I#/T.R#. */
+export function missingReceiptRefs(lines, deposits, refs = {}) {
+  const out = []
+  for (const r of receiptRefsNeeded(lines, deposits)) {
+    if (!r.required) continue
+    const raw = Object.prototype.hasOwnProperty.call(refs || {}, r.deposit_id) ? refs[r.deposit_id] : r.current
+    const n = normalizeReceiptRef(r.kind, raw)
+    if (n.error) out.push(`${REF_LABEL[r.kind]} of the ${r.kind === 'ADVANCE' ? 'advance' : 'deposit'} receipt #${r.deposit_id} (${pesoText(r.amount)}): ${n.error}`)
+  }
+  return out
+}
+
+/** Puts `ref` as the first ' · ' segment of a line's details, replacing any S.I#/T.R# segment and keeping the rest. */
+export function spliceRefSegment(mid, ref) {
+  const rest = String(mid ?? '').split(' · ').map(x => x.trim()).filter(x => x && !REF_PART.test(x))
+  return [ref, ...rest].filter(Boolean).join(' · ')
+}
+
+/**
+ * Text only: the details (`mid`) of every advance/deposit credit or forfeit line carry the receipt numbers, from `refs` (typed, valid
+ * ones) or else the receipt's ref_no. `only` restricts it to the lines holding that receipt id. Amounts, ids and kinds are untouched.
+ */
+export function applyReceiptRefs(lines, deposits, refs = {}, { only = null } = {}) {
+  const byId = new Map((deposits || []).map(d => [d.id, d]))
+  return (lines || []).map(l => {
+    if (!isRefLine(l)) return l
+    const ids = l.deposit_ids || []
+    if (only != null && !ids.includes(only)) return l
+    const receipts = ids.map(id => {
+      const d = byId.get(id)
+      const typed = isLockedRef(d) ? undefined : validRef(l.source, refs, id)
+      return { ref_no: typed ?? d?.ref_no ?? '' }
+    })
+    return { ...l, mid: spliceRefSegment(l.mid, refText(l.source, receipts)) }
+  })
+}
+
+/**
+ * Text only: the Advance check with the typed receipt numbers. receipts[].ref is rebuilt for receipts that have a valid typed number
+ * (others keep theirs), and the "Advance <numbers> ₱…" prefix of the text follows. Every figure stays as it is.
+ */
+export function applyCheckRefs(check, deposits, refs = {}) {
+  if (!check || !Array.isArray(check.receipts)) return check
+  const byId = new Map((deposits || []).map(d => [d.id, d]))
+  const receipts = check.receipts.map(r => {
+    const typed = isLockedRef(byId.get(r.deposit_id)) ? undefined : validRef('ADVANCE', refs, r.deposit_id)
+    return typed === undefined ? r : { ...r, ref: refText('ADVANCE', [{ ref_no: typed }]) }
+  })
+  // The old prefix as advanceCheck() wrote it: refText de-duplicates the raw ref_no (so "1234" and "S.I# 1234" both print), else the
+  // receipts' own refs. Only a whole "Advance <refs> ₱" prefix is replaced, never part of a longer list.
+  const candidates = uniq([
+    refText('ADVANCE', check.receipts.map(r => byId.get(r.deposit_id) ?? { ref: r.ref })),
+    uniq(check.receipts.map(r => r.ref)).join(' & '),
+  ].map(x => `Advance ${x} `))
+  const newP = `Advance ${uniq(receipts.map(r => r.ref)).join(' & ')} `
+  const t = typeof check.text === 'string' ? check.text : ''
+  const oldP = candidates.find(p => t.startsWith(p) && t.slice(p.length).startsWith('₱'))
+  const changed = check.receipts.some(r => {
+    const typed = isLockedRef(byId.get(r.deposit_id)) ? undefined : validRef('ADVANCE', refs, r.deposit_id)
+    return typed !== undefined && typed !== String(byId.get(r.deposit_id)?.ref_no ?? '').trim()
+  })
+  const text = changed && oldP ? newP + t.slice(oldP.length) : check.text
+  return { ...check, receipts, text }
+}
+
 const sameName = (a, b) => (a.name || '').trim().toLowerCase() === (b.name || '').trim().toLowerCase()
 
 // Beds billed as one whole-room tenancy (billing.js collapses >= 2 active same-name beds in a room).
@@ -675,7 +809,6 @@ export function mergeRecomputedLines({ lines, details = null, fresh }) {
   return { lines: out, details: nd, diffs, warnings, replaced }
 }
 
-const REF_PART = /^\s*(S\.?\s?I|T\.?\s?R)\s*#/i
 const uniq = (list) => [...new Set(list.filter(Boolean))]
 const refMid = (lines) => {
   const parts = lines.flatMap(l => String(l.mid || '').split(' · ').map(x => x.trim()).filter(Boolean))

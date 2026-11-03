@@ -1,11 +1,14 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
-import { fetchFinalBill, fetchFinalBillGroup, supabase } from '../lib/supabase'
+import { fetchFinalBill, fetchFinalBillGroup, fetchTenantDeposits, correctReceiptRef, DEPOSIT_REF_LABEL, DEPOSIT_KIND_LABEL, supabase } from '../lib/supabase'
+import { receiptRefsNeeded } from '../lib/finalBill'
 import { buildPrintUnits, statementProps, peso } from '../lib/finalBillStatement'
+import { useAuth } from '../lib/auth'
 import FinalBillPages from '../components/FinalBillPages'
 
 export default function PrintFinalBill() {
   const [params] = useSearchParams()
+  const { isAdmin } = useAuth()
   const ids = (params.get('ids') ? params.get('ids').split(',') : [params.get('id')]).map(Number).filter(n => Number.isFinite(n) && n > 0)
   const idsKey = ids.join(',')
 
@@ -15,6 +18,14 @@ export default function PrintFinalBill() {
   const [prepared, setPrepared] = useState({})
   const [series, setSeries] = useState({})
   const [billingDate, setBillingDate] = useState('')
+  const [reload, setReload] = useState(0)
+  const [refRows, setRefRows] = useState([])
+  const [refErr, setRefErr] = useState('')
+  const [fixId, setFixId] = useState(null)
+  const [fixVal, setFixVal] = useState('')
+  const [fixBusy, setFixBusy] = useState(false)
+  const [fixMsg, setFixMsg] = useState(null)
+  const fixDone = useRef(null)
 
   useEffect(() => {
     (async () => {
@@ -46,13 +57,47 @@ export default function PrintFinalBill() {
         }
         const built = buildPrintUnits([...byId.values()])
         setUnits(built)
-        setPrepared(Object.fromEntries(built.map(u => [u.key, u.view.prepared_by || ''])))
-        setSeries(Object.fromEntries(built.map(u => [u.key, u.key])))
-        setBillingDate(String(built[0].view.move_out_date).slice(0, 10))
-      } catch (e) { setError(e.message) }
+        if (!reload) {
+          setPrepared(Object.fromEntries(built.map(u => [u.key, u.view.prepared_by || ''])))
+          setSeries(Object.fromEntries(built.map(u => [u.key, u.key])))
+          setBillingDate(String(built[0].view.move_out_date).slice(0, 10))
+        }
+        if (isAdmin) {
+          try {
+            const rows = []
+            for (const u of built) {
+              for (const it of u.items) {
+                if (it.bill.status !== 'FINAL') continue
+                const deps = await fetchTenantDeposits(it.bill.tenant_id)
+                for (const e of receiptRefsNeeded(it.bill.lines, deps)) {
+                  rows.push({ billId: it.bill.id, bed: it.bed, entry: e, status: deps.find(d => d.id === e.deposit_id)?.status })
+                }
+              }
+            }
+            setRefRows(rows); setRefErr('')
+          } catch (e) { setRefErr(e.message); throw e }
+        }
+        if (fixDone.current) { setFixMsg({ ok: true, text: fixDone.current }); fixDone.current = null }
+      } catch (e) {
+        if (fixDone.current) {
+          setFixMsg({ ok: false, text: `The number was saved, but reloading the bill failed (${e.message}). Reload the page before printing.` })
+          fixDone.current = null
+        } else setError(e.message)
+      }
       setLoading(false)
     })()
-  }, [idsKey])
+  }, [idsKey, reload, isAdmin])
+
+  async function saveFix(depositId) {
+    setFixBusy(true); setFixMsg(null)
+    try {
+      const r = await correctReceiptRef(depositId, fixVal)
+      setFixId(null); setFixVal('')
+      fixDone.current = r?.changed === false ? 'The number was already on file; nothing changed.' : 'Receipt number corrected; the bill was updated.'
+      setReload(n => n + 1)
+    } catch (e) { setFixMsg({ ok: false, text: e.message }) }
+    setFixBusy(false)
+  }
 
   if (loading) return <div className="loading-screen"><div className="spinner" /></div>
   if (!units.length) return <div className="page"><p>{error || 'Final bill not found.'} <Link to="/tenants">Back</Link></p></div>
@@ -93,6 +138,36 @@ export default function PrintFinalBill() {
           </div>
         )}
       </div>
+
+      {isAdmin && (refRows.length > 0 || refErr) && (
+        <div className="no-print bg-surface border border-line rounded-xl text-[12px] text-ink space-y-2" style={{ maxWidth: 760, margin: '0 auto 16px', padding: 14 }}>
+          <div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider">Receipt numbers (admin)</div>
+          {refErr && <div className="text-danger-text">Could not load the receipts: {refErr}</div>}
+          {refRows.map(({ billId, bed, entry: e, status }) => {
+            const label = DEPOSIT_REF_LABEL[e.kind]
+            const fixable = !e.locked && (status === 'APPLIED' || status === 'FORFEITED')
+            return (
+              <div key={`${billId}-${e.deposit_id}`} className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-line-subtle pt-2">
+                <span className="font-semibold">Bed {bed}</span>
+                <span className="text-ink-muted">{DEPOSIT_KIND_LABEL[e.kind]} {peso(e.amount)} · receipt #{e.deposit_id} · {status}</span>
+                <span>{label} {String(e.current ?? '').trim() || '—'}{e.locked ? ' (from the reservation payment)' : ''}</span>
+                {fixable && fixId !== e.deposit_id && (
+                  <button type="button" className="btn-xs blue ml-auto" disabled={fixBusy} onClick={() => { setFixId(e.deposit_id); setFixVal(e.current || ''); setFixMsg(null) }}>Fix</button>
+                )}
+                {fixId === e.deposit_id && (
+                  <div className="flex items-center gap-2 w-full sm:w-auto sm:ml-auto">
+                    <input type="text" className="flex-1 sm:flex-none sm:w-40 min-w-0" value={fixVal} autoComplete="off" maxLength={60}
+                      placeholder={`${label} number`} onChange={ev => setFixVal(ev.target.value)} />
+                    <button type="button" className="btn-xs blue" disabled={fixBusy} onClick={() => saveFix(e.deposit_id)}>{fixBusy ? 'Saving…' : 'Save'}</button>
+                    <button type="button" className="btn-xs gray" disabled={fixBusy} onClick={() => setFixId(null)}>Cancel</button>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          {fixMsg && <div className={`whitespace-pre-wrap ${fixMsg.ok ? 'text-success-text' : 'text-danger-text'}`}>{fixMsg.text}</div>}
+        </div>
+      )}
 
       {units.map(u => (
         <FinalBillPages key={u.key} propsFor={copyLabel => statementProps(u, { copyLabel, series: series[u.key], preparedBy: prepared[u.key], billingDate })}

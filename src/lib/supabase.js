@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { notifyAsync } from './notify'
-import { normalizeLines, computeTotals, round2, assertCreditRows, verifyBillAgainstDb, vacatedRecord } from './finalBill'
+import { normalizeLines, computeTotals, round2, assertCreditRows, verifyBillAgainstDb, vacatedRecord, normalizeReceiptRef, missingReceiptRefs, applyReceiptRefs, applyCheckRefs } from './finalBill'
 import { finalCutoffForUtility, newLeaseMoveOutProblem, finalBilledStamps, planReattachment, cutoffDeleteBlocker, readingOnFileFor } from './stay'
 import { parseMoney, moneyProblem, centsToNumber } from './receiptLines'
 import { deriveBedStatuses, activeTenantOnBedMessage, isActiveTenantPerBedViolation } from './bedEligibility'
@@ -333,6 +333,16 @@ export async function fetchAllTenantDeposits() {
     .select('*')
     .order('tenant_id')
     .order('id')
+  if (error) throw error
+  return data
+}
+
+// Every receipt number on file (admin+user can read), for the duplicate S.I#/T.R# warning at move-out.
+export async function fetchReceiptRefIndex() {
+  const { data, error } = await supabase
+    .from('tenant_deposits')
+    .select('id, tenant_id, kind, ref_no, status, tenants(name)')
+    .not('ref_no', 'is', null)
   if (error) throw error
   return data
 }
@@ -886,18 +896,80 @@ export async function verifyAdvanceFresh(tenant, actual, bill) {
   const row = { ...tRes.data, id: tenant.id, room_id: tRes.data.beds?.room_id ?? null }
   const siblingIds = await fetchAdvanceSiblingIds(row, deposits, storedCredits)
   const v = verifyBillAgainstDb({ bill, moveOut: actual, tenant: row, deposits, storedCredits, cutoffs, waived: !!bill.forfeit_waived, siblingIds, payments })
-  return { ...v, cutoffs }
+  return { ...v, cutoffs, deposits }
 }
 
 // Throws { stale: true } BEFORE anything is written when the bill no longer matches the database
 // (advance, covered periods, payments, early termination). Returns the fresh verdict.
-async function assertAdvanceCheck(tenant, actual, bill) {
+async function assertAdvanceCheck(tenant, actual, bill, { refsSaved = false } = {}) {
   const v = await verifyAdvanceFresh(tenant, actual, bill)
   if (!v.ok) {
     const diffs = [...v.errors, ...v.stale]
-    throw Object.assign(new Error(`The bill no longer matches the database (advance, covered periods or payments changed while you were working): ${diffs.join(' ')} Nothing was saved.`), { stale: true, diffs })
+    const tail = refsSaved ? 'Nothing else was saved (the S.I#/T.R# numbers you entered were saved to the receipts).' : 'Nothing was saved.'
+    throw Object.assign(new Error(`The bill no longer matches the database (advance, covered periods or payments changed while you were working): ${diffs.join(' ')} ${tail}`), { stale: true, diffs })
   }
   return v
+}
+
+const isLockedReceiptRef = (d) => d.reservation_payment_id != null && String(d.ref_no ?? '').trim() !== ''
+
+/**
+ * Admin, at move-out: writes the typed S.I#/T.R# numbers (refs = { [deposit_id]: string }) to this tenant's HELD receipts through
+ * updateTenantDeposit (which logs old -> new). Throws on the first receipt that is not this tenant's HELD receipt, on an invalid number
+ * and on a change to a reservation-carried T.R#. Unchanged numbers are skipped. Returns the ids that were written.
+ */
+export async function saveMoveOutReceiptRefs(tenantId, refs, actorId) {
+  const entries = Object.entries(refs || {})
+  if (!entries.length) return []
+  const byId = new Map((await fetchTenantDeposits(tenantId)).map(d => [d.id, d]))
+  const writes = []
+  for (const [key, raw] of entries) {
+    const d = byId.get(Number(key))
+    if (!d) throw new Error(`Receipt #${key} is not this tenant's receipt.`)
+    if (d.status !== 'HELD') throw new Error(`${DEPOSIT_KIND_LABEL[d.kind]} receipt #${d.id} is ${d.status}, not HELD.`)
+    const n = normalizeReceiptRef(d.kind, raw)
+    if (n.error) throw new Error(`${DEPOSIT_REF_LABEL[d.kind]} of receipt #${d.id}: ${n.error}`)
+    if (isLockedReceiptRef(d)) {
+      if (n.value === normalizeReceiptRef(d.kind, d.ref_no).value) continue
+      throw new Error(`The T.R# of receipt #${d.id} came from the reservation payment and cannot be changed.`)
+    }
+    if (n.value === d.ref_no) continue
+    writes.push([d.id, n.value])
+  }
+  const done = []
+  for (const [id, value] of writes) {
+    await updateTenantDeposit(id, { ref_no: value }, actorId)
+    done.push(id)
+  }
+  return done
+}
+
+const REF_RPC_MISSING = 'The database update for correcting receipt numbers has not been applied yet. Apply database/migrations/final_bill_receipt_refs.sql first.'
+
+/**
+ * Admin, after move-out: fixes the S.I#/T.R# of an APPLIED/FORFEITED receipt. The final bill that credits/forfeits it gets the same
+ * number in its line details and Advance check text, in one transaction with the receipt (correct_receipt_ref refuses any other change).
+ */
+export async function correctReceiptRef(depositId, raw) {
+  const { data: d, error } = await supabase.from('tenant_deposits').select('*').eq('id', depositId).single()
+  if (error) throw error
+  const n = normalizeReceiptRef(d.kind, raw)
+  if (n.error) throw new Error(n.error)
+  if (isLockedReceiptRef(d)) throw new Error('This T.R# came from a reservation payment and cannot be changed here.')
+  if (d.status !== 'APPLIED' && d.status !== 'FORFEITED') throw new Error(`This receipt is ${d.status}: edit a HELD receipt from the tenant profile.`)
+  const [bills, deposits] = await Promise.all([fetchFinalBills(d.tenant_id), fetchTenantDeposits(d.tenant_id)])
+  const bill = bills.find(b => b.status === 'FINAL' && (b.lines || []).some(l => (l.kind === 'credit' || l.kind === 'forfeit') && (l.deposit_ids || []).includes(d.id)))
+  const refs = { [d.id]: n.value }
+  const params = { p_deposit_id: d.id, p_ref_no: n.value }
+  if (bill) {
+    const check = bill.details?.advance_check
+    params.p_bill_id = bill.id
+    params.p_lines = applyReceiptRefs(bill.lines, deposits, refs, { only: d.id })
+    params.p_details = { ...(bill.details || {}), advance_check: d.kind === 'ADVANCE' && check ? applyCheckRefs(check, deposits, refs) : check }
+  }
+  const { data, error: rErr } = await supabase.rpc('correct_receipt_ref', params)
+  if (rErr) throw isMissingRpc(rErr) ? new Error(REF_RPC_MISSING) : rErr
+  return data
 }
 
 /**
@@ -909,6 +981,8 @@ async function assertAdvanceCheck(tenant, actual, bill) {
  * opts.groupNames: names of every bed leaving together (put in the move-out reading note). opts.groupTenantIds: their tenant ids.
  * opts.vacated: { confirmed: true, by?, at? } is REQUIRED (the "tenant has vacated the room and access has been returned"
  * tick); it is recorded in the bill's details.vacated and in the Move Out activity note. Without it nothing is written.
+ * opts.receiptRefs: { [deposit_id]: string } S.I#/T.R# numbers, written to the HELD receipts before the advance re-check; every receipt
+ * the bill credits or forfeits (amount > 0) must then have a valid number, and the stored line details are rebuilt from them.
  * The reading of each utility is saved against the cutoff whose OWN window holds the move-out date (or the latest cutoff when the date is
  * after its window; the statement ignores an interim outside its window), derived from fresh
  * cutoffs (never from the payload), once per tenant or sibling group for a room+utility+date+value (a retry never duplicates it; an unrelated
@@ -928,10 +1002,25 @@ export async function processMoveOutWithBill(tenant, moveOutData, bill, actorId,
   if (oErr) throw oErr
   if (open.length) throw new Error(`A final bill (#${open[0].id}) already exists for this tenant; nothing was changed. Void it first if it was issued by mistake.`)
 
+  // Receipt numbers are documentation only: written first so the stored lines and the advance check carry them.
+  let refsSaved = []
+  if (opts.receiptRefs && Object.keys(opts.receiptRefs).length) {
+    try {
+      refsSaved = await saveMoveOutReceiptRefs(tenant.id, opts.receiptRefs, actorId)
+    } catch (e) {
+      throw Object.assign(new Error(`The S.I#/T.R# numbers could not all be saved (${e.message}). Some numbers may already be saved to the receipts; nothing else was changed. Try again.`), { partial: false })
+    }
+  }
+
   // The check stamped on the bill is the one just computed from fresh data, never one carried in `bill.details`.
-  const verdict = await assertAdvanceCheck(tenant, actual, bill)
+  const verdict = await assertAdvanceCheck(tenant, actual, bill, { refsSaved: refsSaved.length > 0 })
+  const missing = missingReceiptRefs(bill.lines, verdict.deposits)
+  if (missing.length) {
+    throw new Error(`Enter the S.I#/T.R# numbers before moving out: ${missing.join(' ')} ${refsSaved.length ? 'Nothing else was changed.' : 'Nothing was changed.'}`)
+  }
+  const lines = applyReceiptRefs(bill.lines, verdict.deposits)
   const saved = await saveFinalBill({
-    ...bill, cutoff_id: verdict.cutoff_id, covered_cutoffs: verdict.covered_cutoffs,
+    ...bill, lines, cutoff_id: verdict.cutoff_id, covered_cutoffs: verdict.covered_cutoffs,
     details: { ...(bill.details || {}), advance_check: verdict.check, vacated }, tenant_id: tenant.id, move_out_date: actual,
   }, actorId)
   const done = [`final bill #${saved.id} saved`]
@@ -1077,7 +1166,7 @@ export async function processMoveOutGroup(items, moveOutData, actorId, opts = {}
       const r = await processMoveOutWithBill(
         it.tenant,
         it.withPayment ? moveOutData : { ...moveOutData, amount_paid: '' },
-        it.bill, actorId, { groupNames, vacated, groupTenantIds: opts.groupTenantIds },
+        it.bill, actorId, { groupNames, vacated, groupTenantIds: opts.groupTenantIds, receiptRefs: it.receiptRefs },
       )
       out.push({ tenantId: it.tenant.id, status: 'ok', billId: r.billId, net_amount: r.net_amount })
     } catch (e) {

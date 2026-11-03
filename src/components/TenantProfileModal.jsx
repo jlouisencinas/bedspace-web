@@ -3,7 +3,7 @@ import {
   fetchPayments, fetchTicketsForTenant, fetchTenantContacts, fetchTenantEmails,
   fetchTenantDocuments, addTenantDocument, deleteTenantDocument, fetchTenantHistory,
   fetchTenantDeposits, addTenantDeposit, updateTenantDeposit, DEPOSIT_KIND_LABEL, DEPOSIT_REF_LABEL,
-  fetchFinalBills, voidFinalBill,
+  fetchFinalBills, voidFinalBill, correctReceiptRef,
   fetchReservationPayments, applyReservationPayments, PAYMENT_MODES, PAYMENT_MODE_LABEL,
 } from '../lib/supabase'
 import { Link } from 'react-router-dom'
@@ -101,6 +101,9 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
   const [depSaving,     setDepSaving]     = useState(false)
   const [resHeld,       setResHeld]       = useState([])
   const [applyBusy,     setApplyBusy]     = useState(false)
+  const [refFixId,      setRefFixId]      = useState(null)
+  const [refFixVal,     setRefFixVal]     = useState('')
+  const [refFixBusy,    setRefFixBusy]    = useState(false)
 
   const [docUploading,   setDocUploading]   = useState(false)
   const [newDocType,     setNewDocType]     = useState('GOVT_ID')
@@ -123,6 +126,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
     setDepEditId(null)
     setDepForm(null)
     setResHeld([])
+    setRefFixId(null)
 
     async function load() {
       const results = await Promise.allSettled([
@@ -254,6 +258,18 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
       show('Final bill voided. Its advance/deposit receipts are HELD again.', 'success')
     } catch(err) { show(err.message, 'error') }
     setBillBusy(false)
+  }
+
+  async function saveRefFix(id) {
+    setRefFixBusy(true)
+    try {
+      const r = await correctReceiptRef(id, refFixVal)
+      const [bills, deps] = await Promise.all([fetchFinalBills(tenant.id), fetchTenantDeposits(tenant.id)])
+      setDetailBills(bills); setDetailDeposits(deps)
+      setRefFixId(null); setRefFixVal('')
+      show(r?.changed === false ? 'The number was already on file; nothing changed.' : 'Receipt number corrected (and the final bill text, if any).', 'success')
+    } catch (err) { show(err.message, 'error') }
+    setRefFixBusy(false)
   }
 
   async function doApplyReservation() {
@@ -706,10 +722,24 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                         </div>
                         {d.notes && <div className="text-[11px] text-ink-muted mt-0.5">{d.notes}</div>}
                         {d.settled_note && <div className="text-[11px] text-ink-muted mt-0.5">Settlement: {d.settled_note}</div>}
+                        {refFixId === d.id && (
+                          <div className="flex items-center gap-2 mt-2">
+                            <input type="text" className="flex-1 sm:flex-none sm:w-44 min-w-0" value={refFixVal} autoComplete="off" maxLength={60}
+                              placeholder={`${DEPOSIT_REF_LABEL[d.kind]} number`} onChange={e => setRefFixVal(e.target.value)} />
+                            <button className="btn-xs blue" disabled={refFixBusy} onClick={() => saveRefFix(d.id)}>{refFixBusy ? 'Saving…' : 'Save'}</button>
+                            <button className="btn-xs" disabled={refFixBusy} onClick={() => setRefFixId(null)}>Cancel</button>
+                          </div>
+                        )}
                       </div>
-                      {isAdmin && depEditId === null && d.status === 'HELD' && (
+                      {isAdmin && depEditId === null && refFixId === null && d.status === 'HELD' && (
                         <button className="btn-xs blue inline-flex items-center gap-1 shrink-0" onClick={() => startEditDeposit(d)}>
                           <Pencil size={10} /> Edit
+                        </button>
+                      )}
+                      {isAdmin && refFixId === null && depEditId === null && (d.status === 'APPLIED' || d.status === 'FORFEITED')
+                        && !(d.reservation_payment_id && String(d.ref_no ?? '').trim()) && (
+                        <button className="btn-xs blue inline-flex items-center gap-1 shrink-0" onClick={() => { setRefFixId(d.id); setRefFixVal(d.ref_no || '') }}>
+                          <Pencil size={10} /> Fix {DEPOSIT_REF_LABEL[d.kind]}
                         </button>
                       )}
                     </div>
@@ -775,7 +805,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                 )}
               </div>
 
-              {isAdmin && !depLoadError && depEditId === null && (
+              {isAdmin && !depLoadError && depEditId === null && refFixId === null && (
                 <div className="mt-3">
                   <button className="btn-xs blue" onClick={startAddDeposit}>+ Add receipt</button>
                 </div>

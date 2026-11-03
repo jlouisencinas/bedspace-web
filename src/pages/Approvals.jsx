@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { fetchApprovals, approveRequest, rejectRequest } from '../lib/approvals'
-import { supabase, processTransfer, logTenantMoveOutDateChange, deleteInterimReading, processMoveOutWithBill, fetchTenantDeposits, fetchCutoffs, fetchStoredAdvanceCredits, fetchAdvanceSiblingIds, verifyMoveOutApplied, fetchPayments, moveOutGroupNames } from '../lib/supabase'
-import { reconcileBill, toCents, mergeRecomputedLines, computeTotals, normalizeLines, appliedByRequest, bedRequestState, earlierLeavers, earlierLeaverWarning, figuresChangedMessage } from '../lib/finalBill'
+import { supabase, processTransfer, logTenantMoveOutDateChange, deleteInterimReading, processMoveOutWithBill, fetchTenantDeposits, fetchCutoffs, fetchStoredAdvanceCredits, fetchAdvanceSiblingIds, verifyMoveOutApplied, fetchPayments, moveOutGroupNames, fetchReceiptRefIndex, DEPOSIT_REF_LABEL } from '../lib/supabase'
+import { reconcileBill, toCents, mergeRecomputedLines, computeTotals, normalizeLines, appliedByRequest, bedRequestState, earlierLeavers, earlierLeaverWarning, figuresChangedMessage, normalizeReceiptRef, receiptRefsNeeded, missingReceiptRefs } from '../lib/finalBill'
+import ReceiptRefInputs from '../components/ReceiptRefInputs'
 import { buildRequestFreshDrafts } from '../lib/moveOutData'
 import { parseCovered } from '../lib/stay'
 import { applyTenantProfileChange, PROFILE_FIELD_LABELS } from '../lib/tenantProfile'
@@ -287,7 +288,7 @@ function ProfileChangeDetail({ request }) {
 
 // ── One bed's final bill inside the review modal ─────────────────────────────
 
-function MoveOutBillBlock({ b, multi, rec, ctx, waived, onWaive, waiveReason, onReason }) {
+function MoveOutBillBlock({ b, multi, rec, ctx, waived, onWaive, waiveReason, onReason, refs, refEdits, onRef, refFlow, refIndex, disabled }) {
   if (rec?.appliedBy) {
     return (
       <div className="bg-success-bg border border-success-border rounded-xl p-3 text-[12px] text-success-text">
@@ -357,6 +358,14 @@ function MoveOutBillBlock({ b, multi, rec, ctx, waived, onWaive, waiveReason, on
           ))}
         </tbody>
       </table>
+      {refs && (refs.entries.length > 0 || refs.ignored.length > 0) && (
+        <div className="border border-line-subtle rounded-lg px-3 py-2 space-y-2">
+          <div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider">Receipt numbers (S.I# / T.R#)</div>
+          {refs.ignored.map((x, i) => <div key={i} className="text-warning-text">{x}</div>)}
+          <ReceiptRefInputs entries={refs.entries} refs={refEdits} onChange={onRef} tenantId={b.id} flow={refFlow} index={refIndex} hints={refs.hints} disabled={disabled} />
+          {refs.missing.length > 0 && <div className="text-danger-text">Approve stays disabled until every required number is entered.</div>}
+        </div>
+      )}
       {totals && (
         <div className={`text-right font-bold ${totals.net_amount < 0 ? 'text-success-text' : 'text-ink'}`}>
           {totals.net_amount < 0 ? `Amount to be returned ${pesoText(-totals.net_amount)}` : `Total amount due ${pesoText(totals.net_amount)}`}
@@ -423,6 +432,8 @@ function DecideModal({ request, onClose, onDone }) {
   const [vacated, setVacated] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [ctx, setCtx] = useState(null)
+  const [refEdits, setRefEdits] = useState({})
+  const [refIndex, setRefIndex] = useState([])
   const bedLabel = (b) => `Bed ${b.bed || '?'}${b.name ? ` (${b.name})` : ''}`
 
   async function loadMoveOutCtx() {
@@ -457,14 +468,20 @@ function DecideModal({ request, onClose, onDone }) {
     return { cutoffs, stored, beds, fresh, freshError, roomTenants }
   }
   const moveOutDay = (nvReq.actual_move_out_date || nvReq.move_out_date || '').slice(0, 10)
-  const reconcile = (c, id, w) => {
+  const typedRef = (d, edits) => {
+    if (!Object.prototype.hasOwnProperty.call(edits || {}, d.id) || (d.reservation_payment_id != null && String(d.ref_no ?? '').trim())) return null
+    return normalizeReceiptRef(d.kind, edits[d.id]).value
+  }
+  // The receipt numbers the admin sees/typed, laid over the DB receipts: only ref_no (text) changes, so no figure can move.
+  const withTypedRefs = (deposits, edits) => (deposits || []).map(d => { const v = typedRef(d, edits); return v ? { ...d, ref_no: v } : d })
+  const reconcile = (c, id, w, edits = refEdits) => {
     const rb = reqBeds.find(b => b.id === id)
     const bc = c.beds[id]
     const state = bedRequestState({ tenantActive: bc.tenant.is_active, applied: bc.applied, requestId: request.id })
     // Already out through THIS request (resume after a partial failure): its receipts are settled, so nothing is reconciled or shown as errors.
     if (state === 'APPLIED_HERE') return { appliedBy: true, billId: bc.applied.billId, errors: [], diffs: [], warnings: [], lines: [], totals: null, ignored: [], covered_cutoffs: [] }
     const r = reconcileBill({
-      bill: rb.bill, moveOut: moveOutDay, tenant: bc.tenant, deposits: bc.deposits,
+      bill: rb.bill, moveOut: moveOutDay, tenant: bc.tenant, deposits: withTypedRefs(bc.deposits, edits),
       cutoffs: c.cutoffs, storedCredits: c.stored, siblingIds: bc.siblingIds, payments: bc.payments, waived: w,
     })
     r.warnings = r.warnings || []
@@ -487,7 +504,24 @@ function DecideModal({ request, onClose, onDone }) {
 
   useEffect(() => {
     if (!moveOutBill) return
-    loadMoveOutCtx().then(setCtx).catch(e => setError(`Could not load the tenant's current data: ${e.message}`))
+    loadMoveOutCtx().then(c => {
+      // Seed the receipt numbers: the request's value when it has one, else the one on file (old requests: often empty).
+      const seed = {}
+      for (const b of reqBeds) {
+        const r = reconcile(c, b.id, false, {})
+        if (r.appliedBy) continue
+        for (const e of receiptRefsNeeded(r.lines, c.beds[b.id].deposits)) {
+          if (e.locked) continue
+          const req = b.bill.receipt_refs
+          if (req && Object.prototype.hasOwnProperty.call(req, e.deposit_id)) { seed[e.deposit_id] = String(req[e.deposit_id] ?? ''); continue }
+          const n = normalizeReceiptRef(e.kind, e.current)
+          seed[e.deposit_id] = n.error ? (e.current || '') : n.value
+        }
+      }
+      setRefEdits(seed)
+      setCtx(c)
+    }).catch(e => setError(`Could not load the tenant's current data: ${e.message}`))
+    fetchReceiptRefIndex().then(setRefIndex).catch(e => console.warn('duplicate receipt number check skipped:', e.message))
   }, [])
 
   // What will actually be applied per bed: credit/forfeit/payment lines, covered periods and early termination are recomputed from the DB.
@@ -496,7 +530,43 @@ function DecideModal({ request, onClose, onDone }) {
     const o = {}
     for (const b of reqBeds) o[b.id] = reconcile(ctx, b.id, !!waivedMap[b.id])
     return o
-  }, [ctx, waivedMap])
+  }, [ctx, waivedMap, refEdits])
+
+  // Receipt numbers per bed still to apply: inputs, missing numbers (block Approve), hints and ignored request keys.
+  const refView = useMemo(() => {
+    if (!ctx || !recs) return null
+    const out = {}
+    const flow = new Map()
+    for (const b of reqBeds) {
+      const rec = recs[b.id]
+      if (!rec || rec.appliedBy) continue
+      const deps = ctx.beds[b.id].deposits
+      const entries = receiptRefsNeeded(rec.lines, deps)
+      for (const e of entries) flow.set(e.deposit_id, { tenantId: b.id, bed: b.bed, kind: e.kind, current: e.current })
+      const req = b.bill.receipt_refs || {}
+      const hints = {}
+      for (const e of entries) {
+        if (!Object.prototype.hasOwnProperty.call(req, e.deposit_id) || !String(e.current ?? '').trim()) continue
+        const a = normalizeReceiptRef(e.kind, req[e.deposit_id]).value, db = normalizeReceiptRef(e.kind, e.current).value
+        if (a !== db) hints[e.deposit_id] = `On file now: ${DEPOSIT_REF_LABEL[e.kind]} ${e.current}. The request has ${req[e.deposit_id] || 'no number'}.`
+      }
+      const ignored = Object.keys(req).filter(k => !entries.some(e => String(e.deposit_id) === k))
+        .map(k => `The request's number for receipt #${k} (${req[k] || 'empty'}) is ignored: that receipt is no longer one of this tenant's HELD receipts on the bill.`)
+      out[b.id] = { entries, hints, ignored, missing: missingReceiptRefs(rec.lines, deps, refEdits) }
+    }
+    return { beds: out, flow }
+  }, [ctx, recs, refEdits])
+  const refsMissing = !!refView && Object.values(refView.beds).some(v => v.missing.length > 0)
+  // The normalized numbers to write for one bed (locked reservation T.R# and invalid values are left out).
+  const receiptRefsFor = (lines, deposits) => {
+    const out = {}
+    for (const e of receiptRefsNeeded(lines, deposits)) {
+      if (e.locked || !Object.prototype.hasOwnProperty.call(refEdits, e.deposit_id)) continue
+      const n = normalizeReceiptRef(e.kind, refEdits[e.deposit_id])
+      if (!n.error) out[e.deposit_id] = n.value
+    }
+    return out
+  }
   // Beds already applied by this request are not part of the will-apply total.
   const combinedCents = reqBeds.reduce((sum, b) => (recs?.[b.id]?.appliedBy ? sum : sum + toCents(recs ? recs[b.id].totals.net_amount : b.bill.net_amount)), 0)
 
@@ -597,7 +667,9 @@ function DecideModal({ request, onClose, onDone }) {
       const r = reconcile(c, b.id, !!waivedMap[b.id])
       if (r.errors.length) throw new Error(`The request cannot be applied (${bedLabel(b)}): ${r.errors.join(' ')}`)
       if (r.forfeit_waived && !(waiveReasons[b.id] || '').trim()) throw new Error(`Enter the reason management approved waiving the forfeiture (${bedLabel(b)}).`)
-      plan.push({ b, r, applied: false })
+      const missing = missingReceiptRefs(r.lines, c.beds[b.id].deposits, refEdits)
+      if (missing.length) throw new Error(`Enter the S.I#/T.R# numbers (${bedLabel(b)}): ${missing.join(' ')} Nothing was changed.`)
+      plan.push({ b, r, applied: false, receiptRefs: receiptRefsFor(r.lines, c.beds[b.id].deposits) })
     }
     // The figures the admin saw in the review must still be the ones that would be applied: otherwise stop BEFORE writing anything.
     for (const p of plan) {
@@ -627,7 +699,7 @@ function DecideModal({ request, onClose, onDone }) {
             early_termination: r.early_termination, forfeit_waived: r.forfeit_waived,
             waived_reason: r.forfeit_waived ? waiveReasons[b.id].trim() : null,
           },
-          user?.id, { groupNames, vacated: vacatedRec, groupTenantIds: reqBeds.map(x => x.id) },
+          user?.id, { groupNames, vacated: vacatedRec, groupTenantIds: reqBeds.map(x => x.id), receiptRefs: p.receiptRefs },
         )
         done.push(bedLabel(b))
       } catch (e) { failed.push({ b, e }) }
@@ -829,7 +901,9 @@ function DecideModal({ request, onClose, onDone }) {
               {reqBeds.map(b => (
                 <MoveOutBillBlock key={b.id} b={b} multi={reqBeds.length > 1} rec={recs?.[b.id]} ctx={ctx}
                   waived={!!waivedMap[b.id]} onWaive={v => setWaivedMap(m => ({ ...m, [b.id]: v }))}
-                  waiveReason={waiveReasons[b.id] || ''} onReason={v => setWaiveReasons(m => ({ ...m, [b.id]: v }))} />
+                  waiveReason={waiveReasons[b.id] || ''} onReason={v => setWaiveReasons(m => ({ ...m, [b.id]: v }))}
+                  refs={refView?.beds[b.id] || null} refEdits={refEdits} onRef={(id, v) => setRefEdits(m => ({ ...m, [id]: v }))}
+                  refFlow={refView?.flow} refIndex={refIndex} disabled={busy} />
               ))}
               {reqBeds.length > 1 && (
                 <div className={`text-right font-bold text-[13px] ${combinedCents < 0 ? 'text-success-text' : 'text-ink'}`}>
@@ -878,7 +952,7 @@ function DecideModal({ request, onClose, onDone }) {
           {partialApplied && (
             <button className="btn secondary" onClick={markApplied} disabled={busy}>Mark approved (already applied)</button>
           )}
-          <button className="btn primary" onClick={() => decide('APPROVED')} disabled={busy || partialApplied || (!!moveOutBill && (!vacated || !recs || Object.values(recs).some(r => r.errors.length > 0)))}>
+          <button className="btn primary" onClick={() => decide('APPROVED')} disabled={busy || partialApplied || (!!moveOutBill && (!vacated || !recs || refsMissing || Object.values(recs).some(r => r.errors.length > 0)))}>
             <CheckCircle size={14} />
             {busy && decision === 'APPROVED' ? 'Approving…' : 'Approve'}
           </button>

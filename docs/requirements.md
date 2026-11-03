@@ -266,7 +266,7 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
     - **Deposit** is documented by a **Temporary Receipt (T.R#)**; a tenant may have several
       (e.g. "TR# 121 & TR# 133").
     - S.I#/T.R# are **free text captured by staff at move-in** — no formula, no auto-generation, may
-      be left blank and filled in later.
+      be left blank and filled in later (at the latest at move-out: see "Receipt numbers on the final bill").
   - **Phase 1 — DONE (record-keeping only).** Table `tenant_deposits` (one row per receipt: `kind`
     ADVANCE/DEPOSIT, `amount`, `ref_no`, `received_date`, `status` HELD/APPLIED/FORFEITED/REFUNDED,
     `settled_note`, `notes`); migration `database/migrations/advance_deposit.sql` (DDL + a separate,
@@ -397,6 +397,31 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       bill in Approvals (and, for an early termination, can tick the waiver there), and approving executes the
       move-out + bill in the admin session (applied before the request is marked approved, so a failed apply
       leaves it pending).
+    - **Receipt numbers on the final bill.** Every advance/deposit receipt the final bill credits or forfeits
+      (amount > 0) needs its real number: one **S.I#** input per ADVANCE receipt and one **T.R#** per DEPOSIT receipt
+      under the matching credit/forfeit line in the Move Out bill editor (every bed of a sibling group), prefilled from
+      `tenant_deposits.ref_no`. Staff type the bare number; the field's own prefix (`S.I#`, `SI`, `S.I. No.`, `T.R#`,
+      `TR`, ...) and a leading `#` are stripped (`normalizeReceiptRef` in `finalBill.js`); the other kind's prefix,
+      an empty / prefix-only value, more than 30 characters, no digit, `·` or control characters are refused. The
+      Details column, Advance check and Preview show the prefixed number as typed. A number already on ANOTHER
+      tenant's receipt of the same kind is an amber warning only; the same tenant's split BANK+CASH rows may share
+      one S.I#, and a sibling bed in the same flow gets a soft "fine if one invoice covers both beds" note. A
+      reservation-carried deposit that already has its T.R# is read-only (empty: editable and required); a 0.00
+      receipt needs no number. Numbers are text only: no amount, total, advance-check figure or reconcile diff
+      depends on them. **Admin Confirm** writes the numbers to the HELD receipts (`updateTenantDeposit`, logged
+      'Advance/Deposit Updated' old -> new) inside `processMoveOutWithBill` BEFORE the advance re-check and the bill
+      insert, so the stored line details and `details.advance_check` (text, `receipts[].ref`) carry them; a failed
+      number write changes nothing else and offers "Retry failed bed(s)". **Staff** submit the numbers in the request
+      (`_bill.receipt_refs`, also per sibling); nothing is written until approval. **Approvals** shows them as
+      editable inputs (seeded from the request, else from the receipt; an "on file now" hint when the receipt's
+      number differs); Approve stays disabled until every required number is valid, and the apply re-checks before
+      writing anything. **After move-out** an admin fixes a number of an APPLIED/FORFEITED receipt from
+      `/print/final-bill` ("Receipt numbers" panel) or the tenant profile ("Fix S.I#"/"Fix T.R#") through the
+      admin-only RPC `correct_receipt_ref` (`database/migrations/final_bill_receipt_refs.sql`, also in `init.sql`):
+      one transaction updates the receipt, the FINAL bill's line details and Advance check text, appends
+      `details.ref_corrections` {old, new, by, at} and logs 'Receipt Number Corrected'; it refuses any other change to
+      the bill and a reservation-carried T.R#. Out of scope: the `advance_credits.ref_text` snapshot on an earlier
+      second-to-last statement is not updated by a correction.
     - **Early termination** = actual move-out earlier than the tenant's planned `move_out_date` as stored when
       the modal opened. Default: advance and deposit forfeited (`forfeit` lines at 0.00 with the original amounts
       shown). The "Management approved, do not forfeit" waiver is admin-only and needs a typed reason.
