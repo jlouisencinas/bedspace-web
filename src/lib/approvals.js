@@ -80,6 +80,17 @@ export async function requestApproval({ entityType, entityId, fieldName, oldValu
   return data
 }
 
+/** Pending move-out requests (one query); filter them with finalBill.pendingMoveOutFor(). */
+export async function fetchPendingMoveOutRequests() {
+  const { data, error } = await supabase
+    .from('approval_requests')
+    .select('id, entity_id, field_name, new_value, status, created_at, requester_email')
+    .eq('status', 'PENDING')
+    .eq('field_name', 'move_out')
+  if (error) throw error
+  return data || []
+}
+
 /**
  * Fetch approval requests.
  * requester_email is stored at insert time — no cross-user profile lookup needed.

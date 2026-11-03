@@ -3,7 +3,7 @@
  * --------------
  * Utility profit/loss per cutoff.
  *
- *   Provider cost     = master-line bill (Maynilad / MERALCO)
+ *   Provider cost     = master-line bill (Manila Water / MERALCO)
  *   Standard rate     = bill ÷ consumption
  *   Bedspace rate     = standard × (1 + markup%)   (or manual override)
  *   Room collections  = Σ billed room amounts (Method B) — ties to room billing

@@ -52,6 +52,17 @@ npm run preview
 - `src/lib/finalBill.js` — pure move-out Final Bill builder + automatic second-to-last-bill advance credit
   (`billPosition`, `advanceCredits`); `final_bills` table (`database/migrations/final_bills.sql`), flow in
   `MoveOutModal` → `processMoveOutWithBill`, print page `PrintFinalBill` (`/print/final-bill`); requirements §5.
+  The advance can never be credited twice: `advanceCheck`/`verifyBillAgainstDb` re-check it from fresh DB data
+  at draft, Confirm and approval apply (stamped in `details.advance_check`), backed by triggers G1-G3 in
+  `database/migrations/advance_credit_guards.sql` (run its audit queries first; also in `init.sql`).
+- `src/lib/stay.js` (stay kind: one-month / whole-months / odd; per-utility cutoff coverage), `src/lib/utilityPieces.js`
+  (stay-anchored utility split, integer-cent allocation, rate fallback) and `src/lib/moveOutData.js` (data loader shared by
+  `MoveOutModal` and `Approvals`) back the final bill; `database/migrations/final_bill_covered_cutoffs.sql` adds
+  `final_bills.covered_cutoffs` (apply it before the frontend). One-month stays are billed ONLY on the final bill (flat rent; ghost
+  participants in `computeBilling`, shown as "billed on final bill"); sibling beds (same name, room, planned date) move out together
+  through one flow and one approval request and print as ONE summed statement (`combineBillsForPrint`, display only; one `final_bills` row per bed stays). A move-out after the latest cutoff's window bills against that cutoff, no next cutoff needed (`finalCutoffForUtility`) (one pending move-out request per tenant; at review and apply the rent/water/electricity lines are recomputed from the DB, edited lines kept, `details.recomputed_at_approval`) (admin confirms with the "vacated the room" tick, recorded in `details.vacated`; utility pieces are shared only by active tenants, the leavers and ghosts, never stale inactive rows; final-bill print numbering is `FINAL-<room>-<series>`) (a month-end planned date is never stay-billed; the final bill's
+  `covered_cutoffs` entries are plain ids or `{id, water, electric}`, and payments are netted per component; OTHER or uncategorised payments on any covered cutoff). New tenants' planned move-out is always a month end (Move In picks the lease length;
+  `leaseMoveOut`/`stayRent` in `stay.js`: n whole months flat + excess days / the month's real days, requirements §5).
 - `database/UTILITIES_PLAN.md` — design notes for the utilities billing model.
 - `scripts/` — one-time Node migration scripts from the old Google Sheets.
 
@@ -131,7 +142,7 @@ row, emails subscribed recipients via the Apps Script mailer.
   considered and rejected in favor of this embedded mechanism. Snapshot timing never affects any
   live Dashboard number (those read live `beds`/`tenants` directly) — only the historical
   "Occupancy Rate YTD" chart depends on `monthly_reports` having been snapshotted.
-- **Dashboard KPI drill-downs** (`docs/requirements.md` §10): all 9 Dashboard KPI tiles open a
+- **Dashboard KPI drill-downs** (`docs/requirements.md` §10): all 8 Dashboard KPI tiles (plus the Occupancy card's "Month detail" link) open a
   shared `src/components/DrillDownModal.jsx` (table shape with search/row-cap/footer-link, or list
   shape reusing `.upcoming-item`), built from data already in `Dashboard.jsx`'s memory — no new
   fetches. Row clicks pass `location.state.{openTenantId}` to `/tenants` (auto-opens

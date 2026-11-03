@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { AlertTriangle, Clock, SearchX, UserPen } from 'lucide-react'
 import { fetchTenants, fetchTenantContacts, fetchTenantEmails } from '../lib/supabase'
+import { snapToMonthEnd } from '../lib/stay'
 import SearchInput from '../components/SearchInput'
 import { requestApproval, fetchPendingForEntity } from '../lib/approvals'
 import {
@@ -423,7 +424,13 @@ export default function EditTenantProfile() {
                 <div className="form-section">Lease Dates</div>
                 <div className="fg full">
                   <label>Planned Move-out Date</label>
-                  <input type="date" value={form.move_out_date} onChange={e => set('move_out_date', e.target.value)} />
+                  <input type="date" value={form.move_out_date}
+                    onChange={e => {
+                      const v = e.target.value
+                      const orig = baseline?.tenant?.move_out_date?.slice(0, 10) || ''
+                      set('move_out_date', v && v !== orig ? snapToMonthEnd(v) : v)
+                    }} />
+                  <span className="block text-[11px] text-ink-faint mt-1">A changed date always snaps to the last day of the month you pick{form.move_out_date ? ' (now ' + form.move_out_date + ')' : ''}.</span>
                 </div>
 
                 {/* ── Work & Employer ── */}

@@ -100,17 +100,21 @@ function buildIntervals(
 
     // A mid-period transfer attributes pre-transfer days to the tenant's
     // previous bed/room, not their current one — [start,end) is split into two
-    // contiguous, non-overlapping segments so bedDaySum/tenantDaySum (and thus
-    // occupiedBedsAvg/occupancyPct) are unaffected; only the per-row room/bed
-    // breakdown gains detail. Only one hop back is reconstructed (previous_bed_id
-    // is a single column, not a full transfer history) — a tenant who
-    // transferred twice within the same period still shows their earliest days
-    // attributed to the wrong (2nd) bed.
+    // contiguous, non-overlapping segments. Only one hop back is reconstructed
+    // (previous_bed_id is a single column, not a full transfer history) — a tenant
+    // who transferred twice within the same period still shows their earliest days
+    // attributed to the wrong (2nd) bed, which can undercount by merging with that
+    // bed's real occupant for those days.
     const transferDay = (t.previous_bed_id != null && t.previous_bed_id !== t.bed_id)
       ? dayNum(t.transfer_date) : null
     if (transferDay != null && transferDay > start && transferDay < end) {
       pushInterval(start, transferDay, t.previous_bed_id as number | string)
       pushInterval(transferDay, end, t.bed_id)
+    } else if (transferDay != null && transferDay >= end) {
+      // The transfer happened after this period: all of it was on the previous bed. Beds are counted
+      // distinct per day, so putting these days on the current bed would merge them with whoever was
+      // really there and lose an occupied bed.
+      pushInterval(start, end, t.previous_bed_id as number | string)
     } else {
       pushInterval(start, end, t.bed_id)
     }
@@ -157,17 +161,19 @@ export function computeOccupancySnapshot(
 
   let bedDaySum = 0, tenantDaySum = 0, roomDaySum = 0
   for (let d = periodStart as number; d < (periodEndExcl as number); d++) {
-    let bedsToday = 0
+    // A bed is occupied at most once a day: two records on one bed (same-day turnover, duplicate rows)
+    // must not count it twice.
+    const bedIdsToday = new Set<number | string>()
     const tenantKeysToday = new Set<string>()
     const roomsToday = new Set<number | string>()
     for (const iv of intervals) {
       if (d >= iv.start && d < iv.end) {
-        bedsToday++
+        bedIdsToday.add(iv.bedId)
         tenantKeysToday.add(iv.tenantKey)
         if (iv.roomId != null) roomsToday.add(iv.roomId)
       }
     }
-    bedDaySum += bedsToday
+    bedDaySum += bedIdsToday.size
     tenantDaySum += tenantKeysToday.size
     roomDaySum += roomsToday.size
   }
@@ -254,17 +260,19 @@ export function computeDailyOccupancy(
   const days: DailyOccupancyRow[] = []
   let bedSum = 0, tenantSum = 0, roomSum = 0, revenueSum = 0
   for (let d = periodStart as number; d < (periodEndExcl as number); d++) {
-    let bedsToday = 0, revenueToday = 0
+    let revenueToday = 0
+    const bedIdsToday = new Set<number | string>()   // a bed counts once a day, however many records cover it
     const tenantKeysToday = new Set<string>()
     const roomsToday = new Set<number | string>()
     for (const iv of intervals) {
       if (d >= iv.start && d < iv.end) {
-        bedsToday++
+        bedIdsToday.add(iv.bedId)
         revenueToday += iv.rate
         tenantKeysToday.add(iv.tenantKey)
         if (iv.roomId != null) roomsToday.add(iv.roomId)
       }
     }
+    const bedsToday = bedIdsToday.size
     days.push({
       date: isoFromDayNum(d), beds: bedsToday, tenants: tenantKeysToday.size,
       rooms: roomsToday.size, revenue: revenueToday, occupancyPct: pct(bedsToday),

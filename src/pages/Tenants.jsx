@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
-  fetchBeds, fetchTenants, addTenant, processMoveOutWithBill, addTenantDocument,
+  fetchBeds, fetchTenants, addTenant, processMoveOutGroup, addTenantDocument,
   fetchReservationPayments, fetchAllReservationPayments, recordMoveInReceipts, assertMoveInReceiptsAvailable,
   supabase,
 } from '../lib/supabase'
@@ -268,11 +268,11 @@ export default function Tenants() {
   // Errors propagate to the modal, which shows them in full (they say exactly which steps ran).
   // The list reloads when the modal closes: reloading now would unmount the modal's result screen.
   const moveOutAttempted = useRef(false)
-  async function handleMoveOut({ moveOut, bill }) {
+  async function handleMoveOut({ moveOut, items, vacated, groupTenantIds }) {
     moveOutAttempted.current = true
-    return processMoveOutWithBill(
-      { ...moveOutT, _room_no: moveOutT.room_no, _bed_letter: moveOutT.bed_letter },
-      moveOut, bill, user?.id,
+    return processMoveOutGroup(
+      items.map(i => ({ ...i, tenant: { ...i.tenant, _room_no: i.tenant.room_no, _bed_letter: i.tenant.bed_letter } })),
+      moveOut, user?.id, { vacated: { ...vacated, by: user?.email || user?.id }, groupTenantIds },
     )
   }
   function closeMoveOut() {
@@ -408,7 +408,8 @@ export default function Tenants() {
       )}
       {moveOutT && (
         <MoveOutModal
-          bed={{ ...moveOutT, tenant_name: moveOutT.name, move_out_date: moveOutT.move_out_date }}
+          bed={moveOutT}
+          tenants={enriched}
           onClose={closeMoveOut}
           onSubmit={handleMoveOut}
         />

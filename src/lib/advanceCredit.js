@@ -7,18 +7,19 @@
  */
 import {
   fetchUtilityBill, fetchInterimReadings, fetchSplits, fetchAddons, fetchAreaReadings, fetchTenants,
-  fetchAllTenantDeposits, fetchStoredAdvanceCredits, saveAdvanceCredits,
+  fetchAllTenantDeposits, fetchStoredAdvanceCredits, fetchFinalBillsLite, fetchTransfersForCutoff, saveAdvanceCredits,
 } from './supabase'
 import { computeBilling } from './billing'
 import { creditsToStore } from './finalBill'
 
 export async function recordAdvanceCredits(cutoff, actorId = null) {
   if (!cutoff) return []
-  const [bill, interims, splits, addons, areas, tenants, deposits, stored] = await Promise.all([
+  const [bill, interims, splits, addons, areas, tenants, deposits, stored, finalBills, transfers] = await Promise.all([
     fetchUtilityBill(cutoff.id), fetchInterimReadings(cutoff.id), fetchSplits(cutoff.id), fetchAddons(cutoff.id),
     fetchAreaReadings(cutoff.id), fetchTenants(), fetchAllTenantDeposits(), fetchStoredAdvanceCredits(),
+    fetchFinalBillsLite(), fetchTransfersForCutoff(cutoff),
   ])
   if (!bill.length) return []
-  const { perTenant } = computeBilling(cutoff, bill, interims, tenants, splits, addons, areas)
-  return saveAdvanceCredits(creditsToStore({ tenants, cutoff, perTenant, deposits, stored }), actorId)
+  const { perTenant } = computeBilling(cutoff, bill, interims, tenants, splits, addons, areas, transfers)
+  return saveAdvanceCredits(creditsToStore({ tenants, cutoff, perTenant, deposits, stored, finalBills }), actorId)
 }

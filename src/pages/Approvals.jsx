@@ -1,12 +1,17 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { fetchApprovals, approveRequest, rejectRequest } from '../lib/approvals'
-import { supabase, processTransfer, logTenantMoveOutDateChange, deleteInterimReading, processMoveOutWithBill, fetchTenantDeposits, fetchCutoffs, fetchStoredAdvanceCredits, verifyMoveOutApplied } from '../lib/supabase'
-import { reconcileBill } from '../lib/finalBill'
+import { supabase, processTransfer, logTenantMoveOutDateChange, deleteInterimReading, processMoveOutWithBill, fetchTenantDeposits, fetchCutoffs, fetchStoredAdvanceCredits, fetchAdvanceSiblingIds, verifyMoveOutApplied, fetchPayments, moveOutGroupNames } from '../lib/supabase'
+import { reconcileBill, toCents, mergeRecomputedLines, computeTotals, normalizeLines, appliedByRequest, bedRequestState, earlierLeavers, earlierLeaverWarning, figuresChangedMessage } from '../lib/finalBill'
+import { buildRequestFreshDrafts } from '../lib/moveOutData'
+import { parseCovered } from '../lib/stay'
 import { applyTenantProfileChange, PROFILE_FIELD_LABELS } from '../lib/tenantProfile'
 import { notifyAsync } from '../lib/notify'
 import { FIELD_LABELS } from '../../supabase/functions/_shared/approval-labels.ts'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
+import AdvanceCheckBox from '../components/AdvanceCheckBox'
+import CombinedBillSummary from '../components/CombinedBillSummary'
+import FinalBillPreview from '../components/FinalBillPreview'
 import { CheckCircle, XCircle, Clock, X, ClipboardList } from 'lucide-react'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -35,7 +40,10 @@ function requesterLabel(r) {
 function entityDesc(r) {
   const nv = r.new_value || {}
   const name = nv._tenant_name, room = nv._room_no, bed = nv._bed_letter
-  if (name) return [name, room && `Room ${room}`, bed && `Bed ${bed}`].filter(Boolean).join(' · ')
+  if (name) {
+    const beds = [bed, ...(nv._siblings || []).map(x => x._bed_letter)].filter(Boolean)
+    return [name, room && `Room ${room}`, beds.length && `Bed ${beds.join(' & ')}`].filter(Boolean).join(' · ')
+  }
   const typeLabel = { TENANT: 'Tenant', TENANT_STAY: 'Tenant', BED: 'Bed', ROOM: 'Room', PAYMENT: 'Payment', ADDON: 'Add-on', INTERIM_READING: 'Meter Reading' }
   return `${typeLabel[r.entity_type] || r.entity_type} #${r.entity_id}`
 }
@@ -66,6 +74,10 @@ async function fetchTenantForApply(entityId) {
   return { ...data, room_no: data.beds?.rooms?.room_no ?? null, bed_letter: data.beds?.bed_letter ?? null }
 }
 
+function moveOutNetCents(nv) {
+  return [nv._bill, ...(nv._siblings || []).map(x => x._bill)].filter(Boolean).reduce((sum, b) => sum + toCents(b.net_amount), 0)
+}
+
 function proposedLabel(r) {
   const nv = r.new_value || {}
   if (r.field_name === 'tenant_profile') return profileSummary(nv)
@@ -76,10 +88,11 @@ function proposedLabel(r) {
       nv.amount_paid          && `Amount: ₱${Number(nv.amount_paid).toLocaleString('en-PH')}`,
       nv.water_reading        && `Water: ${nv.water_reading}`,
       nv.electric_reading     && `Electric: ${nv.electric_reading}`,
-      nv._bill && (Number(nv._bill.net_amount) < 0
-        ? `Refund due ${pesoText(-nv._bill.net_amount)}`
-        : `Bill due ${pesoText(nv._bill.net_amount)}`),
-      nv._bill?.early_termination && 'Early termination',
+      nv._siblings?.length && `${nv._siblings.length + 1} beds`,
+      nv._bill && (moveOutNetCents(nv) < 0
+        ? `${nv._siblings?.length ? 'Combined refund' : 'Refund'} due ${pesoText(-moveOutNetCents(nv) / 100)}`
+        : `${nv._siblings?.length ? 'Combined bill' : 'Bill'} due ${pesoText(moveOutNetCents(nv) / 100)}`),
+      (nv._bill?.early_termination || (nv._siblings || []).some(x => x._bill?.early_termination)) && 'Early termination',
     ].filter(Boolean).join(' · ') || '—'
   }
   if (r.field_name === 'tenant_details') {
@@ -261,6 +274,87 @@ function ProfileChangeDetail({ request }) {
   )
 }
 
+// ── One bed's final bill inside the review modal ─────────────────────────────
+
+function MoveOutBillBlock({ b, multi, rec, ctx, waived, onWaive, waiveReason, onReason }) {
+  if (rec?.appliedBy) {
+    return (
+      <div className="bg-success-bg border border-success-border rounded-xl p-3 text-[12px] text-success-text">
+        <span className="font-semibold">{multi ? `Bed ${b.bed}${b.name ? ` (${b.name})` : ''}: ` : ''}already applied by this request (final bill #{rec.billId}).</span> Nothing more is done for this bed.
+      </div>
+    )
+  }
+  const lines = rec ? rec.lines : (b.bill.lines || [])
+  const totals = rec ? rec.totals : null
+  const earlyNow = rec ? rec.early_termination : !!b.bill.early_termination
+  const names = rec ? parseCovered(rec.covered_cutoffs).map(e => (ctx.cutoffs.find(c => c.id === e.id)?.name || `#${e.id}`) + (e.water && e.electric ? '' : e.water ? ' (water and rent only)' : ' (electricity only)')) : []
+  return (
+    <div className="bg-surface-2 border border-line-subtle rounded-xl p-4 space-y-2 text-[12px]">
+      <div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider">
+        Final bill{multi ? ` — Bed ${b.bed}${b.name ? ` (${b.name})` : ''}` : ''}
+      </div>
+      {rec && names.length > 0 && <div className="text-ink-muted">Covers: {names.join(', ')}{rec.stay?.kind === 'STAY_BILLED' ? ' · one-month stay billed on the final bill only' : ''}</div>}
+      {rec && rec.diffs.length > 0 && (
+        <div className="bg-warning-bg border border-warning-border rounded-lg px-3 py-2 text-warning-text space-y-1">
+          <div className="font-semibold">Differences between the request and what will be applied:</div>
+          {rec.diffs.map((x, i) => <div key={i}>{x}</div>)}
+        </div>
+      )}
+      {rec && rec.warnings.length > 0 && (
+        <div className="bg-warning-bg border border-warning-border rounded-lg px-3 py-2 text-warning-text space-y-1">
+          {rec.warnings.map((x, i) => <div key={i}>{x}</div>)}
+        </div>
+      )}
+      {rec && <AdvanceCheckBox check={rec.check} />}
+      {rec && rec.ignored.length > 0 && (
+        <div className="bg-warning-bg border border-warning-border rounded-lg px-3 py-2 text-warning-text space-y-1">
+          <div className="font-semibold">Advance credit not counted</div>
+          {rec.ignored.map((x, i) => (
+            <div key={i}>A credit of {pesoText(x.amount)} is recorded for {x.name}, but this final bill replaces that statement. It is ignored: the advance is credited in full on this bill and nothing is charged back for it.</div>
+          ))}
+        </div>
+      )}
+      {rec && rec.errors.length > 0 && (
+        <div className="bg-danger-bg border border-danger-border rounded-lg px-3 py-2 text-danger-text space-y-1">
+          <div className="font-semibold">This request cannot be approved as submitted. Reject it and ask for a new move-out.</div>
+          {rec.errors.map((x, i) => <div key={i}>{x}</div>)}
+        </div>
+      )}
+      {earlyNow && (
+        <div className="bg-danger-bg border border-danger-border rounded-lg px-3 py-2 space-y-2">
+          <div className="text-danger-text font-semibold">
+            Early termination (lease end {ctx?.beds?.[b.id]?.tenant?.move_out_date?.slice(0, 10) || b.bill.planned_move_out || '—'}).{!waived && ' Advance and deposit are forfeited.'}
+          </div>
+          <label className="flex items-center gap-2 text-ink cursor-pointer">
+            <input type="checkbox" checked={waived} disabled={!ctx} onChange={e => onWaive(e.target.checked)} />
+            Management approved — do not forfeit
+          </label>
+          {waived && (
+            <input type="text" className="w-full" value={waiveReason} onChange={e => onReason(e.target.value)}
+              placeholder="Reason management approved the waiver (required)" />
+          )}
+        </div>
+      )}
+      <table className="w-full">
+        <tbody>
+          {lines.map((l, i) => (
+            <tr key={i} className="border-t border-line-subtle">
+              <td className="py-1">{l.label}</td>
+              <td className="text-ink-muted">{l.mid}{l.kind === 'forfeit' && l.original != null && ` (${pesoText(l.original)} forfeited)`}{l.rate_note && <div className="text-[11px] text-warning-text">{l.rate_note}</div>}</td>
+              <td className="text-right tabular-nums">{Number(l.amount) < 0 ? '-' + pesoText(-l.amount) : pesoText(l.amount)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {totals && (
+        <div className={`text-right font-bold ${totals.net_amount < 0 ? 'text-success-text' : 'text-ink'}`}>
+          {totals.net_amount < 0 ? `Amount to be returned ${pesoText(-totals.net_amount)}` : `Total amount due ${pesoText(totals.net_amount)}`}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── DecideModal ───────────────────────────────────────────────────────────────
 
 function DecideModal({ request, onClose, onDone }) {
@@ -271,34 +365,93 @@ function DecideModal({ request, onClose, onDone }) {
 
   const nvReq = request.new_value || {}
   const moveOutBill = request.field_name === 'move_out' && nvReq._action === 'process_move_out' ? nvReq._bill : null
-  const [waived,    setWaived]    = useState(false)
-  const [waiveReason, setWaiveReason] = useState('')
+  // Every bed of the request: the primary one plus the sibling beds that leave together (one request, one approval).
+  const reqBeds = moveOutBill ? [
+    { id: parseInt(nvReq._tenant_id, 10), bill: nvReq._bill, name: nvReq._tenant_name, room: nvReq._room_no, bed: nvReq._bed_letter },
+    ...(nvReq._siblings || []).map(sb => ({ id: parseInt(sb._tenant_id, 10), bill: sb._bill, name: sb._tenant_name, room: sb._room_no, bed: sb._bed_letter })),
+  ] : []
+  const [waivedMap, setWaivedMap] = useState({})
+  const [waiveReasons, setWaiveReasons] = useState({})
   const [partialApplied, setPartialApplied] = useState(false)
+  const [vacated, setVacated] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
   const [ctx, setCtx] = useState(null)
+  const bedLabel = (b) => `Bed ${b.bed || '?'}${b.name ? ` (${b.name})` : ''}`
 
   async function loadMoveOutCtx() {
-    const tenantId = parseInt(nvReq._tenant_id, 10)
-    if (!tenantId || isNaN(tenantId)) throw new Error(`Invalid tenant ID: "${nvReq._tenant_id}"`)
-    const [tRes, deposits, cutoffs, stored] = await Promise.all([
-      supabase.from('tenants').select('*, beds!bed_id(bed_letter, room_id, rooms(room_no))').eq('id', tenantId).single(),
-      fetchTenantDeposits(tenantId), fetchCutoffs(), fetchStoredAdvanceCredits(),
-    ])
-    if (tRes.error) throw tRes.error
-    return { tenant: tRes.data, deposits, cutoffs, stored }
+    for (const b of reqBeds) {
+      if (!b.id || isNaN(b.id)) throw new Error(`Invalid tenant ID in the request: "${b.id}"`)
+      if (!b.bill || !Array.isArray(b.bill.lines)) throw new Error(`${bedLabel(b)} has no final bill in the request.`)
+    }
+    const [cutoffs, stored] = await Promise.all([fetchCutoffs(), fetchStoredAdvanceCredits()])
+    const beds = {}
+    for (const b of reqBeds) {
+      const [tRes, deposits, payments] = await Promise.all([
+        supabase.from('tenants').select('*, beds!bed_id(bed_letter, room_id, rooms(room_no))').eq('id', b.id).single(),
+        fetchTenantDeposits(b.id), fetchPayments(b.id),
+      ])
+      if (tRes.error) throw tRes.error
+      const tenant = { ...tRes.data, room_id: tRes.data.beds?.room_id ?? null }
+      beds[b.id] = { tenant, deposits, payments, siblingIds: await fetchAdvanceSiblingIds(tenant, deposits, stored) }
+      // A bed that is already out: who issued its final bill (this request in an earlier, partly failed apply, or something else)?
+      if (!tenant.is_active) beds[b.id].applied = await verifyMoveOutApplied(b.id, (nvReq.actual_move_out_date || nvReq.move_out_date || '').slice(0, 10))
+    }
+    // Rent, water and electricity are rebuilt from the database as it is NOW (beds applied earlier, by this or another request, are
+    // ghosts in the room's split): the request's figures assumed the other leavers were still present.
+    let fresh = new Map(), freshError = null, roomTenants = []
+    try {
+      const out = await buildRequestFreshDrafts({
+        beds: reqBeds.filter(b => beds[b.id].tenant.is_active).map(b => ({ id: b.id, bill: b.bill })),
+        moveOutDate: (nvReq.actual_move_out_date || nvReq.move_out_date || '').slice(0, 10),
+        readings: { water: nvReq.water_reading, electric: nvReq.electric_reading },
+      })
+      fresh = out.drafts; roomTenants = out.tenants
+    } catch (e) { freshError = e.message }
+    return { cutoffs, stored, beds, fresh, freshError, roomTenants }
   }
   const moveOutDay = (nvReq.actual_move_out_date || nvReq.move_out_date || '').slice(0, 10)
-  const reconcile = (c, w) => reconcileBill({ bill: moveOutBill, moveOut: moveOutDay, tenant: c.tenant, deposits: c.deposits, cutoffs: c.cutoffs, storedCredits: c.stored, waived: w })
+  const reconcile = (c, id, w) => {
+    const rb = reqBeds.find(b => b.id === id)
+    const bc = c.beds[id]
+    const state = bedRequestState({ tenantActive: bc.tenant.is_active, applied: bc.applied, requestId: request.id })
+    // Already out through THIS request (resume after a partial failure): its receipts are settled, so nothing is reconciled or shown as errors.
+    if (state === 'APPLIED_HERE') return { appliedBy: true, billId: bc.applied.billId, errors: [], diffs: [], warnings: [], lines: [], totals: null, ignored: [], covered_cutoffs: [] }
+    const r = reconcileBill({
+      bill: rb.bill, moveOut: moveOutDay, tenant: bc.tenant, deposits: bc.deposits,
+      cutoffs: c.cutoffs, storedCredits: c.stored, siblingIds: bc.siblingIds, payments: bc.payments, waived: w,
+    })
+    r.warnings = r.warnings || []
+    if (state === 'OUT_ELSEWHERE') {
+      return { ...r, errors: [...r.errors, `${bedLabel(rb)} has already moved out and its final bill was issued outside this request. Reject this request.`] }
+    }
+    const leavers = earlierLeavers({ tenants: c.roomTenants, groupIds: reqBeds.map(x => x.id), roomId: bc.tenant.room_id, date: moveOutDay })
+    r.warnings = [...r.warnings, ...leavers.map(earlierLeaverWarning)]
+    if (c.freshError) return { ...r, errors: [...r.errors, `Could not recompute the rent and utilities from the database: ${c.freshError}`] }
+    const f = c.fresh.get(id)
+    if (!f) return r
+    const bad = [...f.errors, ...f.blocking.filter(m => !r.errors.includes(m))]
+    if (bad.length) return { ...r, errors: [...r.errors, ...bad] }
+    const m = mergeRecomputedLines({ lines: r.lines, details: rb.bill.details, fresh: f })
+    return {
+      ...r, lines: m.lines, details: m.details, totals: computeTotals(normalizeLines(m.lines)),
+      diffs: [...r.diffs, ...m.diffs], warnings: [...new Set([...r.warnings, ...m.warnings, ...f.warnings])],
+    }
+  }
 
   useEffect(() => {
     if (!moveOutBill) return
     loadMoveOutCtx().then(setCtx).catch(e => setError(`Could not load the tenant's current data: ${e.message}`))
   }, [])
 
-  // What will actually be applied: the credit/forfeit lines, cutoff and early termination are recomputed from the DB.
-  const rec = useMemo(() => (ctx ? reconcile(ctx, waived) : null), [ctx, waived])
-  const billLines = rec ? rec.lines : (moveOutBill?.lines || [])
-  const billTotals = rec ? rec.totals : null
-  const earlyNow = rec ? rec.early_termination : !!moveOutBill?.early_termination
+  // What will actually be applied per bed: credit/forfeit/payment lines, covered periods and early termination are recomputed from the DB.
+  const recs = useMemo(() => {
+    if (!ctx) return null
+    const o = {}
+    for (const b of reqBeds) o[b.id] = reconcile(ctx, b.id, !!waivedMap[b.id])
+    return o
+  }, [ctx, waivedMap])
+  // Beds already applied by this request are not part of the will-apply total.
+  const combinedCents = reqBeds.reduce((sum, b) => (recs?.[b.id]?.appliedBy ? sum : sum + toCents(recs ? recs[b.id].totals.net_amount : b.bill.net_amount)), 0)
 
   async function decide(d) {
     setDecision(d); setBusy(true); setError('')
@@ -314,11 +467,11 @@ function DecideModal({ request, onClose, onDone }) {
         }
       } else if (d === 'APPROVED' && moveOutBill) {
         // Apply before marking approved so a failed apply leaves the request PENDING.
-        await applyMoveOutRequest()
+        await applyMoveOutRequest(Object.fromEntries(reqBeds.filter(b => recs?.[b.id] && !recs[b.id].appliedBy).map(b => [b.id, recs[b.id].totals.net_amount])))
         try {
           await approveRequest(request.id, notes || null)
         } catch (err) {
-          throw new Error(`The move-out and final bill were applied, but marking the request approved failed: ${err.message}`)
+          throw new Error(`The move-out and final bill${reqBeds.length > 1 ? 's' : ''} were applied, but marking the request approved failed: ${err.message}`)
         }
       } else if (d === 'APPROVED') {
         const approved = await approveRequest(request.id, notes || null)
@@ -334,12 +487,13 @@ function DecideModal({ request, onClose, onDone }) {
       if (err.orphanBill) {
         msg = `Final bill #${err.billId} was saved but the tenant is still ACTIVE (the move-out did not go through and the bill could not be voided automatically). Void bill #${err.billId} from the tenant profile (Advance & Deposit tab) before retrying this request.\n\n(${err.message})`
       } else if (moveOutBill) {
-        // Decide from the database, not from the error: was the move-out really applied?
+        // Decide from the database, not from the error: was the move-out really applied (every bed)?
         try {
-          const v = await verifyMoveOutApplied(parseInt(nvReq._tenant_id, 10), moveOutDay)
-          if (v.ok) {
+          const checks = await Promise.all(reqBeds.map(b => verifyMoveOutApplied(b.id, moveOutDay)))
+          // Only when EVERY bed was applied by this very request (a bill from elsewhere never allows "Mark approved").
+          if (checks.every(v => appliedByRequest(v, request.id))) {
             markable = true
-            msg = `${err.message}\n\nThe tenant HAS been moved out (final bill #${v.billId}) but this request is still PENDING. Check the bill on the tenant profile and finish any failed step by hand, then use "Mark approved (already applied)".`
+            msg = `${err.message}\n\nThe tenant${reqBeds.length > 1 ? 's HAVE' : ' HAS'} been moved out (final bill${reqBeds.length > 1 ? 's' : ''} ${checks.map(v => '#' + v.billId).join(', ')}) but this request is still PENDING. Check the bill${reqBeds.length > 1 ? 's' : ''} on the tenant profile and finish any failed step by hand, then use "Mark approved (already applied)".`
           }
         } catch { /* keep the original message; no recovery button */ }
       }
@@ -376,7 +530,7 @@ function DecideModal({ request, onClose, onDone }) {
     return logError ? `Request approved and applied, but activity log failed: ${logError}` : null
   }
 
-  async function applyMoveOutRequest() {
+  async function applyMoveOutRequest(shownNets = null) {
     const { data: cur, error: sErr } = await supabase
       .from('approval_requests').select('status').eq('id', request.id).single()
     if (sErr) throw sErr
@@ -385,33 +539,67 @@ function DecideModal({ request, onClose, onDone }) {
 
     // Re-read everything the money depends on and recompute it; nothing but staff-edited text/charges is trusted from the request.
     const c = await loadMoveOutCtx()
-    const t = c.tenant
-    if (!t.is_active) throw new Error('This tenant has already moved out.')
-    const r = reconcile(c, waived)
-    if (r.errors.length) throw new Error(`The request cannot be applied: ${r.errors.join(' ')}`)
-    if (r.forfeit_waived && !waiveReason.trim()) throw new Error('Enter the reason management approved waiving the forfeiture.')
+    const plan = []
+    for (const b of reqBeds) {
+      const state = bedRequestState({ tenantActive: c.beds[b.id].tenant.is_active, applied: c.beds[b.id].applied, requestId: request.id })
+      if (state === 'OUT_ELSEWHERE') throw new Error(`${bedLabel(b)} has already moved out and its final bill was issued outside this request. Reject this request.`)
+      if (state === 'APPLIED_HERE') {
+        plan.push({ b, applied: true })
+        continue
+      }
+      const r = reconcile(c, b.id, !!waivedMap[b.id])
+      if (r.errors.length) throw new Error(`The request cannot be applied (${bedLabel(b)}): ${r.errors.join(' ')}`)
+      if (r.forfeit_waived && !(waiveReasons[b.id] || '').trim()) throw new Error(`Enter the reason management approved waiving the forfeiture (${bedLabel(b)}).`)
+      plan.push({ b, r, applied: false })
+    }
+    // The figures the admin saw in the review must still be the ones that would be applied: otherwise stop BEFORE writing anything.
+    for (const p of plan) {
+      if (p.applied || !shownNets) continue
+      const msg = figuresChangedMessage({ label: bedLabel(p.b), shown: shownNets[p.b.id], now: p.r.totals.net_amount })
+      if (msg) throw new Error(msg)
+    }
+    if (!vacated) throw new Error('Tick the confirmation that the tenant has vacated the room and access has been returned before approving. Nothing was changed.')
     const { data: { user } } = await supabase.auth.getUser()
-    await processMoveOutWithBill(
-      { ...t, room_id: t.beds?.room_id ?? null, _room_no: t.beds?.rooms?.room_no ?? nvReq._room_no, _bed_letter: t.beds?.bed_letter ?? nvReq._bed_letter },
-      {
-        move_out_date: nvReq.move_out_date, actual_move_out_date: nvReq.actual_move_out_date,
-        amount_paid: nvReq.amount_paid, water_reading: nvReq.water_reading, electric_reading: nvReq.electric_reading,
-      },
-      {
-        ...moveOutBill, lines: r.lines.map(({ _amt, ...l }) => l), cutoff_id: r.cutoff_id,
-        early_termination: r.early_termination, forfeit_waived: r.forfeit_waived,
-        waived_reason: r.forfeit_waived ? waiveReason.trim() : null,
-      },
-      user?.id,
-    )
+    const vacatedRec = { confirmed: true, by: user?.email || user?.id, at: new Date().toISOString() }
+    const groupNames = moveOutGroupNames(reqBeds.map(b => ({ name: b.name, bed: b.bed })))
+    const done = [], failed = []
+    for (const p of plan) {
+      if (p.applied) { done.push(`${bedLabel(p.b)} (already applied)`); continue }
+      const { b, r } = p
+      const t = c.beds[b.id].tenant
+      try {
+        await processMoveOutWithBill(
+          { ...t, room_id: t.beds?.room_id ?? null, _room_no: t.beds?.rooms?.room_no ?? b.room, _bed_letter: t.beds?.bed_letter ?? b.bed },
+          {
+            move_out_date: nvReq.move_out_date, actual_move_out_date: nvReq.actual_move_out_date,
+            amount_paid: b.id === reqBeds[0].id ? nvReq.amount_paid : '', water_reading: nvReq.water_reading, electric_reading: nvReq.electric_reading,
+          },
+          {
+            ...b.bill, details: { ...(r.details || b.bill.details || {}), approval_request_id: request.id, recomputed_at_approval: { at: new Date().toISOString(), diffs: r.diffs } },
+            lines: r.lines.map(({ _amt, ...l }) => l), cutoff_id: r.cutoff_id, covered_cutoffs: r.covered_cutoffs, ...r.totals,
+            early_termination: r.early_termination, forfeit_waived: r.forfeit_waived,
+            waived_reason: r.forfeit_waived ? waiveReasons[b.id].trim() : null,
+          },
+          user?.id, { groupNames, vacated: vacatedRec, groupTenantIds: reqBeds.map(x => x.id) },
+        )
+        done.push(bedLabel(b))
+      } catch (e) { failed.push({ b, e }) }
+    }
+    if (failed.length) {
+      if (reqBeds.length === 1) throw failed[0].e
+      throw new Error(`Applied: ${done.join(', ') || 'none'}. FAILED: ${failed.map(f => `${bedLabel(f.b)} (${f.e.message})`).join(' | ')}. The request stays PENDING; fix the problem and approve again: beds that are already applied are skipped.`)
+    }
   }
 
   async function markApplied() {
     setBusy(true); setError('')
     try {
       if (String(nvReq._tenant_id) !== String(request.entity_id)) throw new Error('The request is inconsistent: its tenant does not match the tenant it was filed against.')
-      const v = await verifyMoveOutApplied(parseInt(nvReq._tenant_id, 10), moveOutDay)
-      if (!v.ok) throw new Error(`Not marked approved: ${v.reason}. This action only records a move-out that was really applied.`)
+      for (const b of reqBeds) {
+        const v = await verifyMoveOutApplied(b.id, moveOutDay)
+        if (!v.ok) throw new Error(`Not marked approved: ${bedLabel(b)}: ${v.reason}. This action only records a move-out that was really applied.`)
+        if (!appliedByRequest(v, request.id)) throw new Error(`Not marked approved: ${bedLabel(b)}: its final bill was issued outside this request. This action only records a move-out that this request applied.`)
+      }
       await approveRequest(request.id, notes || null)
       notifyAsync('approval_decision', request.id)
       onDone('APPROVED', null)
@@ -521,6 +709,18 @@ function DecideModal({ request, onClose, onDone }) {
   }
 
   const fieldLabel = FIELD_LABELS[request.field_name] || request.field_name
+  // The will-apply figures of the beds still to be applied, as the statement they would print.
+  const previewBeds = recs ? reqBeds.filter(b => !recs[b.id].appliedBy && recs[b.id].totals) : []
+  const previewList = () => previewBeds.map(b => {
+    const r = recs[b.id]
+    return {
+      bill: {
+        id: b.id, status: 'DRAFT', move_out_date: moveOutDay, lines: normalizeLines(r.lines), net_amount: r.totals.net_amount,
+        details: { ...(r.details || b.bill.details || {}), advance_check: r.check }, prepared_by: b.bill.prepared_by || '',
+      },
+      tenant: { name: b.name, beds: { bed_letter: b.bed, rooms: { room_no: b.room } } },
+    }
+  })
 
   return (
     <div className="overlay" onClick={e => e.stopPropagation()}>
@@ -568,53 +768,28 @@ function DecideModal({ request, onClose, onDone }) {
           )}
 
           {moveOutBill && (
-            <div className="bg-surface-2 border border-line-subtle rounded-xl p-4 space-y-2 text-[12px]">
-              <div className="text-[10px] font-semibold text-ink-faint uppercase tracking-wider">Final bill</div>
-              {!ctx && !error && <div className="text-ink-muted">Checking the bill against the tenant's current data…</div>}
-              {rec && rec.diffs.length > 0 && (
-                <div className="bg-warning-bg border border-warning-border rounded-lg px-3 py-2 text-warning-text space-y-1">
-                  <div className="font-semibold">Differences between the request and what will be applied:</div>
-                  {rec.diffs.map((x, i) => <div key={i}>{x}</div>)}
+            <div className="space-y-3">
+              {!ctx && !error && <div className="text-[12px] text-ink-muted">Checking the bill{reqBeds.length > 1 ? 's' : ''} against the current data…</div>}
+              {recs && (
+                <CombinedBillSummary items={reqBeds.filter(b => !recs[b.id].appliedBy).map(b => ({
+                  bed: b.bed, bill: { lines: recs[b.id].lines, details: recs[b.id].details || b.bill.details, net_amount: recs[b.id].totals.net_amount },
+                }))} />
+              )}
+              {reqBeds.map(b => (
+                <MoveOutBillBlock key={b.id} b={b} multi={reqBeds.length > 1} rec={recs?.[b.id]} ctx={ctx}
+                  waived={!!waivedMap[b.id]} onWaive={v => setWaivedMap(m => ({ ...m, [b.id]: v }))}
+                  waiveReason={waiveReasons[b.id] || ''} onReason={v => setWaiveReasons(m => ({ ...m, [b.id]: v }))} />
+              ))}
+              {reqBeds.length > 1 && (
+                <div className={`text-right font-bold text-[13px] ${combinedCents < 0 ? 'text-success-text' : 'text-ink'}`}>
+                  {combinedCents < 0 ? `Combined amount to be returned ${pesoText(-combinedCents / 100)}` : `Combined total amount due ${pesoText(combinedCents / 100)}`}
                 </div>
               )}
-              {rec && rec.errors.length > 0 && (
-                <div className="bg-danger-bg border border-danger-border rounded-lg px-3 py-2 text-danger-text space-y-1">
-                  <div className="font-semibold">This request cannot be approved as submitted. Reject it and ask for a new move-out.</div>
-                  {rec.errors.map((x, i) => <div key={i}>{x}</div>)}
-                </div>
-              )}
-              {earlyNow && (
-                <div className="bg-danger-bg border border-danger-border rounded-lg px-3 py-2 space-y-2">
-                  <div className="text-danger-text font-semibold">
-                    Early termination (lease end {ctx?.tenant?.move_out_date?.slice(0, 10) || moveOutBill.planned_move_out || '—'}).{!waived && ' Advance and deposit are forfeited.'}
-                  </div>
-                  <label className="flex items-center gap-2 text-ink cursor-pointer">
-                    <input type="checkbox" checked={waived} disabled={!ctx} onChange={e => setWaived(e.target.checked)} />
-                    Management approved — do not forfeit
-                  </label>
-                  {waived && (
-                    <input type="text" className="w-full" value={waiveReason} onChange={e => setWaiveReason(e.target.value)}
-                      placeholder="Reason management approved the waiver (required)" />
-                  )}
-                </div>
-              )}
-              <table className="w-full">
-                <tbody>
-                  {billLines.map((l, i) => (
-                    <tr key={i} className="border-t border-line-subtle">
-                      <td className="py-1">{l.label}</td>
-                      <td className="text-ink-muted">{l.mid}{l.kind === 'forfeit' && l.original != null && ` (${pesoText(l.original)} forfeited)`}</td>
-                      <td className="text-right tabular-nums">{Number(l.amount) < 0 ? '-' + pesoText(-l.amount) : pesoText(l.amount)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {billTotals && (
-                <div className={`text-right font-bold ${billTotals.net_amount < 0 ? 'text-success-text' : 'text-ink'}`}>
-                  {billTotals.net_amount < 0 ? `Amount to be returned ${pesoText(-billTotals.net_amount)}` : `Total amount due ${pesoText(billTotals.net_amount)}`}
-                </div>
-              )}
-              <div className="text-ink-muted">Readings: water {nvReq.water_reading} · electric {nvReq.electric_reading}. Approving executes the move-out and saves this bill.</div>
+              <label className="flex items-start gap-2 text-ink cursor-pointer rounded-xl border border-line-subtle px-3 py-2.5 text-[12px]">
+                <input type="checkbox" className="mt-0.5" checked={vacated} onChange={e => setVacated(e.target.checked)} />
+                <span><strong>Tenant{reqBeds.length > 1 ? 's have' : ' has'} vacated the room and access has been returned</strong> (required before Approve{reqBeds.length > 1 ? '; one tick covers every bed' : ''}).</span>
+              </label>
+              <div className="text-[12px] text-ink-muted">Readings: water {nvReq.water_reading} · electric {nvReq.electric_reading}. Approving executes the move-out{reqBeds.length > 1 ? 's' : ''} and saves {reqBeds.length > 1 ? 'these bills' : 'this bill'}.</div>
             </div>
           )}
 
@@ -644,6 +819,7 @@ function DecideModal({ request, onClose, onDone }) {
         </div>
         <div className="modal-foot">
           <button className="btn secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          {previewBeds.length > 0 && <button className="btn secondary" onClick={() => setPreviewOpen(true)} disabled={busy}>Preview bill</button>}
           <button className="btn danger" onClick={() => decide('REJECTED')} disabled={busy}>
             <XCircle size={14} />
             {busy && decision === 'REJECTED' ? 'Rejecting…' : 'Reject'}
@@ -651,12 +827,13 @@ function DecideModal({ request, onClose, onDone }) {
           {partialApplied && (
             <button className="btn secondary" onClick={markApplied} disabled={busy}>Mark approved (already applied)</button>
           )}
-          <button className="btn primary" onClick={() => decide('APPROVED')} disabled={busy || partialApplied || (!!moveOutBill && (!rec || rec.errors.length > 0))}>
+          <button className="btn primary" onClick={() => decide('APPROVED')} disabled={busy || partialApplied || (!!moveOutBill && (!vacated || !recs || Object.values(recs).some(r => r.errors.length > 0)))}>
             <CheckCircle size={14} />
             {busy && decision === 'APPROVED' ? 'Approving…' : 'Approve'}
           </button>
         </div>
       </div>
+      {previewOpen && <FinalBillPreview list={previewList()} onClose={() => setPreviewOpen(false)} />}
     </div>
   )
 }

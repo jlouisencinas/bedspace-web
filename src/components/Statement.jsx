@@ -14,17 +14,23 @@
  *   totalColor  CSS colour of the total row (e.g. green for an amount to be returned)
  *   details   { header: [...], rows: [[...]] }
  *   asOfNote  string
+ *   checkNote string, optional note under the table (the final bill's advance check)
+ *   footNotes array of strings, optional (rate fallbacks, rounding rule, start readings), rendered like asOfNote
+ *   draftBanner string, optional: printed at the top of the copy (an unsaved preview must not pass for an issued bill)
+ *   flow      boolean, optional: the copy grows with its content (no fixed half-page height, nothing is clipped) and the charges
+ *             table gets wider label / narrower rate and amount columns; used by the final bill, whose line count varies
  *   peso      formatter fn
  */
 export default function Statement({
   company, copyLabel, name, room, asOf, due, billNo, preparedBy,
-  charges, total, details, asOfNote, splitNote, peso,
-  totalLabel = 'Total amount due', totalColor,
+  charges, total, details, asOfNote, checkNote, footNotes, splitNote, peso,
+  totalLabel = 'Total amount due', totalColor, flow = false, draftBanner,
 }) {
   const hasRate = charges.some(c => c.rateText)
   return (
-    <div className="stmt-copy">
+    <div className={flow ? 'stmt-copy flow' : 'stmt-copy'}>
       {copyLabel && <div className="copy-label">{copyLabel}</div>}
+      {draftBanner && <div className="draft-banner">{draftBanner}</div>}
 
       <div style={{ textAlign: 'center' }}>
         <img
@@ -51,13 +57,17 @@ export default function Statement({
 
       {/* Charges + payment */}
       <table><tbody><tr>
-        <td style={{ verticalAlign: 'top', width: '58%', paddingRight: 12 }}>
-          <table className="soa-charges"><tbody>
+        <td style={{ verticalAlign: 'top', width: flow ? '68%' : '58%', paddingRight: 12 }}>
+          <table className="soa-charges">
+            {flow && (hasRate
+              ? <colgroup><col style={{ width: '34%' }} /><col style={{ width: '24%' }} /><col style={{ width: '19%' }} /><col style={{ width: '23%' }} /></colgroup>
+              : <colgroup><col style={{ width: '46%' }} /><col style={{ width: '30%' }} /><col style={{ width: '24%' }} /></colgroup>)}
+            <tbody>
             {charges.map((c, i) => (
               <tr key={i} style={c.italic ? { fontStyle: 'italic' } : undefined}>
                 <td>{c.label}</td>
                 <td style={{ textAlign: 'center' }}>{c.mid}</td>
-                {hasRate && <td style={{ textAlign: 'center' }}>{c.rateText || ''}</td>}
+                {hasRate && <td className="rate" style={{ textAlign: 'center' }}>{c.rateText || ''}</td>}
                 <td style={{ textAlign: 'right' }}>{c.amountText ?? (Number(c.amount) < 0 ? '-' + peso(-c.amount) : peso(c.amount))}</td>
               </tr>
             ))}
@@ -100,6 +110,8 @@ export default function Statement({
         </>
       )}
       {asOfNote && <div className="asof-note">{asOfNote}</div>}
+      {checkNote && <div className="asof-note">{checkNote}</div>}
+      {(footNotes || []).map((n, i) => <div key={i} className="asof-note">{n}</div>)}
       {splitNote && <div className="asof-note" style={{ color: '#f4a522', fontWeight: 700 }}>{splitNote}</div>}
 
       <div className="latefee">

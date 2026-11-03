@@ -179,12 +179,11 @@ export default function Dashboard() {
     return summarizeCollections(rows)
   }, [activeCutoff, tenants, billingPerTenant, cutoffPayments, advData])
 
-  // Live, day-weighted "month so far" occupancy — distinct from the point-in-time
-  // tiles below (which reflect only right-now bed status). Snapshot timing (when
-  // buildAndSaveSnapshot last ran) has no effect on this: it's computed directly
-  // from live beds/tenants, same as the point-in-time tiles.
+  // Average beds occupied per day over the CALENDAR month so far (1st of this month through today),
+  // not the active cutoff: a cutoff stays active after month-end until the next one is opened, so it
+  // would keep showing last month's full average. Computed directly from live beds/tenants, so snapshot
+  // timing has no effect on it.
   const occupancyMTD = useMemo(() => {
-    if (!activeCutoff) return null
     // Business runs in Asia/Manila — derive "today" in that zone explicitly (not
     // the browser/server's local timezone) via Intl, then step forward one day
     // with pure-UTC arithmetic, matching PrintElectricity.jsx/PrintRentWater.jsx's
@@ -194,15 +193,68 @@ export default function Dashboard() {
     const todayManilaISO = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
     }).format(new Date())
+    const monthStartISO = todayManilaISO.slice(0, 8) + '01'
     const tomorrowISO = new Date(Date.parse(todayManilaISO + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10)
-    const periodEnd = activeCutoff.water_end && activeCutoff.water_end < tomorrowISO ? activeCutoff.water_end : tomorrowISO
-    return computeOccupancySnapshot(activeCutoff.water_start, periodEnd, beds, tenants)
-  }, [activeCutoff, beds, tenants])
+    const result = computeOccupancySnapshot(monthStartISO, tomorrowISO, beds, tenants)
+    return { ...result, monthStartISO, todayISO: todayManilaISO, tomorrowISO }
+  }, [beds, tenants])
+
+  // Data check: tenant records that can make the occupancy average read higher. They may be correct, so
+  // the banner only asks staff to check them (billing uses these dates).
+  //  - an inactive tenant whose move-out date is still in the future: counted until that date;
+  //  - two tenant records on the same bed at the same time this month. Uses the transfer-aware intervals.
+  //    Intervals are clamped to the month, so a one-day overlap cannot be told from a same-day turnover
+  //    and is not flagged (this includes any overlap on the 1st of the month).
+  const occupancyFlags = useMemo(() => {
+    const { monthStartISO, tomorrowISO, todayISO } = occupancyMTD
+    const bedMap = new Map(beds.map(b => [b.bed_id, b]))
+    const endOf = t => String(t.actual_move_out_date || t.move_out_date || '').slice(0, 10)
+    const rows = tenants.filter(t => t.bed_id != null && t.move_in_date)
+    const flagged = new Map()
+    const add = (t, why) => {
+      const cur = flagged.get(t.id) || { tenant: t, reasons: new Set() }
+      cur.reasons.add(why)
+      flagged.set(t.id, cur)
+    }
+    const staleIds = new Set()
+    rows.forEach(t => {
+      const end = endOf(t)
+      if (!t.is_active && end && end > todayISO) {
+        add(t, 'Moved out, but the move-out date is still in the future')
+        staleIds.add(t.id)
+      }
+    })
+    const byId = new Map(rows.map(t => [t.id, t]))
+    const byBed = new Map()
+    occupancyMTD.detail.forEach(iv => { if (!byBed.has(iv.bedId)) byBed.set(iv.bedId, []); byBed.get(iv.bedId).push(iv) })
+    byBed.forEach(list => {
+      for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+        const a = list[i], b = list[j]
+        if (a.tenantId === b.tenantId) continue
+        const from = a.startISO > b.startISO ? a.startISO : b.startISO
+        const to = a.endISO < b.endISO ? a.endISO : b.endISO
+        if (from < to) for (const iv of [a, b]) {
+          const t = byId.get(iv.tenantId)
+          if (t) add(t, 'Two tenant records on the same bed at the same time')
+        }
+      }
+    })
+    const rowsOut = [...flagged.values()].map(({ tenant: t, reasons }) => {
+      const bed = bedMap.get(t.bed_id)
+      return {
+        id: t.id, tenantName: t.name, room_no: bed?.room_no || '', bed_letter: bed?.bed_letter || '',
+        move_in_date: t.move_in_date, end: endOf(t), issue: [...reasons].join(' · '),
+      }
+    }).sort((x, y) => String(x.room_no).localeCompare(String(y.room_no)) || String(x.bed_letter).localeCompare(String(y.bed_letter)))
+    const without = staleIds.size
+      ? computeOccupancySnapshot(monthStartISO, tomorrowISO, beds, tenants.filter(t => !staleIds.has(t.id))).occupancyPct
+      : null
+    return { rows: rowsOut, withoutPct: without }
+  }, [beds, tenants, occupancyMTD])
 
   // Occupancy This Month drill-down rows — join detail's bedId against beds
   // (same join style as typeMap below) for room_no/bed_letter display.
   const occupancyMTDDetail = useMemo(() => {
-    if (!occupancyMTD) return []
     const bedMap = new Map(beds.map(b => [b.bed_id, b]))
     return occupancyMTD.detail.map(row => {
       const bed = bedMap.get(row.bedId)
@@ -383,12 +435,11 @@ export default function Dashboard() {
   }
 
   function openOccupancyMTD() {
-    if (!occupancyMTD) return
     setDrillDown({
       shape: 'table',
       icon: Percent,
       title: 'Occupancy This Month (So Far)',
-      subtitle: `${occupancyMTD.occupancyPct}% day-weighted average`,
+      subtitle: `${occupancyMTD.occupancyPct}% average beds occupied per day · ${fmtDate(occupancyMTD.monthStartISO)} – ${fmtDate(occupancyMTD.todayISO)}`,
       rows: occupancyMTDDetail,
       rowKey: row => `${row.tenantId}-${row.bedId}-${row.startISO}`,
       emptyMessage: 'No occupancy intervals this period.',
@@ -399,6 +450,26 @@ export default function Dashboard() {
         { key: 'period', label: 'Period', render: row => `${fmtDate(row.startISO)} – ${fmtDate(row.endISO)}` },
       ],
       onRowClick: row => navigate('/tenants', { state: { openTenantId: row.tenantId } }),
+    })
+  }
+
+  function openOccupancyFlags() {
+    setDrillDown({
+      shape: 'table',
+      icon: AlertTriangle,
+      title: 'Occupancy data check',
+      subtitle: `${occupancyFlags.rows.length} tenant record(s) that can overstate occupancy`,
+      rows: occupancyFlags.rows,
+      rowKey: row => row.id,
+      emptyMessage: 'No records to review.',
+      columns: [
+        { key: 'tenantName', label: 'Tenant', render: row => <span className="max-w-[160px] truncate inline-block align-bottom">{row.tenantName}</span> },
+        { key: 'room_bed', label: 'Room · Bed', render: row => `${row.room_no} · ${row.bed_letter}` },
+        { key: 'move_in_date', label: 'Move-in', render: row => fmtDate(row.move_in_date) },
+        { key: 'end', label: 'Move-out', render: row => fmtDate(row.end) },
+        { key: 'issue', label: 'Issue' },
+      ],
+      onRowClick: canAct ? row => navigate('/tenants', { state: { openTenantId: row.id } }) : undefined,
     })
   }
 
@@ -515,23 +586,48 @@ export default function Dashboard() {
       </div>
 
       {/* ── KPI Cards ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-5">
-        <KpiCard label="Occupied Beds"   value={leased}              sub={`of ${sellable} sellable`}      icon={BedDouble}   color="blue"  onClick={openOccupiedBeds} />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
+        {/* One occupancy card: the point-in-time figure (beds leased right now) and the live calendar-month
+            average of beds occupied per day. The month figure reads live beds/tenants, not a snapshot. */}
+        <KpiCard
+          label="Occupancy"
+          value={`${occPct}%`}
+          sub={(
+            <>
+              <div>{leased} of {sellable} beds occupied now</div>
+              <div className="mt-0.5">
+                <span className="font-semibold text-ink-secondary">{occupancyMTD.occupancyPct}%</span> avg beds per day · {fmtDate(occupancyMTD.monthStartISO)} – {fmtDate(occupancyMTD.todayISO)}
+              </div>
+              <button
+                type="button"
+                className="mt-1 text-[11px] underline text-info-text"
+                onClick={e => { e.stopPropagation(); openOccupancyMTD() }}
+              >Month detail</button>
+            </>
+          )}
+          icon={BedDouble}
+          color="blue"
+          onClick={openOccupiedBeds}
+        />
         <KpiCard label="Vacant"          value={vacant}              sub="available now"                  icon={CheckCircle2} color="green" onClick={openVacant} />
         <KpiCard label="Reserved"        value={reserved}            sub="pending move-in"                icon={Clock}       color="amber" onClick={openReserved} />
-        <KpiCard label="Monthly Revenue" value={`₱${fmt(revenue)}`} sub={`${occPct}% occupancy`}         icon={PhilippinePeso}  color="navy"  onClick={openMonthlyRevenue} />
-        {/* Live, day-weighted month-to-date average — distinct from the
-            point-in-time "Occupied Beds" tile above, not a replacement for it.
-            Snapshot timing has no effect on this: it reads live beds/tenants. */}
-        <KpiCard
-          label="Occupancy This Month (So Far)"
-          value={occupancyMTD ? `${occupancyMTD.occupancyPct}%` : '—'}
-          sub={activeCutoff ? 'day-weighted month-to-date average' : 'no active cutoff'}
-          icon={Percent}
-          color="blue"
-          onClick={occupancyMTD ? openOccupancyMTD : undefined}
-        />
+        <KpiCard label="Monthly Revenue" value={`₱${fmt(revenue)}`} sub="leased beds, monthly rates"     icon={PhilippinePeso}  color="navy"  onClick={openMonthlyRevenue} />
       </div>
+
+      {canAct && occupancyFlags.rows.length > 0 && (
+        <div className="card p-4 mb-5 bg-warning-bg text-warning-text flex items-start gap-3">
+          <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+          <div className="text-[13px] flex-1">
+            <div className="font-semibold">Occupancy data check: {occupancyFlags.rows.length} tenant record{occupancyFlags.rows.length === 1 ? '' : 's'} to review</div>
+            <div className="text-[12px] mt-0.5">
+              These can make occupancy read higher: {occupancyMTD.occupancyPct}% this month
+              {occupancyFlags.withoutPct != null && <> ({occupancyFlags.withoutPct}% without the moved-out records)</>}.
+              {' '}Billing uses these dates, so only change one if it is wrong.
+            </div>
+          </div>
+          <button type="button" className="btn-xs amber shrink-0" onClick={openOccupancyFlags}>Review</button>
+        </div>
+      )}
 
       {/* ── Monthly metrics (§9/§10) ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">

@@ -12,6 +12,8 @@
  *   • reconciles exactly: Σ tenant amounts (+ unbilled) = room total
  */
 
+import { isStayBilled } from './stay'
+
 const MS_DAY = 86400000
 export const dayNum = (iso) =>
   iso ? Math.floor(Date.parse(String(iso).slice(0, 10) + 'T00:00:00Z') / MS_DAY) : null
@@ -35,6 +37,7 @@ export function splitRoomUtility(points, tenants, rate, startNum, endNum) {
   const amt = {}, cons = {}
   tenants.forEach(t => { amt[t.id] = 0; cons[t.id] = 0 })
   let roomCons = 0, roomAmt = 0, unbilled = 0
+  let negative = false  // a segment whose reading went DOWN (out-of-order or wrong reading): the room cannot be called reconciled
 
   const n = points.length - 1
   for (let k = 1; k <= n; k++) {
@@ -42,6 +45,7 @@ export function splitRoomUtility(points, tenants, rate, startNum, endNum) {
     const segCons = num(cur.reading) - num(prev.reading)
     const segAmt  = segCons * rate
     roomCons += segCons; roomAmt += segAmt
+    if (segCons < 0) negative = true
 
     const segStart   = (k === 1) ? startNum : prev.dateNum + 1
     const segEndExcl = (k === n) ? endNum   : cur.dateNum + 1
@@ -67,7 +71,7 @@ export function splitRoomUtility(points, tenants, rate, startNum, endNum) {
       effective.forEach(t => { amt[t.id] += sA; cons[t.id] += sC })
     }
   }
-  return { amt, cons, roomCons, roomAmt, unbilled }
+  return { amt, cons, roomCons, roomAmt, unbilled, negative }
 }
 
 /**
@@ -85,8 +89,12 @@ export function splitRoomUtility(points, tenants, rate, startNum, endNum) {
 // Custom split: distribute the metered room total by tenant weights instead of
 // per-day Method B. Returns the same shape as splitRoomUtility.
 function splitByWeights(points, roomTenants, rate, weightById) {
-  let roomCons = 0
-  for (let k = 1; k < points.length; k++) roomCons += num(points[k].reading) - num(points[k - 1].reading)
+  let roomCons = 0, negative = false
+  for (let k = 1; k < points.length; k++) {
+    const seg = num(points[k].reading) - num(points[k - 1].reading)
+    roomCons += seg
+    if (seg < 0) negative = true
+  }
   const roomAmt = roomCons * rate
   const totalW = roomTenants.reduce((s, t) => s + (num(weightById[t.id]) || 0), 0)
   const amt = {}, cons = {}
@@ -95,7 +103,7 @@ function splitByWeights(points, roomTenants, rate, weightById) {
     amt[t.id] = roomAmt * w; cons[t.id] = roomCons * w
   })
   const used = roomTenants.reduce((s, t) => s + amt[t.id], 0)
-  return { amt, cons, roomCons, roomAmt, unbilled: roomAmt - used }
+  return { amt, cons, roomCons, roomAmt, unbilled: roomAmt - used, negative }
 }
 
 export function computeBilling(cutoff, billRows, interims, tenants, splits = [], addons = [], areaReadings = [], transfers = []) {
@@ -125,11 +133,27 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
   // _finalBilled / _finalBilledCutoffs) stays a "ghost" participant: their days still apportion
   // the room's utilities, so the roommates are billed only their own share, but they get no
   // billed row (perTenant, rent) because their charges live on the final bill.
-  const isGhost = (t) => !t.is_active && !!t._finalBilled && (t._finalBilledCutoffs || []).includes(cutoff.id)
+  // The final bill covers a cutoff PER COMPONENT (final_bills.covered_cutoffs entries are a plain id = water and electric, or
+  // {id, water, electric}): fetchTenants stamps _finalBilledWater / _finalBilledElectric (falling back to _finalBilledCutoffs).
+  // A leaver is a ghost for water only where the bill covers that cutoff's water (and rent), for electric only where it covers
+  // electric; a component the bill does not cover stays on the statement as a normal billed row.
+  // An ACTIVE tenant whose planned stay is exactly one month is billed on the final bill only (flat monthly rent, stay-anchored
+  // utilities): never a billed row, but still a participant so the room reconciles and roommates pay only their own share.
+  const ghostOf = (t) => {
+    if (t.is_active) { const g = isStayBilled(t); return { water: g, elec: g } }
+    if (!t._finalBilled) return { water: false, elec: false }
+    return {
+      water: (t._finalBilledWater ?? t._finalBilledCutoffs ?? []).includes(cutoff.id),
+      elec:  (t._finalBilledElectric ?? t._finalBilledCutoffs ?? []).includes(cutoff.id),
+    }
+  }
   const tByRoom = {}
+  const stayBilled = []
+  const rentKept = new Set()
   tenants.forEach(t => {
-    const ghost = isGhost(t)
-    if (!t.is_active && !ghost) return
+    const g = ghostOf(t)
+    if (!t.is_active && !g.water && !g.elec) return
+    if (!t.is_active && g.elec && !g.water) rentKept.add(t.id)
     const roomId = t.beds?.room_id
     if (!roomId) return
     const moveIn  = t.move_in_date
@@ -139,9 +163,16 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
       bed: t.beds?.bed_letter || '',
       moveInNum:  dayNum(moveIn),
       moveOutNum: dayNum(moveOut),  // null = still active
-      ghost,
+      ghostWater: g.water, ghostElec: g.elec,
     }
     ;(tByRoom[roomId] ||= []).push(rec)
+    if (t.is_active && g.water && rec.moveInNum != null && rec.moveOutNum != null
+        && ((rec.moveInNum <= wEnd - 1 && rec.moveOutNum >= wStart) || (rec.moveInNum <= eEnd - 1 && rec.moveOutNum >= eStart))) {
+      stayBilled.push({
+        id: t.id, name: t.name, room_no: t.beds?.rooms?.room_no ?? '', bed: t.beds?.bed_letter || '',
+        rate: num(t.rate), move_in: String(moveIn).slice(0, 10), move_out: String(moveOut).slice(0, 10),
+      })
+    }
   })
 
   // Transfer-aware: when a tenant moved rooms within this billing window, split their
@@ -167,6 +198,8 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
         moveInNum:  null,       // present from period start (or their move-in date)
         moveOutNum: xDate - 1,  // last day in old room
         _isTransfer: true,
+        // a stay-billed tenant has no billed row in either room
+        ghostWater: !!newRec?.ghostWater, ghostElec: !!newRec?.ghostElec,
       })
     }
   })
@@ -186,13 +219,16 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
   const buildPoints = (roomId, utility, s, e, startR, endR) => {
     const pts = [{ dateNum: s, reading: startR }]
     const mids = (interByRoom[`${roomId}|${utility}`] || [])
-      .filter(p => p.dateNum > s && p.dateNum < e)
+      .filter(p => p.dateNum >= s && p.dateNum < e)
       .sort((a, b) => a.dateNum - b.dateNum)
     pts.push(...mids)
     pts.push({ dateNum: e, reading: endR })
     return pts
   }
 
+  // Reconciled only when the amounts add up AND no segment went backwards / nothing is negatively unbilled (the sum alone
+  // balances when a negative segment cancels a positive one while the tenants were still charged the positive one).
+  const reconciled = (sum, res) => !res.negative && res.unbilled > -0.01 && Math.abs(sum + res.unbilled - res.roomAmt) < 0.01
   const perRoom = []
   const tenantAcc = {}  // id → { water, waterCons, elec, elecCons }
 
@@ -254,16 +290,16 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
 
     // Skip room-info update for _isTransfer virtual entries so they don't overwrite the
     // tenant's current (new) room — room info is corrected in the post-process below.
-    wt.forEach(t => { if (t.ghost) return; const a = ensure(t); if (!t._isTransfer) { a.room_id = br.room_id; a.room_no = br.room_no; a.room_type = br.room_type; a.waterPrev = br.water_prev; a.waterCurr = br.water_curr } a.water += wRes.amt[t.id]; a.waterCons += wRes.cons[t.id]; if (t._isTransfer) { a.oldWater += wRes.amt[t.id]; a.oldWaterCons += wRes.cons[t.id] } })
-    et.forEach(t => { if (t.ghost) return; const a = ensure(t); if (!t._isTransfer) { a.room_id = br.room_id; a.room_no = br.room_no; a.room_type = br.room_type; a.elecPrev = br.elec_prev; a.elecCurr = br.elec_curr } a.elec  += eRes.amt[t.id]; a.elecCons += eRes.cons[t.id]; if (t._isTransfer) { a.oldElec += eRes.amt[t.id]; a.oldElecCons += eRes.cons[t.id] } })
+    wt.forEach(t => { if (t.ghostWater) return; const a = ensure(t); if (!t._isTransfer) { a.room_id = br.room_id; a.room_no = br.room_no; a.room_type = br.room_type; a.waterPrev = br.water_prev; a.waterCurr = br.water_curr } a.water += wRes.amt[t.id]; a.waterCons += wRes.cons[t.id]; if (t._isTransfer) { a.oldWater += wRes.amt[t.id]; a.oldWaterCons += wRes.cons[t.id] } })
+    et.forEach(t => { if (t.ghostElec) return; const a = ensure(t); if (!t._isTransfer) { a.room_id = br.room_id; a.room_no = br.room_no; a.room_type = br.room_type; a.elecPrev = br.elec_prev; a.elecCurr = br.elec_curr } a.elec  += eRes.amt[t.id]; a.elecCons += eRes.cons[t.id]; if (t._isTransfer) { a.oldElec += eRes.amt[t.id]; a.oldElecCons += eRes.cons[t.id] } })
 
     // Σ includes final-billed (ghost) shares so the room still reconciles and the P&L counts them as billed.
     const wSum = wt.reduce((s, t) => s + wRes.amt[t.id], 0)
     const eSum = et.reduce((s, t) => s + eRes.amt[t.id], 0)
     perRoom.push({
       room_id: br.room_id, room_no: br.room_no, room_type: br.room_type,
-      water:    { roomAmt: wRes.roomAmt, roomCons: wRes.roomCons, sum: wSum, unbilled: wRes.unbilled, ok: Math.abs(wSum + wRes.unbilled - wRes.roomAmt) < 0.01, segments: wPts.length - 1 },
-      electric: { roomAmt: eRes.roomAmt, roomCons: eRes.roomCons, sum: eSum, unbilled: eRes.unbilled, ok: Math.abs(eSum + eRes.unbilled - eRes.roomAmt) < 0.01, segments: ePts.length - 1 },
+      water:    { roomAmt: wRes.roomAmt, roomCons: wRes.roomCons, sum: wSum, unbilled: wRes.unbilled, ok: reconciled(wSum, wRes), segments: wPts.length - 1 },
+      electric: { roomAmt: eRes.roomAmt, roomCons: eRes.roomCons, sum: eSum, unbilled: eRes.unbilled, ok: reconciled(eSum, eRes), segments: ePts.length - 1 },
     })
   })
 
@@ -309,7 +345,7 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
     if (!t) return
 
     const moveOut = t.actual_move_out_date || t.move_out_date
-    const movedOut = !t.is_active || (moveOut && dayNum(moveOut) < wEnd - 1)
+    const movedOut = (!t.is_active && !rentKept.has(t.id)) || (moveOut && dayNum(moveOut) < wEnd - 1)
     if (movedOut) { a.rent = 0; return }
 
     const periodDays = wEnd - wStart
@@ -388,5 +424,5 @@ export function computeBilling(cutoff, billRows, interims, tenants, splits = [],
     (parseInt(x.room_no) || 0) - (parseInt(y.room_no) || 0) ||
     String(x.bed).localeCompare(String(y.bed)))
 
-  return { perRoom, perTenant }
+  return { perRoom, perTenant, stayBilled }
 }

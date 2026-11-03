@@ -1,3 +1,4 @@
+import { snapToMonthEnd } from './stay'
 import {
   supabase, fetchTenantContacts, fetchTenantEmails,
   addTenantContact, updateTenantContact, deleteTenantContact, setPrimaryContact,
@@ -115,6 +116,10 @@ export async function applyTenantProfileChange(tenant, { fields = {}, moveOutDat
   }
   const newMoveOut     = moveOutDate === undefined ? undefined : (moveOutDate || null)
   const moveOutChanged = newMoveOut !== undefined && newMoveOut !== (tenant.move_out_date?.slice(0, 10) || null)
+  // Only a CHANGED planned move-out is validated: an unchanged legacy date that is not a month end stays allowed.
+  if (moveOutChanged && newMoveOut && snapToMonthEnd(newMoveOut) !== newMoveOut) {
+    return { wrote: false, saveError: `The planned move-out date (${newMoveOut}) must be the last day of a month (${snapToMonthEnd(newMoveOut)}).`, logError: null }
+  }
 
   const doneFields = {}
   const doneC = emptyDone()

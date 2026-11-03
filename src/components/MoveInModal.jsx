@@ -6,6 +6,7 @@ import { PAYMENT_MODE_LABEL } from '../lib/supabase'
 import {
   parseMoney, dbToCents, centsToInput, fmtCents, planDeposit, validateLines, nameMatches, blankLine, sumCents, refsOf,
 } from '../lib/receiptLines'
+import { leaseMoveOut, newLeaseMoveOutProblem, localToday } from '../lib/stay'
 import { isDriveConfigured, isDriveConnected, preloadDrive, connectDrive } from '../lib/googleDrive'
 
 export const GENDER_OPTIONS = [
@@ -27,11 +28,7 @@ const DOC_SLOTS = [
   { docType: 'SIGNED_CONTRACT', label: 'Signed Contract' },
 ]
 
-// Local calendar date (toISOString() is UTC, a day behind in the Philippines before 08:00).
-function today() {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
+const today = localToday
 
 function fmtDay(d) {
   if (!d) return '—'
@@ -72,6 +69,7 @@ export default function MoveInModal({
   const [advLines, setAdvLines] = useState(() => [blankLine({ date: today() })])
   const [depLines, setDepLines] = useState(() => [blankLine({ date: today() })])
   const [touched,  setTouched]  = useState({ advance: false, deposit: false })
+  const [leaseMonths, setLeaseMonths] = useState(1)
   const [nameAck,  setNameAck]  = useState(false)
   const [overAck,   setOverAck]   = useState(false)
   // Reservation payments typed at Move In (bed never reserved/recorded). Optional; not bed-bound client-side.
@@ -107,6 +105,8 @@ export default function MoveInModal({
   }, [])
 
   const set = (k, v) => { setFormError(''); setForm(f => ({ ...f, [k]: v })) }
+  // The planned move-out of a new lease is always a month end: the lease length picks it.
+  const moveOutDate = leaseMoveOut(form.move_in_date, leaseMonths)
 
   function setDocFile(i, file) {
     setFormError('')
@@ -157,6 +157,8 @@ export default function MoveInModal({
     e.preventDefault()
     setFormError('')
 
+    const leaseProblem = newLeaseMoveOutProblem(form.move_in_date, moveOutDate)
+    if (leaseProblem) { setFormError(leaseProblem); return }
     if (reservationError) { setFormError(`Could not check this bed for reservation payments: ${reservationError}. Reselect the bed or reopen Move In.`); return }
     if (reservationLoading) { setFormError('Still checking this bed for reservation payments. Try again in a moment.'); return }
     if (advDueCents == null) { setFormError('Advance due must be an exact amount with at most 2 decimals (never rounded).'); return }
@@ -189,7 +191,8 @@ export default function MoveInModal({
     })
     onSubmit({
       ...form,
-      duration: calcDuration(form.move_in_date, form.move_out_date),
+      move_out_date: moveOutDate,
+      duration: calcDuration(form.move_in_date, moveOutDate),
       contacts, emails, docs,
       receipts: {
         advanceDueCents:          advDueCents,
@@ -452,15 +455,21 @@ export default function MoveInModal({
                 <input type="date" value={form.move_in_date} onChange={e => set('move_in_date', e.target.value)} required />
               </div>
               <div className="fg">
-                <label>Move Out Date *</label>
-                <input type="date" value={form.move_out_date} onChange={e => set('move_out_date', e.target.value)} required />
+                <label>Lease length (months) *</label>
+                <select value={leaseMonths} onChange={e => { setFormError(''); setLeaseMonths(Number(e.target.value)) }}>
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n} month{n === 1 ? '' : 's'}</option>)}
+                </select>
+              </div>
+              <div className="fg">
+                <label>Planned Move Out Date (month end)</label>
+                <input type="text" readOnly value={moveOutDate ? fmtDay(moveOutDate) : '—'} className="bg-surface-2 text-ink-muted cursor-default" />
               </div>
               <div className="fg full">
                 <label>Duration</label>
                 <input
                   type="text"
                   readOnly
-                  value={calcDuration(form.move_in_date, form.move_out_date) || '—'}
+                  value={calcDuration(form.move_in_date, moveOutDate) || '—'}
                   className="bg-surface-2 text-ink-muted cursor-default"
                 />
               </div>

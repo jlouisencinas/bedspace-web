@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { notifyAsync } from './notify'
-import { normalizeLines, computeTotals, round2 } from './finalBill'
+import { normalizeLines, computeTotals, round2, assertCreditRows, verifyBillAgainstDb, vacatedRecord } from './finalBill'
+import { finalCutoffForUtility, newLeaseMoveOutProblem, finalBilledStamps, planReattachment, cutoffDeleteBlocker, readingOnFileFor } from './stay'
 import { parseMoney, moneyProblem, centsToNumber } from './receiptLines'
 import { deriveBedStatuses, activeTenantOnBedMessage, isActiveTenantPerBedViolation } from './bedEligibility'
 import { windowLastDay } from './cutoffDates'
@@ -33,6 +34,11 @@ export async function updateBedStatus(bedId, status, reservedName = null) {
 }
 
 // ── Tenants ───────────────────────────────────────────────────────────────────
+// Set when the database says final_bills.covered_cutoffs does not exist (migration not applied): loads within the next minute skip
+// that select, then it is tried again (so a tab left open while the migration is applied recovers without a reload).
+let coveredColumnMissingAt = 0
+const COVERED_RETRY_MS = 60000
+
 export async function fetchTenants() {
   const { data, error } = await supabase
     .from('tenants')
@@ -43,17 +49,27 @@ export async function fetchTenants() {
   // Tenants moved out WITH a (non-void) final bill: computeBilling keeps them in the utility split
   // for that bill's cutoff without billing them. Best-effort on purpose: if the table is missing
   // (migration not applied yet), unreadable (viewer RLS) or errors, fall back to the old behaviour.
+  // covered_cutoffs (every cutoff the bill covers) needs final_bill_covered_cutoffs.sql; without it only cutoff_id is used.
   try {
-    const { data: bills, error: bErr } = await supabase
-      .from('final_bills').select('tenant_id, cutoff_id').eq('status', 'FINAL')
-    if (bErr) throw bErr
-    const byTenant = new Map()
-    for (const b of bills || []) {
-      if (b.cutoff_id == null) continue
-      if (!byTenant.has(b.tenant_id)) byTenant.set(b.tenant_id, [])
-      byTenant.get(b.tenant_id).push(b.cutoff_id)
+    let bills, bErr
+    let skipCovered = coveredColumnMissingAt && Date.now() - coveredColumnMissingAt < COVERED_RETRY_MS
+    if (!skipCovered) {
+      ;({ data: bills, error: bErr } = await supabase
+        .from('final_bills').select('tenant_id, cutoff_id, covered_cutoffs, created_at').eq('status', 'FINAL'))
+      if (bErr && /covered_cutoffs/i.test(bErr.message || '')) { coveredColumnMissingAt = Date.now(); skipCovered = true }
+      else if (!bErr) coveredColumnMissingAt = 0
     }
-    return data.map(t => (byTenant.has(t.id) ? { ...t, _finalBilled: true, _finalBilledCutoffs: byTenant.get(t.id) } : t))
+    if (skipCovered || bErr) {
+      ;({ data: bills, error: bErr } = await supabase
+        .from('final_bills').select('tenant_id, cutoff_id, created_at').eq('status', 'FINAL'))
+    }
+    if (bErr) throw bErr
+    // covered_cutoffs entries are a plain id (water and electric) or { id, water, electric }: stamp per component.
+    const byTenant = finalBilledStamps(bills)
+    return data.map(t => {
+      const s = byTenant.get(t.id)
+      return s ? { ...t, _finalBilled: true, _finalBilledCutoffs: s.both, _finalBilledWater: s.water, _finalBilledElectric: s.electric, _finalBilledAt: s.at } : t
+    })
   } catch (e) {
     console.warn('final_bills lookup skipped:', e.message)
     return data
@@ -80,6 +96,10 @@ export async function addTenant(bedId, tenantData) {
       .filter(([k]) => TENANT_COLUMNS.has(k))
       .map(([k, v]) => [k, v === '' ? null : v])
   )
+
+  // Move In only (backfill scripts do not go through here): the planned move-out is a month end after the move-in.
+  const leaseProblem = newLeaseMoveOutProblem(dbData.move_in_date, dbData.move_out_date)
+  if (leaseProblem) throw new Error(leaseProblem)
 
   // Friendly pre-check; the unique index uniq_active_tenant_per_bed remains the real guard.
   const { data: existing, error: exErr } = await supabase
@@ -644,6 +664,23 @@ export async function fetchFinalBills(tenantId) {
   return data
 }
 
+// Every FINAL bill of the group this bill belongs to (sibling beds moved out on the same date): by details.stay.group.tenant_ids and,
+// because a retried bed's list may be partial, by the same trimmed case-insensitive name and room. Returns [{ bill, tenant }].
+export async function fetchFinalBillGroup(bill, tenant) {
+  const { data, error } = await supabase
+    .from('final_bills')
+    .select('*, tenants(name, beds!bed_id(bed_letter, rooms(room_no)))')
+    .eq('status', 'FINAL')
+    .eq('move_out_date', String(bill.move_out_date).slice(0, 10))
+  if (error) throw error
+  const norm = (v) => String(v || '').trim().toLowerCase()
+  const ids = new Set(bill.details?.stay?.group?.tenant_ids || [bill.tenant_id])
+  const room = tenant?.beds?.rooms?.room_no
+  return (data || [])
+    .filter(b => ids.has(b.tenant_id) || (norm(b.tenants?.name) === norm(tenant?.name) && b.tenants?.beds?.rooms?.room_no === room))
+    .map(({ tenants: t, ...b }) => ({ bill: b, tenant: t }))
+}
+
 export async function fetchFinalBill(id) {
   const { data, error } = await supabase.from('final_bills').select('*').eq('id', id).single()
   if (error) throw error
@@ -654,9 +691,32 @@ export async function fetchFinalBill(id) {
 export async function fetchFinalBillsLite() {
   const { data, error } = await supabase
     .from('final_bills')
-    .select('tenant_id, status, early_termination, forfeit_waived')
+    .select('tenant_id, cutoff_id, status, early_termination, forfeit_waived, lines')
   if (error) throw error
   return data
+}
+
+// Receipt ids named by this tenant's stored advance credits that belong to a same-name sibling bed in the same
+// room (a whole-room tenancy). Those are legitimate; any other receipt that is not the tenant's blocks the final bill.
+export async function fetchAdvanceSiblingIds(tenant, deposits, storedCredits) {
+  const mine = new Set((deposits || []).filter(d => d.kind === 'ADVANCE').map(d => d.id))
+  const foreign = new Set()
+  for (const s of storedCredits || []) {
+    if (s.tenant_id !== tenant.id) continue
+    for (const a of s.allocations || []) if (!mine.has(a.deposit_id)) foreign.add(a.deposit_id)
+  }
+  const roomId = tenant.beds?.room_id ?? tenant.room_id ?? null
+  if (!foreign.size || roomId == null) return new Set()
+  const { data: recs, error: rErr } = await supabase.from('tenant_deposits').select('id, tenant_id').in('id', [...foreign]).eq('kind', 'ADVANCE')
+  if (rErr) throw rErr
+  const ownerIds = [...new Set((recs || []).map(r => r.tenant_id))]
+  if (!ownerIds.length) return new Set()
+  const { data: owners, error: oErr } = await supabase.from('tenants').select('id, name, beds!bed_id(room_id)').in('id', ownerIds)
+  if (oErr) throw oErr
+  const norm = (v) => String(v || '').trim().toLowerCase()
+  const name = norm(tenant.name || tenant.tenant_name)
+  const ok = new Set((owners || []).filter(o => norm(o.name) === name && o.beds?.room_id === roomId).map(o => o.id))
+  return new Set((recs || []).filter(r => ok.has(r.tenant_id)).map(r => r.id))
 }
 
 export async function fetchStoredAdvanceCredits() {
@@ -680,6 +740,7 @@ export async function fetchAdvanceCreditData() {
 // Admin session only (RLS). Idempotent per (tenant, cutoff): a credit that is already recorded is kept.
 export async function saveAdvanceCredits(rows, actorId) {
   if (!rows.length) return []
+  assertCreditRows(rows)
   const { data, error } = await supabase
     .from('advance_credits')
     .upsert(rows, { onConflict: 'tenant_id,cutoff_id', ignoreDuplicates: true })
@@ -713,6 +774,7 @@ export async function saveFinalBill(bill, actorId) {
     .insert({
       tenant_id:         bill.tenant_id,
       cutoff_id:         bill.cutoff_id ?? null,
+      covered_cutoffs:   Array.isArray(bill.covered_cutoffs) ? bill.covered_cutoffs : [],
       status:            'FINAL',
       move_out_date:     bill.move_out_date,
       early_termination: !!bill.early_termination,
@@ -757,7 +819,7 @@ export async function settleTenantDeposits(ids, status, note, tenantId) {
 export async function verifyMoveOutApplied(tenantId, moveOutDate) {
   const [t, b] = await Promise.all([
     supabase.from('tenants').select('is_active').eq('id', tenantId).single(),
-    supabase.from('final_bills').select('id, move_out_date').eq('tenant_id', tenantId).eq('status', 'FINAL'),
+    supabase.from('final_bills').select('id, move_out_date, details').eq('tenant_id', tenantId).eq('status', 'FINAL'),
   ])
   if (t.error) throw t.error
   if (b.error) throw b.error
@@ -765,7 +827,7 @@ export async function verifyMoveOutApplied(tenantId, moveOutDate) {
   const day = String(moveOutDate || '').slice(0, 10)
   const bill = b.data.find(x => String(x.move_out_date).slice(0, 10) === day)
   if (!bill) return { ok: false, reason: `there is no final bill for ${day}` }
-  return { ok: true, billId: bill.id }
+  return { ok: true, billId: bill.id, requestId: bill.details?.approval_request_id ?? null }
 }
 
 export async function voidFinalBill(id, reason, actorId) {
@@ -804,10 +866,38 @@ const settleNote = (billId, line) => {
   if (line.kind === 'forfeit') return `Final bill #${billId}: forfeited (early termination)`
   if (line.source === 'ADVANCE' && line.prior_cutoff) {
     const bal = -Number(line.amount)
-    return `Final bill #${billId}: credited on second-to-last bill (cutoff ${line.prior_cutoff})`
+    return `Final bill #${billId}: credited on the bill of cutoff ${line.prior_cutoff}`
       + (bal > 0 ? `; balance ${peso(bal)} applied on final bill` : '')
   }
   return `Final bill #${billId}: applied on final bill`
+}
+
+/**
+ * Re-reads everything the advance depends on (tenant row, HELD receipts, stored credits, cutoffs, sibling receipts)
+ * and verifies `bill` strictly against it. Never throws on a mismatch: returns finalBill.verifyBillAgainstDb()'s
+ * { ok, stale, errors, check, lines, ... }. `tenant` only identifies the tenant (id, name, room).
+ */
+export async function verifyAdvanceFresh(tenant, actual, bill) {
+  const [tRes, deposits, cutoffs, storedCredits, payments] = await Promise.all([
+    supabase.from('tenants').select('name, rate, move_in_date, move_out_date, beds!bed_id(room_id)').eq('id', tenant.id).single(),
+    fetchTenantDeposits(tenant.id), fetchCutoffs(), fetchStoredAdvanceCredits(), fetchPayments(tenant.id),
+  ])
+  if (tRes.error) throw tRes.error
+  const row = { ...tRes.data, id: tenant.id, room_id: tRes.data.beds?.room_id ?? null }
+  const siblingIds = await fetchAdvanceSiblingIds(row, deposits, storedCredits)
+  const v = verifyBillAgainstDb({ bill, moveOut: actual, tenant: row, deposits, storedCredits, cutoffs, waived: !!bill.forfeit_waived, siblingIds, payments })
+  return { ...v, cutoffs }
+}
+
+// Throws { stale: true } BEFORE anything is written when the bill no longer matches the database
+// (advance, covered periods, payments, early termination). Returns the fresh verdict.
+async function assertAdvanceCheck(tenant, actual, bill) {
+  const v = await verifyAdvanceFresh(tenant, actual, bill)
+  if (!v.ok) {
+    const diffs = [...v.errors, ...v.stale]
+    throw Object.assign(new Error(`The bill no longer matches the database (advance, covered periods or payments changed while you were working): ${diffs.join(' ')} Nothing was saved.`), { stale: true, diffs })
+  }
+  return v
 }
 
 /**
@@ -816,10 +906,18 @@ const settleNote = (billId, line) => {
  * If a later step fails the error says exactly what was and was not done.
  *   moveOutData: { move_out_date, actual_move_out_date, amount_paid, water_reading, electric_reading }
  *   bill: { cutoff_id, lines, details, early_termination, forfeit_waived, waived_reason, prepared_by }
+ * opts.groupNames: names of every bed leaving together (put in the move-out reading note). opts.groupTenantIds: their tenant ids.
+ * opts.vacated: { confirmed: true, by?, at? } is REQUIRED (the "tenant has vacated the room and access has been returned"
+ * tick); it is recorded in the bill's details.vacated and in the Move Out activity note. Without it nothing is written.
+ * The reading of each utility is saved against the cutoff whose OWN window holds the move-out date (or the latest cutoff when the date is
+ * after its window; the statement ignores an interim outside its window), derived from fresh
+ * cutoffs (never from the payload), once per tenant or sibling group for a room+utility+date+value (a retry never duplicates it; an unrelated
+ * tenant leaving the same day saves their own row).
  * Returns { billId, net_amount }.
  */
-export async function processMoveOutWithBill(tenant, moveOutData, bill, actorId) {
+export async function processMoveOutWithBill(tenant, moveOutData, bill, actorId, opts = {}) {
   const actual = moveOutData.actual_move_out_date || moveOutData.move_out_date
+  const vacated = vacatedRecord(opts.vacated, actorId)
 
   // Refuse a duplicate / repeated move-out (the partial unique index uq_final_bills_one_final backs this up).
   const { data: cur, error: cErr } = await supabase.from('tenants').select('is_active').eq('id', tenant.id).single()
@@ -830,7 +928,12 @@ export async function processMoveOutWithBill(tenant, moveOutData, bill, actorId)
   if (oErr) throw oErr
   if (open.length) throw new Error(`A final bill (#${open[0].id}) already exists for this tenant; nothing was changed. Void it first if it was issued by mistake.`)
 
-  const saved = await saveFinalBill({ ...bill, tenant_id: tenant.id, move_out_date: actual }, actorId)
+  // The check stamped on the bill is the one just computed from fresh data, never one carried in `bill.details`.
+  const verdict = await assertAdvanceCheck(tenant, actual, bill)
+  const saved = await saveFinalBill({
+    ...bill, cutoff_id: verdict.cutoff_id, covered_cutoffs: verdict.covered_cutoffs,
+    details: { ...(bill.details || {}), advance_check: verdict.check, vacated }, tenant_id: tenant.id, move_out_date: actual,
+  }, actorId)
   const done = [`final bill #${saved.id} saved`]
   const fail = (step, err, advice) => Object.assign(new Error(
     `Final bill #${saved.id} was saved. Done: ${done.join('; ')}. FAILED: ${step} (${err.message}). ${advice}`), { partial: true, billId: saved.id })
@@ -866,13 +969,26 @@ export async function processMoveOutWithBill(tenant, moveOutData, bill, actorId)
   const readings = []
   if (moveOutData.water_reading !== '' && moveOutData.water_reading != null) readings.push(['WATER', moveOutData.water_reading])
   if (moveOutData.electric_reading !== '' && moveOutData.electric_reading != null) readings.push(['ELECTRIC', moveOutData.electric_reading])
-  if (readings.length && bill.cutoff_id && tenant.room_id) {
-    const { error: iErr } = await supabase.from('interim_readings').insert(readings.map(([utility, v]) => ({
-      cutoff_id: bill.cutoff_id, room_id: tenant.room_id, utility, reading_date: actual, reading_value: round2(v),
-      moving_out_tenant_id: tenant.id, note: `Move-out reading — ${tenant.name}`,
-    })))
-    if (iErr) throw fail('saving the move-out meter readings', iErr, 'Add the move-out readings in Billing > Move-out readings; the remaining tenants are billed wrongly until you do.')
-    done.push('move-out readings saved')
+  if (readings.length && tenant.room_id) {
+    const note = `Move-out reading — ${(opts.groupNames && opts.groupNames.length ? opts.groupNames : [tenant.name]).join(' & ')}`
+    try {
+      for (const [utility, v] of readings) {
+        const low = utility.toLowerCase()
+        const c = finalCutoffForUtility(verdict.cutoffs, utility, actual).cutoff
+        if (!c) { done.push(`${low} move-out reading NOT saved (no cutoff has a ${low} window holding ${actual})`); continue }
+        const value = round2(v)
+        const { data: have, error: hErr } = await supabase.from('interim_readings').select('id, moving_out_tenant_id')
+          .eq('room_id', tenant.room_id).eq('utility', utility).eq('reading_date', actual).eq('reading_value', value)
+        if (hErr) throw hErr
+        if (readingOnFileFor(have, [tenant.id, ...(bill.details?.stay?.group?.tenant_ids || []), ...(opts.groupTenantIds || [])])) { done.push(`${low} move-out reading already on file`); continue }
+        const { error: iErr } = await supabase.from('interim_readings').insert({
+          cutoff_id: c.id, room_id: tenant.room_id, utility, reading_date: actual, reading_value: value,
+          moving_out_tenant_id: tenant.id, note,
+        })
+        if (iErr) throw iErr
+        done.push(`${low} move-out reading saved against ${c.name}`)
+      }
+    } catch (e) { throw fail('saving the move-out meter readings', e, 'Add the move-out readings in Billing > Move-out readings; the remaining tenants are billed wrongly until you do.') }
   }
 
   if (moveOutData.amount_paid) {
@@ -915,7 +1031,7 @@ export async function processMoveOutWithBill(tenant, moveOutData, bill, actorId)
     actor_id:             actorId || null,
     entity_type:          'TENANT',
     entity_id:            tenant.id,
-    notes:                `Moved out from Room ${tenant._room_no} Bed ${tenant._bed_letter}`,
+    notes:                `Moved out from Room ${tenant._room_no} Bed ${tenant._bed_letter} · Vacated confirmed by ${vacated.by || 'unknown'}`,
   })
   await logActivity({
     activity_type: 'Final Bill Issued',
@@ -931,6 +1047,47 @@ export async function processMoveOutWithBill(tenant, moveOutData, bill, actorId)
     metadata:      { final_bill_id: saved.id, net_amount: totals.net_amount, early_termination: !!bill.early_termination, forfeit_waived: !!bill.forfeit_waived },
   })
   return { billId: saved.id, net_amount: totals.net_amount }
+}
+
+/** Names for the move-out reading note: each name once, with its bed letters ("Bringino (Bed A & B)"). */
+export function moveOutGroupNames(list) {
+  const byName = new Map()
+  for (const x of list) {
+    const k = String(x.name || '').trim()
+    if (!k) continue
+    if (!byName.has(k)) byName.set(k, [])
+    if (x.bed) byName.get(k).push(x.bed)
+  }
+  return [...byName].map(([name, beds]) => (beds.length ? `${name} (Bed ${beds.join(' & ')})` : name))
+}
+
+/**
+ * Move out sibling beds one after another (bed order). A bed that fails is recorded and the later beds still run: the
+ * room readings are saved idempotently so the order does not matter. items = [{ tenant, bill, withPayment }]; only the
+ * item flagged withPayment records the room-level "Final Amount Paid". opts.vacated = { confirmed: true, by } is required
+ * (throws before any bed is touched).
+ * Returns [{ tenantId, status: 'ok' | 'failed', billId, net_amount, error, partial, stale, orphanBill, diffs }].
+ */
+export async function processMoveOutGroup(items, moveOutData, actorId, opts = {}) {
+  const vacated = vacatedRecord(opts.vacated, actorId)  // one tick, one timestamp, recorded on every bed's bill
+  const groupNames = moveOutGroupNames(items.map(i => ({ name: i.tenant.name, bed: i.tenant._bed_letter ?? i.tenant.bed_letter })))
+  const out = []
+  for (const it of items) {
+    try {
+      const r = await processMoveOutWithBill(
+        it.tenant,
+        it.withPayment ? moveOutData : { ...moveOutData, amount_paid: '' },
+        it.bill, actorId, { groupNames, vacated, groupTenantIds: opts.groupTenantIds },
+      )
+      out.push({ tenantId: it.tenant.id, status: 'ok', billId: r.billId, net_amount: r.net_amount })
+    } catch (e) {
+      out.push({
+        tenantId: it.tenant.id, status: 'failed', error: e.message, billId: e.billId ?? null,
+        partial: !!e.partial, stale: !!e.stale, orphanBill: !!e.orphanBill, diffs: e.diffs || null,
+      })
+    }
+  }
+  return out
 }
 
 export async function fetchPaymentsForCutoff(cutoffId) {
@@ -1492,6 +1649,14 @@ export async function updateCutoff(id, patch) {
 // Delete a cutoff (undo "open"). Cascades to its readings/areas/splits/one-time
 // add-ons. Then reactivates the most recent remaining cutoff.
 export async function deleteCutoff(id) {
+  const [bRes, iRes] = await Promise.all([
+    supabase.from('final_bills').select('id, tenant_id, status, cutoff_id, covered_cutoffs').eq('status', 'FINAL'),
+    supabase.from('interim_readings').select('moving_out_tenant_id').eq('cutoff_id', id),
+  ])
+  if (bRes.error) throw bRes.error
+  if (iRes.error) throw iRes.error
+  const blocker = cutoffDeleteBlocker({ cutoffId: id, bills: bRes.data, interims: iRes.data })
+  if (blocker) throw new Error(blocker)
   const { data: cutoff } = await supabase.from('cutoffs').select('name').eq('id', id).single()
   const { error } = await supabase.from('cutoffs').delete().eq('id', id)
   if (error) throw error
@@ -1534,6 +1699,107 @@ export async function fetchInterimReadings(cutoffId) {
     .order('reading_date')
   if (error) throw error
   return data
+}
+
+// Every interim reading of a room, across all cutoffs and both utilities (the stay-anchored final bill reads the
+// previous tenant's move-out reading and the readings inside the stay from here).
+export async function fetchRoomInterimReadings(roomId) {
+  const { data, error } = await supabase
+    .from('interim_readings')
+    .select('*')
+    .eq('room_id', roomId)
+    .order('reading_date')
+    .order('id')
+  if (error) throw error
+  return data
+}
+
+/**
+ * Re-attach step (admin session, idempotent, safe to re-run; see stay.planReattachment): a move-out reading saved against an older cutoff moves to
+ * the cutoff whose window now holds its date, and the final bills of that room and date get that cutoff added for that component. interim_readings has
+ * no UPDATE policy, so a move is an insert of the same row followed by a delete of the old one; a failure in between is finished by the next run.
+ * Throws an error naming the rooms when something could not be done. Returns { moved, billsUpdated }.
+ * At most one run at a time per page session (a second call shares the running one).
+ */
+async function withRoomNos(moves) {
+  const ids = [...new Set(moves.map(m => m.room_id))]
+  if (!ids.length) return moves
+  const { data } = await supabase.from('rooms').select('id, room_no').in('id', ids)
+  return moves.map(m => ({ ...m, room_no: data?.find(r => r.id === m.room_id)?.room_no ?? null }))
+}
+
+let reattachRun = null
+export function reattachMoveOutReadings(actorId = null) {
+  if (!reattachRun) reattachRun = runReattach(actorId).finally(() => { reattachRun = null })
+  return reattachRun
+}
+
+async function runReattach(actorId) {
+  const [cutoffs, iRes, bRes] = await Promise.all([
+    fetchCutoffs(),
+    supabase.from('interim_readings').select('*'),
+    supabase.from('final_bills').select('id, tenant_id, status, move_out_date, covered_cutoffs, details, tenants(beds!bed_id(room_id))').eq('status', 'FINAL'),
+  ])
+  if (iRes.error) throw iRes.error
+  if (bRes.error) throw bRes.error
+  const bills = (bRes.data || []).map(b => ({ ...b, room_id: b.tenants?.beds?.room_id ?? null }))
+  const plan = planReattachment({ cutoffs, interims: iRes.data || [], bills })
+  const failed = []
+  let moved = 0, billsUpdated = 0
+  const audit = []
+  for (const m of plan.moves) {
+    try {
+      let newId = m.duplicateId
+      if (!m.duplicate) {
+        const { id: _id, ...row } = m.interim
+        const { data: ins, error } = await supabase.from('interim_readings').insert({ ...row, cutoff_id: m.to }).select('id').single()
+        if (error) throw error
+        newId = ins.id
+      }
+      const { data, error } = await supabase.from('interim_readings').delete().eq('id', m.interim.id).select('id')
+      if (error) throw error
+      if (!data?.length) {
+        // Another runner (another tab) already moved this row: not an error. Our own copy goes only if another linked copy remains, never the last one.
+        if (m.duplicate) continue
+        const { data: others, error: oErr } = await supabase.from('interim_readings').select('id')
+          .eq('cutoff_id', m.to).eq('room_id', m.interim.room_id).eq('utility', m.interim.utility).eq('reading_date', m.interim.reading_date)
+          .eq('reading_value', m.interim.reading_value).in('moving_out_tenant_id', m.familyIds)
+        if (oErr) throw oErr
+        if (others?.some(x => x.id !== newId)) {
+          const { error: dErr } = await supabase.from('interim_readings').delete().eq('id', newId)
+          if (dErr) throw dErr
+          continue
+        }
+      }
+      moved++
+      audit.push({
+        room_id: m.interim.room_id, utility: m.interim.utility, date: String(m.interim.reading_date).slice(0, 10),
+        from_cutoff: m.interim.cutoff_id, to_cutoff: m.to, old_id: m.interim.id, new_id: newId, bill_ids: m.billIds,
+      })
+    } catch (e) { failed.push({ room_id: m.interim.room_id, message: e.message }) }
+  }
+  for (const u of plan.bills) {
+    try {
+      const { data, error } = await supabase.from('final_bills').update({ covered_cutoffs: u.covered_cutoffs }).eq('id', u.id).eq('status', 'FINAL').select('id')
+      if (error) throw error
+      if (!data?.length) throw new Error(`final bill #${u.id} could not be updated`)
+      billsUpdated++
+    } catch (e) { failed.push({ room_id: bills.find(b => b.id === u.id)?.room_id, message: e.message }) }
+  }
+  if (moved || billsUpdated) {
+    await logActivity({
+      activity_type: 'Move-out Readings Re-attached', entity_type: 'CUTOFF', actor_id: actorId,
+      notes: `${moved} move-out reading(s) moved to the cutoff holding their date; ${billsUpdated} final bill(s) now cover it.`,
+      metadata: { moves: await withRoomNos(audit), bills: plan.bills },
+    })
+  }
+  if (failed.length) {
+    const ids = [...new Set(failed.map(f => f.room_id).filter(v => v != null))]
+    const { data: rooms } = ids.length ? await supabase.from('rooms').select('id, room_no').in('id', ids) : { data: [] }
+    const names = ids.map(id => rooms?.find(r => r.id === id)?.room_no ?? `#${id}`).join(', ')
+    throw new Error(`The move-out readings of room(s) ${names || 'unknown'} could not be attached to the new cutoff (${failed[0].message}). Their utilities are wrong until this works: open Utilities again to retry, or contact support if it keeps failing.`)
+  }
+  return { moved, billsUpdated }
 }
 
 export async function addInterimReading(r) {

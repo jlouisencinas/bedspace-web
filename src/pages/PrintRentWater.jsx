@@ -96,7 +96,11 @@ export default function PrintRentWater() {
     ;(t.addons || []).filter(a => a.bill_on !== 'ELECTRIC').forEach(a =>
       charges.push({ label: `Add: ${a.label}${a.recurring ? '' : ' · one-time'}`, mid: '', amount: Number(a.amount) }))
     const credit = credits.get(t.id)
-    if (credit) charges.push({ label: 'Less: Advanced Payment', mid: credit.ref, amount: -credit.amount, amountText: '-' + peso(credit.amount) })
+    if (credit) charges.push({
+      label: 'Less: Advanced Payment',
+      mid: [credit.ref, `credited ${peso(credit.amount)} on this bill`, `remaining ${peso(credit.remaining)} for the final bill`].filter(Boolean).join(' · '),
+      amount: -credit.amount, amountText: '-' + peso(credit.amount),
+    })
     return {
       company: COMPANY, copyLabel, peso,
       name: t.name, room: t.room_no, asOf: fmt(asOf), due: fmt(due), billNo, preparedBy,

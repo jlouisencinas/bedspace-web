@@ -7,6 +7,7 @@ import { computePnL } from '../lib/pnl'
 import { windowLastDay } from '../lib/cutoffDates'
 import { buildAndSaveSnapshot } from '../lib/snapshot'
 import { recordAdvanceCredits } from '../lib/advanceCredit'
+import { reattachMoveOutReadings } from '../lib/supabase'
 import { useToast } from '../components/Toast'
 import { useAuth } from '../lib/auth'
 import { Save, Trash2, Lock, Droplets, Zap, X } from 'lucide-react'
@@ -51,6 +52,7 @@ export default function Utilities() {
   const inflight = useRef(false)
   const pendingFlush = useRef(false)
   const [showOpen, setShowOpen] = useState(false)
+  const [healTick, setHealTick] = useState(0)
   const { show, ToastEl } = useToast()
   const { user, isAdmin } = useAuth()
 
@@ -64,6 +66,14 @@ export default function Utilities() {
       if (active) setCutoffId(active.id); else setLoading(false)
     }).catch(e => { show(e.message, 'error'); setLoading(false) })
   }, [])
+
+  // Self-heal: finishes a re-attach step that did not complete when the cutoff was opened.
+  useEffect(() => {
+    if (!isAdmin) return
+    reattachMoveOutReadings(user?.id)
+      .then(r => { if (r.moved || r.billsUpdated) setHealTick(t => t + 1) })
+      .catch(e => show(e.message, 'error', { duration: 30000 }))
+  }, [isAdmin])
 
   useEffect(() => {
     if (!cutoffId) return
@@ -87,7 +97,7 @@ export default function Utilities() {
       setAreas(am)
       setLoading(false)
     }).catch(e => { show(e.message, 'error'); setLoading(false) })
-  }, [cutoffId, cutoffs])
+  }, [cutoffId, cutoffs, healTick])
 
   // ── Rate math for a utility from cfg ────────────────────────────────────────
   const calc = (u) => {
@@ -331,7 +341,7 @@ export default function Utilities() {
       {/* Provider line & rate */}
       <div className="card p-4 mb-4">
         <div className="text-[10px] font-extrabold text-ink-faint uppercase tracking-widest mb-3">
-          {utility === 'WATER' ? 'Maynilad' : 'MERALCO'} Main Line &amp; Rate
+          {utility === 'WATER' ? 'Manila Water' : 'MERALCO'} Main Line &amp; Rate
         </div>
         <div className="flex gap-4 flex-wrap items-end">
           {[['Prev Reading', `${uKey}_main_prev`], ['Actual Reading', `${uKey}_main_curr`], ['Consumption', `${uKey}_main_consumption`], ['Bill Amount (₱)', `${uKey}_main_amount`]].map(([lbl, k]) => (
@@ -535,6 +545,8 @@ function OpenCutoffModal({ cutoffs, actorId, isAdmin, onClose, onDone, show }) {
         water_maynilad_rate: 0, water_bedspace_rate: Number(f.water_bedspace_rate),
         electric_meralco_rate: 0, electric_bedspace_rate: Number(f.electric_bedspace_rate),
       })
+      // The cutoff IS open from here on. A failure of this step is reported in full and re-runs when an admin loads Utilities.
+      try { await reattachMoveOutReadings(actorId) } catch (e) { show(e.message, 'error', { duration: 30000 }) }
       onDone(id)
     } catch (e) { show(e.message, 'error'); setBusy(false) }
   }

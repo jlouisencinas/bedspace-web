@@ -802,6 +802,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                               Early termination — {b.forfeit_waived ? `forfeiture waived: ${b.waived_reason}` : 'advance and deposit forfeited'}
                             </div>
                           )}
+                          {b.details?.advance_check?.text && <div className="text-[11px] text-ink-muted mt-0.5">{b.details.advance_check.text}</div>}
                           {b.status === 'VOID' && <div className="text-[11px] text-danger-text mt-0.5">Voided: {b.void_reason}</div>}
                           {isAdmin && (
                             <div className="flex items-center gap-2 mt-2">

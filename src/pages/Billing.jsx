@@ -15,8 +15,8 @@ import { Link } from 'react-router-dom'
 import { Printer, Droplets, Zap, Settings2, PlusCircle, Receipt, X, AlertTriangle, Clock, Trash2 } from 'lucide-react'
 import { windowLastDay } from '../lib/cutoffDates'
 
-const peso = n => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-const m3   = n => Number(n || 0).toLocaleString('en-PH', { maximumFractionDigits: 2 })
+const peso = n => '₱' + (Math.abs(Number(n) || 0) < 0.005 ? 0 : Number(n)).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const m3   = n => (Math.abs(Number(n) || 0) < 0.005 ? 0 : Number(n)).toLocaleString('en-PH', { maximumFractionDigits: 2 })
 
 export default function Billing() {
   const [cutoffs,     setCutoffs]     = useState([])
@@ -72,8 +72,8 @@ export default function Billing() {
   }
   useEffect(() => { load() }, [cutoffId])
 
-  const { perRoom, perTenant } = useMemo(() => {
-    if (!cutoff || !bill.length) return { perRoom: [], perTenant: [] }
+  const { perRoom, perTenant, stayBilled } = useMemo(() => {
+    if (!cutoff || !bill.length) return { perRoom: [], perTenant: [], stayBilled: [] }
     const result = computeBilling(cutoff, bill, interims, tenants, splits, addons, areas, transfers)
     cacheBilling(cutoff.id, result.perTenant)
     return result
@@ -269,8 +269,10 @@ export default function Billing() {
                         <td className="td-rate text-right">
                           {peso(rwTotal)}
                           {credits.has(t.id) && (
-                            <div className="text-[10px] font-normal text-success-text leading-[1.3] mt-0.5 tabular-nums" title={`Advance ${credits.get(t.id).ref}`}>
+                            <div className="text-[10px] font-normal text-success-text leading-[1.3] mt-0.5 tabular-nums"
+                              title={[credits.get(t.id).ref, `credited ${peso(credits.get(t.id).amount)} on this bill`, `remaining ${peso(credits.get(t.id).remaining)} for the final bill`].filter(Boolean).join(' · ')}>
                               Less advance -{peso(credits.get(t.id).amount)}<br />Net {peso(rwTotal - credits.get(t.id).amount)}
+                              <br />remaining {peso(credits.get(t.id).remaining)} for the final bill
                             </div>
                           )}
                         </td>
@@ -340,6 +342,23 @@ export default function Billing() {
               It reduces what is owed (an adjustment, not a payment); the totals above are before the credit.
             </div>
           )}
+          {stayBilled.length > 0 && (
+            <div className="px-4 py-3 border-t border-line-subtle">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-ink-faint mb-1.5">Billed on final bill (one-month stays)</div>
+              <table>
+                <thead><tr><th>Tenant</th><th>Room</th><th>Bed</th><th>Stay</th><th className="text-right">Monthly rate</th><th></th></tr></thead>
+                <tbody>
+                  {stayBilled.map(t => (
+                    <tr key={t.id}>
+                      <td className="td-name">{t.name}</td><td>{t.room_no}</td><td><strong>{t.bed}</strong></td>
+                      <td>{t.move_in} to {t.move_out}</td><td className="text-right">{peso(t.rate)}</td>
+                      <td><span className="badge leased" title="This tenant stays exactly one month: rent and utilities are billed once, on the final bill at move-out. They still share the room's utilities, so the other tenants pay only their own share.">billed on final bill</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       ) : view === 'rooms' ? (
         <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))' }}>
@@ -364,7 +383,7 @@ export default function Billing() {
                     <span>Tenants: {peso(u.sum)}{u.unbilled > 0.01 ? ` (+${peso(u.unbilled)} vacant)` : ''}</span>
                   </div>
                   <div className={`font-semibold ${u.ok ? 'text-success-text' : 'text-danger-text'}`}>
-                    {u.ok ? 'Reconciled' : 'Mismatch — check readings'}
+                    {u.ok ? 'Reconciled' : 'Check readings'}
                   </div>
                 </div>
               ))}

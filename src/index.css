@@ -22,7 +22,7 @@
 }
 
 /* ── CSS Variables (design tokens) ───────────────────────────────────── */
-:root, :root[data-theme="light"] {
+:root, :root[data-theme="light"], .stmt-copy, .print-light {
   color-scheme: light;
   --navy:   #f4a522;
   --radius: 12px;
@@ -370,6 +370,13 @@
   background: #fff; border: 1px solid #cbd5e1;
   padding: 8px 14px; font-size: 11px; color: #111; overflow: hidden;
 }
+/* final bill: grows with its content instead of clipping at half an A4 page */
+.stmt-copy.flow { height: auto; min-height: 133mm; overflow: visible; }
+.stmt-copy.flow .soa-charges td { word-break: break-word; font-size: 11px; padding: 3px 6px; }
+.stmt-copy.flow .soa-charges td.rate, .stmt-copy.flow .soa-charges td:last-child { white-space: nowrap; }
+.stmt-copy .draft-banner { text-align: center; font-weight: 800; font-size: 12px; color: #b91c1c; border: 2px solid #b91c1c; padding: 3px; margin: 14px 0 6px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+/* "Preview bill": the statement of an unsaved draft, over the open modal; printing shows only the statement */
+.fbp-root { position: fixed; inset: 0; z-index: 100; overflow: auto; background: #F0F4F8; padding: 16px 0; }
 .stmt-logo            { height: 42px; object-fit: contain; }
 .stmt-copy .brand     { font-size: 18px; font-weight: 800; color: #E8821E; }
 .stmt-copy .addr      { font-size: 10px; color: #444; }
@@ -393,6 +400,8 @@
 @page { size: A4; margin: 10mm; }
 @media print {
   .no-print, .sidebar-desktop, .sidebar-mobile-bar { display: none !important; }
+  body.fb-preview-open > *:not(.fbp-root) { display: none !important; }
+  .fbp-root { position: static; overflow: visible; padding: 0; background: #fff; }
   body, .app-shell, .page { background: #fff !important; }
   .main-content { overflow: visible !important; }
   .a4page { width: auto; margin: 0; page-break-after: always; break-after: page; }

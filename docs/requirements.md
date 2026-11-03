@@ -28,8 +28,14 @@ requests, and owner-facing occupancy/collections/P&L reporting.
 ## 3. Tenant lifecycle
 
 ### Move-in
-- Lease term is typically monthly; a fixed move-in/move-out date is captured at move-in
-  (matches current `MoveInModal` behavior — both dates required).
+- Lease term is typically monthly; a fixed move-in/move-out date is captured at move-in.
+  **For NEW tenants the planned move-out is always the LAST DAY OF A MONTH:** Move In asks for the lease length in months
+  (1 to 12, default 1) and shows the computed month end read-only (`leaseMoveOut(moveIn, N)` in `src/lib/stay.js` = the last
+  day of the month containing move-in + N months - 1 day: Oct 15 / 1 month -> Nov 30; Oct 15 / 2 -> Dec 31; Oct 1 / 1 -> Oct 31;
+  Oct 2 / 1 -> Nov 30; Oct 31 / 1 -> Nov 30; Jan 30 / 1 -> Feb 28). The old "same date next month" option is not offered; an
+  exact month only happens when moving in on the 1st. `addTenant` (Move In path only; backfill scripts are not affected) rejects
+  a planned move-out that is not after the move-in or not a month end. Tenants who moved in before this rule keep their dates
+  (e.g. the Oct 2 -> Nov 2 one-month stays stay stay-billed).
 - **Move In form: only six fields are required** — vacant bed, rate, full name, gender, move-in
   date, move-out date. Everything else (contacts, emails, address, source, work/employer details,
   emergency contact, document uploads) is optional so tenants migrated from the old spreadsheet,
@@ -118,7 +124,10 @@ and **Move Out** only (Edit Details moved to its own module — see below).
   - Emergency contact (name + number)
   - Work & Employment — occupation, employer, employer address, employer contact number, location
     of work, work schedule
-  - Planned move-out date (carried over from the old Edit Details)
+  - Planned move-out date (carried over from the old Edit Details). A CHANGED date snaps to the last day of the month of the
+    date picked (the form shows the result); an unchanged legacy date that is not a month end stays allowed. Enforced again in
+    `applyTenantProfileChange` (so an approval request with a non-month-end date fails at apply and stays pending). Moving the
+    move-in date is not part of this form.
 - **Not editable here:** rate, bed/room assignment, move-in date, active status — those change
   only through their own flows (Transfer, Property bed rates, Move-out, and the admin-only
   "Correct move-in date" action below).
@@ -162,6 +171,14 @@ and **Move Out** only (Edit Details moved to its own module — see below).
   admin approving it now executes the whole move-out (tenant inactive, bed vacated, readings, final bill,
   receipts settled) in one step — see §5 "Phase 2 as built". Requests raised by the old modal (no
   `_bill` in the payload) still only update the dates when approved.
+- **One pending move-out request per tenant.** While a move-out request is PENDING for a tenant (or any bed of its sibling group,
+  matched on the request's entity id, `new_value._tenant_id` and `_siblings[]._tenant_id`), opening Move Out again shows "A move-out
+  request for <name> is already waiting for admin approval (submitted <date> by <email>)" and disables Next, for non-admins and admins
+  alike (admins are pointed to Approvals). It costs one query when the modal opens. At apply, a bed that is already out is only skipped when
+  ITS final bill was issued by this same request (`details.approval_request_id`); otherwise the apply and the review refuse ("already moved out ... issued
+  outside this request. Reject this request."). A bed already applied by THIS request (a resume after a partial failure) is shown as "already applied
+  (final bill #n)", is not reconciled again and is left out of the combined total, so Approve stays available for the remaining beds; "Mark approved
+  (already applied)" requires every bed's final bill to carry this request's id.
 - **Move-out date edits (lease extensions/shortenings) must be logged. — DONE.** Any change to a
   tenant's `move_out_date` — including a plain admin edit via the tenant profile, not just a
   formal move-out — writes an `activity_log` entry (`activity_type: 'Move-out Date Changed'`).
@@ -329,6 +346,17 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       is recorded); the DB does not require a date on split lines (the form does); open question O1:
       the Deposit due defaults to the Rate (§5 structure, confirmed by the owner: the deposit due
       is collected at move-in) and staff edit the field when the real deposit differs.
+  - **Rent of a stay (owner rule for new tenants; `stayRent()` in `src/lib/stay.js`).** n = the largest whole number of months
+    with `addMonths(moveIn, n) <= moveOut`. If the move-out is exactly `addMonths(moveIn, n)` (n >= 1) the rent is n months flat, no
+    excess (this keeps the legacy Oct 2 -> Nov 2 = 6,750.00). Otherwise the excess runs from E = `addMonths(moveIn, n)` through the
+    move-out date inclusive, each calendar month's part as days / that month's real number of days (Nov 30, Dec 31, Feb 28; an excess
+    that crosses a month end is split by month), rounded to the cent per month; total = n x rate + excess, in integer cents. With
+    rate 6,750: Oct 15 -> Nov 30 = 6,750 + 16/30 = 10,350.00; Oct 1 -> Oct 31 = 6,750.00; Oct 1 -> Nov 30 = 13,500.00; Oct 15 ->
+    Dec 31 = 13,500 + 17/31 = 17,201.61. The FINAL BILL rent line = max(0, that total - rent already billed on CLOSED cutoffs'
+    statements, by the Billing rule), labelled with the arithmetic ("Rent (1 month + 16 of 30 days = P10,350.00, less P3,701.61
+    billed on closed statements)": 6,648.39 for Oct 15 -> Nov 30 with the Oct statement closed). It applies to every stay that began on
+    or after the first cutoff of the app (earlier move-ins keep day-based proration over the covered windows) except stays whose
+    PLANNED length is exactly one month and not a month end (the legacy same-date leases), which are stay-billed (flat rent, below). Regular monthly statements keep their day-prorated rent.
   - **Final bill / move-out settlement — Phase 2 DONE** (rules below; what was built and its known
     limits are in the "Phase 2 as built" bullet that follows the rules). Only the refund tracker is left (Phase 3):
     - **Billing periods** follow the cutoff windows (rent/water 1st–EOM, electric 10th–10th).
@@ -392,15 +420,50 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       row = no credit); live detection for a later cutoff SKIPS a tenant who already has a stored credit (the advance
       is consumed - a lease extension or date change can neither drop nor repeat it) and Billing shows "Advance
       already credited in <cutoff>". The final-bill draft reads the stored rows first (matched by receipt, so
-      whole-room sibling beds are handled), falling back to a live estimate only when the immediately preceding
-      cutoff is still the active one.
-    - **Final bill vs. the earlier credit:** the earlier credit is not given twice - the advance line becomes a
-      0.00 record (plus a note) or only the balance when the advance exceeded that period's rent. With no stored
-      credit (1-2 period stay, or the earlier cutoff was closed before this feature) the full advance is credited
-      on the final bill. **Forfeiture after a credit:** if the draft forfeits (early termination, no waiver) and an
-      advance had already been credited, an editable charge line "Advance credited on second-to-last bill
-      (forfeited)" takes that amount back so the forfeiture really takes effect; a waiver removes it. Receipts
-      are only marked "credited on second-to-last bill" when a stored credit really covered them.
+      whole-room sibling beds are handled); there is no live estimate (the cutoff before the final one is always
+      closed, and stored, by then).
+    - **Final bill vs. the earlier credit (advance can never be used twice).** The final-bill draft, the Confirm
+      step and an approval apply re-read the receipts, stored credits and cutoffs from the database and credit
+      only what is left of every ADVANCE receipt: per receipt, remaining = amount - what a stored credit already
+      took from it. Rules: (R1) a stored credit counts only if its cutoff window ENDS on or before the move-out date;
+      a credit stored for the final bill's own cutoff or a later one (an "orphan", e.g. after the date was shortened)
+      is ignored - the full advance is credited on the final bill, nothing is charged back, and the bill shows a
+      notice (`advance_check.ignored`). (R2) fail closed: a stored credit of this tenant that matches none of the
+      tenant's HELD ADVANCE receipts (and is not on a same-name same-room sibling bed's receipt) BLOCKS the move-out
+      ("does not match this tenant's advance receipts"). (R3) credited before + credited on the final bill never
+      exceeds a receipt. (R4) the system lines (advance/deposit credit, forfeit lines, charge-back) are locked:
+      amount and kind cannot be edited and the line cannot be deleted in the Move Out modal; label and details
+      can; any other deduction is a typed "Unsettled" line. If the advance was fully credited the advance line is
+      0.00 and its text names the cutoff(s) ("already credited P6,000.00 on Sep 2026 · remaining P0.00"); a tenant
+      who extends after the credit does NOT pay a new advance - the advance stays consumed, the deposit stays
+      held and monthly rent continues normally. With no stored credit (1-2 period stay, or the earlier cutoff was
+      closed before this feature) the full advance is credited on the final bill. **Forfeiture after a credit:**
+      if the draft forfeits (early termination, no waiver) the forfeit line shows the full advance and a locked
+      charge line "Advance credited on second-to-last bill (forfeited)" takes back the part that was really
+      credited (valid stored credits only); a waiver removes both. Receipts are only marked "credited on the bill
+      of cutoff X" when a stored credit really covered them.
+    - **Advance check (`details.advance_check`).** `finalBill.advanceCheck()` returns { status, advance_total,
+      credited_before, credited_here, forfeited, remaining_before, receipts[], prior[], ignored[], text,
+      checked_at }; status is NO_ADVANCE / NOT_CREDITED_BEFORE / PARTLY_CREDITED_BEFORE / FULLY_CREDITED_BEFORE /
+      FORFEITED / ORPHAN_IGNORED / BLOCKED. It is shown in an "Advance check" box on Move Out steps 2 and 3
+      (step 3 says when it was checked against the database), in the Approvals review modal, and its text is
+      printed on the final bill (`PrintFinalBill`) and listed under each bill in the tenant profile. Every created
+      final bill carries the check computed from fresh data inside `processMoveOutWithBill` (never one supplied by
+      the caller). `verifyBillAgainstDb()` (= `reconcileBill()` plus a verdict) is the strict comparison: if the
+      credit/forfeit/charge-back lines, the cutoff or the early-termination flag no longer match the database the
+      save is refused BEFORE anything is written (`stale`), the modal rebuilds the draft (typed lines kept) and
+      asks staff to review it again. The approval apply also recomputes the charge-back amount and the advance
+      text from the database and lists every difference.
+    - **Database guards** (`database/migrations/advance_credit_guards.sql`, mirrored in `init.sql` next to
+      `advance_credits`; run its four read-only audit queries first): G1 on `advance_credits` insert (allocations
+      must add up and be ADVANCE receipts, no receipt over-credited, none after a FINAL bill or settled receipt);
+      G2 on `final_bills` insert (a credit/forfeit line may only use that tenant's HELD receipts, once, and an
+      ADVANCE credit cannot exceed what earlier statements left; orphan credits are not counted); G3 on
+      `tenant_deposits` update (an ADVANCE receipt cannot be edited below what was credited from it).
+      `recordAdvanceCredits` (Open Cutoff) fetches transfers and final bills too, stores HELD receipts only, skips
+      tenants with a FINAL bill and checks that allocations add up before inserting. The credit lines on Billing
+      and the printed Rent + Water statement say "credited P x on this bill · remaining P y for the final bill".
+      Not built yet (stage B): the leaving confirmation at the Billing buttons.
     - **Safeguards:** `processMoveOutWithBill` refuses an inactive tenant or an existing FINAL bill (the unique
       index backs it); after a partial failure the Move Out modal locks to Close only and lists what ran.
       Receipt settlement is filtered by tenant id and HELD status. For an approval request, the apply step
@@ -428,16 +491,142 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       iterate `perTenant` and do not double count it. The monthly snapshot's collections columns sum `perTenant`
       and therefore exclude final-bill utilities. Move-outs saved without a final bill (before Phase 2), other
       cutoffs, and viewers (who cannot read `final_bills`) keep the old behaviour (roommates absorb the days).
-    - **Known limits:** (1) as above, historical cutoffs other than the final bill's own are recomputed without
-      the leaver; (2) whole-room tenancies are billed per bed row, utilities are not collapsed (billing.js only collapses same-name beds
-      with no move-out date, so dated tenants never are); the advance credit code still handles a collapsed row by
-      summing all same-name beds against the combined rent; (3) the move-out
-      date should fall inside an existing cutoff (an admin may proceed without one: rent and utilities are then keyed in by hand); the electric share is only computed when the
-      date is strictly inside the electric window (first day of a window or outside it gives a 0 line and a
-      warning, enter it manually); (4) transfers inside the period are not folded into the rent/utility lines
-      (warning shown); (5) unsettled earlier amounts are typed in by staff; (6) no re-issue flow after voiding a
-      bill; (7) the credit on a printed second-to-last statement is not retroactively corrected if the date later
-      moves (it is recomputed live on the next view).
+    - **Final bill catch-up, one-month stays and sibling beds (built; migration
+      `database/migrations/final_bill_covered_cutoffs.sql`, apply it BEFORE deploying the frontend).** The pure rules live in
+      `src/lib/stay.js` (stay kind, cutoff coverage), `src/lib/utilityPieces.js` (stay-anchored utility split) and
+      `src/lib/finalBill.js` (`buildFinalBillDrafts`); `src/lib/moveOutData.js` loads the data for the Move Out modal and
+      the Approvals review.
+      - **Per-utility cutoff (D2).** Water and electricity each use the cutoff whose OWN window holds the move-out date (they
+        differ on days 1-9: electric Oct 10 - Nov 10 vs water Oct 1 - Oct 31). The move-out reading of each utility is saved
+        as an interim reading against that utility's cutoff, once per tenant or sibling group for a room+utility+date+value (a retry never duplicates it; an unrelated tenant leaving the same day at the same reading saves their own row, a zero-day, zero-usage segment).
+        **No next cutoff is needed:** a date AFTER the end of the latest window of a utility uses that latest cutoff (no blocking, no zero
+        lines), the usage runs through the move-out reading at that cutoff's rate, and the reading is saved against it with its real date (the
+        statement ignores an interim outside its window; the next tenant's start reading still finds it). Where day-based rent needs a window that does not
+        exist, that calendar month is used with its real days (out Nov 1 with no Nov cutoff: 1 of 30); a window's days stop at its end, so no day is charged twice.
+        A stay that began after the latest window does not touch that cutoff: it adds no rent and is not covered, and the meter starts at the room's last reading
+        before move-in; the cutoff only supplies the rate and holds the saved reading. A reading below that cutoff's current reading, a date more than 31 days past the last
+        window and a date more than 31 days from today each raise a warning. **Re-attach step (automatic, no manual reading step):** `open_cutoff` still starts the new cutoff
+        from the old current reading. Right after Open Cutoff, and whenever an admin loads Utilities (self-heal), `reattachMoveOutReadings` moves each such reading to the
+        cutoff whose window now holds its date (insert + delete: `interim_readings` has no UPDATE policy) and adds that cutoff, for that component only, to the `covered_cutoffs` of the
+        final bills that reading belongs to. The leaver is then a ghost for those days and roommates pay only their share; bill lines stay frozen. Example: A and B, Oct water
+        100 -> 110, A out Nov 2 at 120, B stays, Nov current 130, rate 100: A's bill 1,000.00, B's Oct 500.00, B's Nov 1,500.00, total 3,000.00 = metered. In an emptied room the rest stays
+        unbilled with the room. A failure names the rooms and is safe to re-run. A reading belongs to a non-void final bill with stay details, in the same room and date, when its `moving_out_tenant_id` is that bill's tenant, a sibling in that bill's group, or a tenant whose own bill's group names this bill's tenant (a retried bed's list can be partial). Only such readings move and only those bills gain coverage; stale, transfer and manual rows and legacy bills never change. A copy already in the target counts as a duplicate only if it is linked to the same tenant or group, and the last copy is never removed. Each move is traced in the activity row's metadata. A cutoff that a non-void final bill references, or that holds such a bill's move-out reading, cannot be deleted ("This cutoff is part of final bill #n and cannot be deleted. Edit its rate or name instead."). Only a date with a later window but none holding it (the electric gap, e.g. Oct 5) still has no cutoff: a non-admin is blocked with
+        "Open the <Mon YYYY> cutoff first"; an admin may continue (that utility's lines are 0, its reading is not saved, a warning says so). When two cutoffs store the
+        same electric window the one whose water window also holds the date wins.
+      - **Covered cutoffs (D1, D9).** A final bill covers every cutoff window the stay touches that is not already billed.
+        `final_bills.covered_cutoffs` (jsonb array) records them. **Coverage is per component:** an element is a plain cutoff id
+        (rent/water AND electricity: every legacy bill, bill #7 is an empty array) or `{ id, water, electric }` when the bill bills only
+        one component of that cutoff (no schema change). Example: a long stay moving out Nov 5 has water final = Nov (Nov window) but
+        electricity final = Oct (the Oct 10 - Nov 10 window), and Oct is closed for rent/water, so Oct is `{id, water:false, electric:true}`
+        and Nov `{id, water:true, electric:false}`. `fetchTenants()` stamps `_finalBilledCutoffs` (both), `_finalBilledWater` and
+        `_finalBilledElectric`; `computeBilling` makes the leaver a non-billed participant (ghost) per utility, only where that
+        component is covered, and suppresses the leaver's rent only where rent/water is covered. A component the bill does not cover
+        stays on that statement as a normal billed row (the Oct statement keeps the leaver's rent and water). Voiding the bill releases them. "Closed"
+        means: not the active cutoff and older than it (no active cutoff = all closed); `open_cutoff()` deactivates every
+        other cutoff, so the window holding the move-out date is covered regardless of is_active, a one-month stay covers
+        every window it touches (it never appeared on a statement), and only EARLIER windows of longer or odd stays are
+        tested for "closed". Closed periods are assumed billed; any open balance is a typed "Unsettled" line.
+      - **One-month stays (D3).** An ACTIVE tenant whose planned stay is exactly one month (`move_out_date = addMonths(move_in, 1)`) and
+        whose planned move-out is NOT a calendar month end (the old same-date-next-month leases such as Oct 2 -> Nov 2; a month-end lease
+        such as Oct 31 -> Nov 30 or Jan 31 -> Feb 28 goes through the normal flow, billed on the statements and rent by "Rent of a stay")
+        has no standalone bill on any regular statement (Billing, Collections, Payment Monitoring, Dashboard, snapshot, P&L
+        collections): `computeBilling` keeps them as ghost participants of the room split (the room still reconciles and
+        roommates pay only their own share) and returns a `stayBilled` list that Billing shows as "billed on final bill". Rent is ONE flat
+        monthly rate on the final bill; there is no second-to-last credit and the full advance and deposit are credited
+        there. An early or late move-out prorates the rent by days over every window the stay touched.
+      - **Longer stays (D6) and month-end stays.** For a stay that is not stay-billed and began on or after the first cutoff of the
+        app (pre-app guard), the rent line is max(0, months-plus-excess total - rent already billed on CLOSED cutoffs) (see "Rent of
+        a stay"), with the label showing the arithmetic; regular monthly statements keep day-prorated rent. Pre-app move-ins are
+        day-prorated over the covered windows, one line per window.
+      - **Stay-anchored utilities (D4).** Quantity = the room's consumption between the stay's start reading and the move-out
+        reading, split by days present between the beds (siblings equal; days nobody was present are shared by the people
+        overlapping that piece, as in Billing; a piece nobody overlaps stays unbilled), each piece priced at the bedspace rate of
+        the cutoff its days fall in. Start reading precedence per utility: a move-in reading (`interim_readings.moving_in_tenant_id`),
+        else the latest reading of the room at or before the day before move-in (previous tenant's move-out interim, a closed
+        cutoff's closing reading, a cutoff's opening reading), else the opening reading of the cutoff pricing the move-in day. Staff
+        can override it in the bill editor. Days in the gap between two electric windows are priced at the nearest FOLLOWING window
+        and the line says so. A change of rate inside the stay uses the meter readings at the window boundary (the later cutoff's
+        opening reading, else the earlier one's closing reading); with none usable the piece is split pro rata by days and a warning
+        is shown. Negative consumption blocks (the error names both readings).
+      - **Rate fallback (D5).** On the final bill only: a cutoff whose water/electric bedspace rate is empty or 0 uses the most
+        recent earlier cutoff with a rate, noted on the line with where that rate came from ("rate from Sep 2026 (computed from the provider bill) - not
+        set for Oct 2026", or "(manual rate)" when that cutoff's rate is a manual override) and in a warning. The rate is frozen into the stored line: when the
+        Oct provider bill arrives later, this bill does not change. Normal Billing is unchanged.
+      - **Rounding.** Each reading-to-reading piece (per pricing cutoff) is rounded to the cent; the cents are shared by day-weights
+        with exact integer arithmetic, any odd cent going to the larger fractional share, ties to the lower tenant id (first bed). The
+        shares always add up to the piece; every stored line is rounded to 2 decimals and the totals are the exact sum of the
+        stored lines. The final bill is stay-anchored, so it need not equal the leaver's ghost share on the cutoff statement (see section 6).
+      - **Payments netting (D8).** Only payments for a component THIS bill bills come off, as one locked "Less: payment received" line
+        (kind `payment`, `payment_ids`): RENT_WATER payments on cutoffs whose rent/water the bill bills, ELECTRICITY payments on cutoffs
+        whose electricity it bills (so in the Nov 5 example Oct ELECTRICITY counts but the Oct RENT_WATER payment, which belongs to the
+        statement already issued, is ignored). Payments of any other category (OTHER, empty, unknown) are not tied to a statement
+        component and are netted on ANY covered cutoff. Voids (negative rows of the same category and cutoff) are honoured; payments on
+        uncovered cutoffs and payments with no cutoff (the move-out "Final Amount Paid", recorded after the bill) are never netted. The save and the approval apply recompute
+        it with the same rule. It counts under total credits; G2 only looks at credit/forfeit lines, so it is not affected.
+      - **Siblings (D7).** Active tenants with the same trimmed case-insensitive name, in the same room, with the same planned
+        move-out date leave through ONE Move Out flow: one date, one set of room readings, a bill section per bed, a combined summary, one final
+        bill per tenant processed in bed order. A failed bed does not stop the others; the result lists what ran and "Retry failed bed(s)" re-runs
+        only those (a partly processed bed locks as before). A non-admin submits ONE approval request carrying all beds
+        (`new_value._siblings`); approving applies the beds in order, a failure lists which beds were applied and the request stays PENDING;
+        re-approving skips the beds already applied. **Utilities are recomputed at approval:** a request's rent, water and electricity lines were
+        computed when it was submitted, each request assuming the other leavers of the room are still present, so two requests of the same room would not
+        reconcile. At review AND at apply the lines are rebuilt from the database as it is then (same date, readings and start-reading overrides; beds already
+        applied are ghosts in the split) and merged per source: a line the staff did NOT edit (amount equals its own `computed`, or an old request with no marker) is
+        replaced by the fresh figure; a line staff edited is kept with a warning; typed "Unsettled" lines and locked system lines follow the existing rules. The
+        review lists every difference per bed (requested vs will apply), shows the will-apply total, and the saved bill carries
+        `details.recomputed_at_approval = { at, diffs }` and `details.approval_request_id`. Example (electric 6240 -> 6260 at 22, Solo out Oct 22, a pair out Oct 25, three
+        beds from Oct 1): submitted independently the Pair lines are 155.47 / 155.46 (total with Solo 384.27, not 440.00); approved after Solo they are 183.33 each
+        because Solo is a ghost, and 73.34 + 183.33 + 183.33 = 440.00 exactly. **Approve move-outs in move-out date order** (the earlier leaver first) so
+        the room reconciles: the review warns "<name> leaves earlier (<date>) and is not processed yet ..." when another active tenant of the room has an earlier
+        planned date. The apply compares each bed's will-apply net with the net shown in the review and stops BEFORE writing anything ("The figures changed since
+        you opened this review ... Reopen the review and approve again") when they differ. Same name with a different date is not grouped (the modal says so). The combined
+        print page is `/print/final-bill?ids=12,13`.
+      - **Stale data.** The save and the approval apply re-read the covered periods and the payments (plus the advance data) and refuse
+        BEFORE anything is written when they differ from the bill; the modal rebuilds the draft. A staff-edited computed amount only raises a warning.
+      - **Who shares a stay-anchored utility piece.** Follows `billing.js` (not an exact mirror, see known limit 10): the room's ACTIVE tenants, the tenants moving out now, and
+        inactive tenants that are ghosts for a cutoff being priced (final-billed with that utility's component covered, from the
+        per-utility stamps). Every other inactive row of the room, even with an actual move-out date (historical transfer rows,
+        old tenants), is ignored: they are not billed in the cutoff statements, so counting them would dilute everyone's share. The draft
+        warns "N earlier tenant rows of this room were ignored: they are not billed in the cutoff statements."
+      - **Reading order.** The move-out reading of a utility is checked against the room's other interim readings of that utility (a
+        retry's own readings are ignored): lower than an EARLIER reading, or higher than a LATER reading saved in the SAME cutoff (the one it will be
+        saved against), blocks the move-out with an error naming both readings; a later reading in ANOTHER cutoff is only a warning
+        (stale or future-dated entries there must not block). Same rule for water and electricity. Billing's Per Room view never says
+        "Reconciled" for a room with a segment whose reading went backwards or a negative unbilled amount: it says "Check readings"
+        (amounts are not changed; a -0 is shown as 0).
+      - **Closed-rent assumption.** The months-plus-days rent subtracts the rent a CLOSED cutoff's statement "billed", computed live
+        from the move-in date. A tenant added (created) after the next cutoff was opened, with a back-dated move-in, was never actually billed
+        on that statement; the draft then warns "<name> was added after the <cutoff> statement closed; the closed-period rent deducted (P x) assumes it was
+        billed" (amounts unchanged; staff adjust with a typed line if needed).
+      - **One summed final bill for several beds (display only).** The database keeps one `final_bills` row per bed (receipts, guards G1-G3, the unique index
+        and retries stay per tenant). `combineBillsForPrint` sums in integer cents per line type (one rent line, water and electricity per rate, advance, deposit,
+        payment, forfeits; typed lines listed individually with their bed; refs combined; room consumption once, personal consumption summed), and the total is the
+        exact sum of the beds' nets. Bills with the same trimmed case-insensitive name, room and move-out date (non-void) print as ONE statement with one Billing No.
+        (series = the lowest bill id, editable), one prepared-by and a bed note ("Bed A: rent ..., water ..., electricity ..., to return ..."). Printing one
+        bed's bill opens the whole group (`details.stay.group.tenant_ids`, plus the same name/room/date). Move Out steps 2-3 and the Approvals review show the same
+        summed block above the per-bed sections.
+      - **Preview before confirming.** "Preview bill" on Move Out steps 2-3 and in the Approvals review shows the printed statement of the current on-screen draft
+        (edits, typed lines, the summed sibling statement; in Approvals the will-apply figures) in an overlay. It writes nothing and stores nothing, the modal stays as it
+        was, and it carries Billing No. "DRAFT" and the banner "DRAFT - not saved, not yet a final bill" on each copy, also when printed.
+      - **Final-bill print.** `/print/final-bill?id=` / `?ids=` reuses the Rent + Water statement layout (same `Statement` component, rate column and
+        foot notes kept). Billing No. = `FINAL-<room_no>-<series>`, series = the final bill id zero-padded to 4 digits (a "Series" box lets staff
+        override it, one per bill); a "Billing Date" box (default = the move-out date) sets the Due Date = billing date + 7 days; "As of" stays the
+        move-out date. The copy grows with its content instead of clipping; when a copy is taller than half an A4 page the Tenant's and Owner's copies go
+        on separate pages. The print pages are fixed light whatever the app theme. Old bills (no stay details) print as before.
+      - **Vacated confirmation.** Moving a tenant out (admin confirm in the Move Out modal, or the admin's Approve of a non-admin request) requires the tick
+        "Tenant has vacated the room and access has been returned" (one tick covers every bed of a sibling flow). It is recorded on each bed's bill as
+        `final_bills.details.vacated = { confirmed, by, at }` and in the Move Out activity note ("Vacated confirmed by X"); `processMoveOutWithBill`
+        and `processMoveOutGroup` refuse without it before writing anything. A non-admin only submits; in Approvals the admin must tick it before Approve
+        is enabled (also for requests made before the tick existed). It is not printed.
+    - **Known limits:** (1) a tenant who moved out WITHOUT a covered-cutoffs bill (before this change) keeps the old behaviour
+      outside the bill's own cutoff; (2) whole-room tenancies are billed per bed row, utilities are not collapsed (billing.js only collapses
+      same-name beds with no move-out date, so dated tenants never are); the advance credit code still handles a collapsed row by
+      summing all same-name beds against the combined rent; (3) add-ons and custom utility splits of the covered cutoffs are not on the final
+      bill (a warning is shown; add a typed line); (4) transfers inside the stay are not folded into the rent/utility lines (warning
+      shown); (5) unsettled earlier amounts are typed in by staff; (6) no re-issue flow after voiding a bill; (7) the credit on a printed
+      second-to-last statement is not retroactively corrected if the date later moves; (8) an interim reading dated on a window's first day now
+      counts as a boundary in Billing (a live audit found none); (9) editing the move-in or planned move-out date of a stay-billed tenant to something
+      that is no longer one month makes the tenant reappear on the statements; (12) if Open Cutoff records the advance credits but opening then fails, and the tenant moves out with no next cutoff, the stored credit still counts against the final bill although that bill covers the cutoff (fixing it needs a change to guard G2); (13) usage after the last window is priced at that cutoff's rate and stays frozen on the bill even if the next cutoff's rate differs, so the leaver's ghost share in the new cutoff need not equal the bill; (10) a leaver final-billed electric-only on one cutoff and water-only on a different cutoff is a billed row for the uncovered component in `billing.js`, but is not a participant for that utility in the final-bill split (low likelihood); (11) retroactive back-dated move-in: a tenant added AFTER roommates were already final-billed, with a move-in inside the period those bills covered, gets a utility split that includes days the earlier bills already absorbed, so the room's final-bill utility total can exceed the metered consumption (the draft warns when the tenant was created after another final bill of the room that overlaps the span; amounts are not changed, staff review the utility lines).
     - **Phase 3 (not built):** refund tracker (mark `refund_status` PAID with date/reference), in-app
       proof-of-payment.
   - **Refund timing/method**: not settled same-day/in cash — processed **within a few days after
@@ -451,7 +640,7 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   report.
 
 ## 6. Utilities
-- Providers: Maynilad (water), Meralco (electricity). Provider rates **vary over time** — this is
+- Providers: Manila Water (water), Meralco (electricity). (The DB columns keep their old `water_maynilad_rate` name; it is the provider's standard water rate.) Provider rates **vary over time** — this is
   exactly why the manual markup-override checkbox exists in the Utilities screen; 10% is only a
   seed default, not a fixed business rule.
 - Split method: Method B (segment-based, per-day, per-tenant proration) — **confirmed correct**
@@ -468,6 +657,10 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   cost. The commercial tenant's `rate` stays a separate fixed monthly charge. **Commercial ELECTRIC is
   still pending** (not linked, not in variance). Actual collections for a cutoff = bedspace tenants +
   the commercial tenant.
+- **Final-bill utilities vs the cutoff statement.** A leaver's final bill is stay-anchored (reading-to-reading, split by days
+  present, priced per window), so it need not equal the share that tenant would have had on the cutoff statement as a ghost
+  participant (gap days, a window opening reading older than the previous tenant's closing reading). The room still reconciles inside
+  `computeBilling` because the ghost share stays in `perRoom.sum`. See section 5 "Final bill catch-up".
 - **Judgment-laden "losing"/"earning" wording removed from the utility P&L variance display —
   DONE.** `Utilities.jsx` now renders the room-collections-vs-provider-cost variance as
   "Shortfall" / "Surplus" instead of "losing" / "earning."
@@ -697,15 +890,14 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
     end date differs), so editing `move_out_date` weeks after a month has closed self-corrects that
     month's occupancy on the next recompute, not just going forward. Same-day move-in/move-out counts
     as 1 day (same inclusive-last-day/exclusive-period-end convention as `billing.js`'s `dayNum()`).
-    A transfer mid-period updates the same tenant row's `bed_id` in place (no second row); the
-    aggregate day-weighted numerator only ever sees one continuous `[start, end)` span per tenant so
-    it naturally can't double-count or drop a day across a transfer. For the Dashboard's "Occupancy
-    This Month" drill-down detail rows (§10) only, `computeOccupancySnapshot()` additionally splits
-    that span into two rows at `transfer_date` — pre-transfer days attributed to `previous_bed_id`,
-    post-transfer days to the current `bed_id` — purely for display; the split doesn't change the
-    aggregate. This reconstructs only **one hop back**: a tenant transferred twice within the same
-    period still shows their earliest days attributed to the wrong (2nd) bed, since `previous_bed_id`
-    is a single column, not a full transfer history.
+    A transfer mid-period updates the same tenant row's `bed_id` in place (no second row). The formula
+    splits that row's span at `transfer_date` — pre-transfer days on `previous_bed_id`, post-transfer
+    days on the current `bed_id` — and a period that ended before the transfer sits wholly on
+    `previous_bed_id`. A bed counts at most once a day (distinct bed ids), so same-day turnovers and
+    duplicate rows on one bed don't double-count. This reconstructs only **one hop back**: a tenant
+    transferred twice within the same period still shows their earliest days on the wrong (2nd) bed,
+    since `previous_bed_id` is a single column, and that can undercount by merging with that bed's real
+    occupant for those days. Saved months keep their old figures until "Recompute occupancy %" is run.
   - **Denominator.** Current sellable-bed count (excludes `OUT OF ORDER` and `REMOVED`) × days in
     the period — a **documented approximation**: it uses today's bed inventory as the historical
     denominator too, not a reconstruction of the bed count as it stood during that period (bed-status
@@ -722,8 +914,8 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
     data) all go through this. Rows created via "+ Manual month" (`manual = true`) are a deliberate
     admin override and are never touched by any of the above.
   - **Snapshot timing does not affect any live Dashboard number** — worth stating explicitly since it
-    was a real point of confusion during implementation. The existing point-in-time occupancy tiles
-    and the new live "Occupancy this month (so far)" widget (below) all compute directly from live
+    was a real point of confusion during implementation. Both figures on the Dashboard's Occupancy
+    card (right now, and the calendar-month average so far) compute directly from live
     `beds`/`tenants`, never from stored `monthly_reports` rows. Only the historical "Occupancy Rate
     YTD" bar chart reads stored snapshots, so it only reflects a month once that month has actually
     been snapshotted.
@@ -811,35 +1003,45 @@ in another module.**
   - Lease extensions (this month, later-date edits only)
   - Month-to-date projected move-outs
   - Occupancy rate YTD (bar graph)
-  - Occupancy this month (so far) — live, day-weighted month-to-date average (§9); a distinct KPI
-    card shown alongside, not merged into, the existing point-in-time "Occupied Beds" tile
+  - Occupancy — ONE card (replaces the separate "Occupied Beds" and "Occupancy This Month" tiles): the
+    point-in-time figure (beds leased right now / sellable) plus the live **calendar-month** average of
+    beds occupied per day (1st of this month through today, Asia/Manila; §9), with a "Month detail"
+    drill-down. The month figure no longer follows the active cutoff (a cutoff stays active after
+    month-end until the next one is opened, which kept showing last month).
   - Move-in source breakdown
   - Projected vs. actual rent collection summary (links into §11 for full drill-down)
 - **Icon convention. — DONE.** The Monthly Revenue KPI card uses `lucide-react`'s `PhilippinePeso`
   icon (it does exist in the installed version — an earlier note here assuming otherwise was
   wrong), not a dollar sign.
 - **Existing Dashboard elements to keep, unchanged:** Upcoming Move-outs (rolling 30-day) list,
-  Recent Activity feed, today's occupancy segmented bar. There are now **three** distinct occupancy
-  displays on the Dashboard, each answering a different question: the point-in-time segmented bar/
-  "Occupied Beds" tile (right now), the live "Occupancy this month (so far)" tile (day-weighted
-  month-to-date average, §9), and the YTD bar graph (day-weighted per-month history from stored
-  snapshots). None replaces another.
-- **KPI tile drill-downs — DONE.** All 9 KPI tiles (Occupied Beds, Vacant, Reserved, Monthly
-  Revenue, Occupancy This Month (So Far), Moving Out This Month, Move-ins This Month, Lease
+  Recent Activity feed, today's occupancy segmented bar. The Dashboard shows occupancy in three
+  places, each answering a different question: the merged Occupancy card (right now + calendar-month
+  average so far), the segmented bar (right now, by status), and the YTD bar graph (day-weighted
+  per-month history from stored snapshots).
+- **Occupancy data check (Dashboard banner, admin and user).** The day-weighted formula counts a tenant
+  record by its dates, active or not, so an inactive tenant whose move-out date is still in the future
+  counts until that date, possibly alongside the same person's current bed. The banner lists these,
+  and two records on one bed for more than a day this month (from the transfer-aware intervals; a
+  one-day overlap looks like a same-day turnover and isn't flagged), with the month figure with and
+  without the moved-out records. These records may be correct, and billing uses these dates, so staff
+  check them and change a date only if it is wrong. An active tenant whose planned date has passed
+  stops counting in the month average until moved out or extended.
+- **KPI tile drill-downs — DONE.** All KPI tiles (Occupancy [occupied beds; its "Month detail" link opens
+  the calendar-month occupancy list], Vacant, Reserved, Monthly
+  Revenue, Moving Out This Month, Move-ins This Month, Lease
   Extensions, MTD Projected Move-outs) are clickable, opening a shared `DrillDownModal`
   (`src/components/DrillDownModal.jsx`) built from data already in the Dashboard's memory (no new
-  network calls, except "Occupancy This Month" which reuses the existing `computeOccupancySnapshot`
-  call's new `detail` field). Two shapes: **table** (Occupied Beds/Vacant/Reserved/Monthly
-  Revenue/Occupancy This Month — search bar, row cap with "···N more", optional "Open full list in
+  network calls, except "Month detail" which reuses the existing `computeOccupancySnapshot`
+  call's `detail` field). Two shapes: **table** (Occupied Beds/Vacant/Reserved/Monthly
+  Revenue/Month detail — search bar, row cap with "···N more", optional "Open full list in
   …" footer link) and **list** (the other four — reuses `.upcoming-item` styling, no search/cap).
-  Occupied Beds / Occupancy This Month / the four monthly-metric tiles navigate a clicked row to
+  Occupied Beds / Month detail / the four monthly-metric tiles navigate a clicked row to
   `/tenants` and auto-open that tenant's profile (works even if the tenant has since moved out);
   Vacant/Reserved navigate to `/property`'s Bed Rates tab with the room auto-expanded and scrolled
   into view. Monthly Revenue's rows are aggregate (by room type) and not clickable. **Viewer
   role:** every drill-down still opens with full, correct data — only row-click navigation and the
   footer link are hidden (routes `/tenants`/`/property` are admin/user only, same `canAct` gate as
-  the Room Maintenance panel above). "Occupancy This Month" isn't clickable at all when there's no
-  active cutoff (`occupancyMTD` is null), matching its existing "—" display.
+  the Room Maintenance panel above). The month occupancy no longer depends on an active cutoff.
 
 ## 11. Tenant Payment Monitoring module — DONE
 A new, dedicated page (`/payment-monitoring`, admin+user only) — property-wide, not per-tenant —
