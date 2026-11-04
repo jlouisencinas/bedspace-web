@@ -26,3 +26,6 @@ skills-lock.json
 
 # Local email previews (scripts/preview-approval-email.mjs)
 .email-preview/
+
+# Agent pipeline task folders (plans, reviews, test reports)
+.pipeline/
