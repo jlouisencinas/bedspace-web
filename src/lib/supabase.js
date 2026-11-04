@@ -458,8 +458,12 @@ export async function updateTenantDeposit(id, patch, actorId) {
     .update(Object.fromEntries(Object.entries(changes).map(([k, c]) => [k, c.new])))
     .eq('id', id)
     .select()
-    .single()
+    .maybeSingle()
   if (error) throw error
+  // RLS lets only admins update receipts: a staff account (or one whose role changed since this page loaded) gets no row back.
+  if (!updated) {
+    throw new Error(`Your account is not allowed to edit receipts (only an admin can). If your role was changed recently, refresh the page and submit the move-out for approval instead.`)
+  }
 
   const meta = await depositTenantMeta(current.tenant_id)
   await logActivity({
