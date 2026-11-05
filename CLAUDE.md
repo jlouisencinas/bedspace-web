@@ -36,9 +36,11 @@ npm run build     # -> dist/, the only automated correctness check (no test suit
   NotificationSettings, VisitorLog, Login, PrintElectricity, PrintRentWater, PrintFinalBill.
   Property.jsx: "Reconfigure" (bed count/rates) is in the Bed Rates tab; "+ Add Room" / "Retire" in the Room Config tab.
 - `src/components/` shared UI (MoveInModal, MoveOutModal, TransferModal, Statement, DrillDownModal, ReceiptLinesInput,
-  ReservationLedgerModal, RoomReconfigureModal, AddRoomModal, RetireRoomModal, Guard*/Visitor* …);
-  `tenantProfile/` holds the TenantProfileModal tabs (BillsTab, StayTimeline, MaintenanceTab, VisitorsTab).
-- `src/lib/` data layer: `supabase.js` (queries + move-out/receipt writes), `billing.js`, `finalBill.js`, `stay.js`,
+  ReservationLedgerModal, RoomReconfigureModal, AddRoomModal, RetireRoomModal, MonthlyStatementPreview, Guard*/Visitor* …);
+  `tenantProfile/` holds the TenantProfileModal tabs (BillsTab, StatementHistory, StayTimeline, MaintenanceTab, VisitorsTab).
+- `src/lib/` data layer: `supabase.js` (queries + move-out/receipt writes), `billing.js`, `cutoffBilling.js` (the one
+  loader + compute for a cutoff's statements: Billing, print pages, profile history), `monthlyStatement.js` (printed
+  statement props), `tenantStatements.js` (profile statement history), `finalBill.js`, `stay.js`,
   `utilityPieces.js`, `receiptLines.js`, `moveOutData.js`, `pnl.js`, `snapshot.js`, `auth.jsx`, `approvals.js`,
   `tenantProfile.js`, `tenantHistory.js` (profile history reads, in-house rule), `notify.js`, `visitors.js`, `idPhoto.js`, `guardShift.js`, `simCsv.js`, `theme.jsx`.
 - `supabase/functions/` notify-email Edge Function + `_shared/` (also imported by `src/`). `apps-script/` mailer copy.

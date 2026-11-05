@@ -1,12 +1,10 @@
 import { useState, useEffect, useMemo } from 'react'
 import {
-  fetchCutoffs, fetchUtilityBill, fetchTenants,
-  fetchInterimReadings, deleteInterimReading,
-  fetchSplits, setRoomSplit, fetchAddons, saveAddon, deleteAddon, fetchAreaReadings,
-  fetchTransfersForCutoff, fetchAdvanceCreditData,
+  fetchCutoffs, deleteInterimReading,
+  setRoomSplit, saveAddon, deleteAddon,
 } from '../lib/supabase'
-import { computeBilling } from '../lib/billing'
-import { billPosition, advanceCredits, advanceConsumed } from '../lib/finalBill'
+import { loadCutoffBillingInputs, computeCutoffBilling } from '../lib/cutoffBilling'
+import { billPosition, advanceConsumed } from '../lib/finalBill'
 import { cacheBilling } from '../lib/billingCache'
 import { useToast } from '../components/Toast'
 import { useAuth } from '../lib/auth'
@@ -59,33 +57,24 @@ export default function Billing() {
       // Re-fetch cutoff directly to avoid stale closure over `cutoffs` state
       const freshCutoffs = await fetchCutoffs()
       const cutoffObj = freshCutoffs.find(c => c.id === id)
-      const [b, ir, t, sp, ad, ar, xf, adv] = await Promise.all([
-        fetchUtilityBill(id), fetchInterimReadings(id), fetchTenants(),
-        fetchSplits(id), fetchAddons(id), fetchAreaReadings(id),
-        cutoffObj ? fetchTransfersForCutoff(cutoffObj) : Promise.resolve([]),
-        fetchAdvanceCreditData(),
-      ])
+      const inp = await loadCutoffBillingInputs(cutoffObj ?? { id })
       setCutoffs(freshCutoffs)
-      setBill(b); setInterims(ir); setTenants(t); setSplits(sp); setAddons(ad); setAreas(ar); setTransfers(xf); setAdvData(adv)
+      setBill(inp.bill); setInterims(inp.interims); setTenants(inp.tenants); setSplits(inp.splits); setAddons(inp.addons)
+      setAreas(inp.areas); setTransfers(inp.transfers); setAdvData(inp.advData)
     } catch (e) { show(e.message, 'error') }
     setLoading(false)
   }
   useEffect(() => { load() }, [cutoffId])
 
-  const { perRoom, perTenant, stayBilled } = useMemo(() => {
-    if (!cutoff || !bill.length) return { perRoom: [], perTenant: [], stayBilled: [] }
-    const result = computeBilling(cutoff, bill, interims, tenants, splits, addons, areas, transfers)
-    cacheBilling(cutoff.id, result.perTenant)
-    return result
-  }, [cutoff, bill, interims, tenants, splits, addons, areas, transfers])
-
-  // Second-to-last bill: the advance is credited against this period's rent automatically,
+  // credits: second-to-last bill, the advance is credited against this period's rent automatically,
   // computed from the tenant's move-out date (not stored, not cash).
+  const { perRoom, perTenant, stayBilled, credits } = useMemo(() => {
+    const result = computeCutoffBilling(cutoff, { bill, interims, tenants, splits, addons, areas, transfers, advData })
+    if (cutoff && bill.length) cacheBilling(cutoff.id, result.perTenant)
+    return result
+  }, [cutoff, bill, interims, tenants, splits, addons, areas, transfers, advData])
+
   const tenantById = useMemo(() => new Map(tenants.map(t => [t.id, t])), [tenants])
-  const credits = useMemo(() => {
-    if (!cutoff || !perTenant.length) return new Map()
-    return advanceCredits({ tenants, cutoff, perTenant, deposits: advData.deposits, stored: advData.stored })
-  }, [cutoff, perTenant, tenants, advData])
   // Live second-to-last detection skips tenants whose advance was already credited in an earlier cutoff.
   const consumed = useMemo(() => {
     if (!cutoff || !perTenant.length) return new Map()

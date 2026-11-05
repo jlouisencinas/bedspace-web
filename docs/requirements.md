@@ -225,7 +225,33 @@ its own "Could not load …: <message>" if its read fails (the other tabs still 
   first and "No cutoff" last, columns Date / Category / Type / Amount / Notes, a void row shown
   negative with "Void of #id" and its original marked "Voided"; per-cutoff and overall totals summed
   in integer cents (a void pair nets to 0); a summary of advance/deposit receipts by status linking to
-  the Advance & Deposit tab. Past monthly statements are not shown yet (phase 2: recomputed, labelled).
+  the Advance & Deposit tab.
+  - **Monthly statements** (`tenantProfile/StatementHistory.jsx`, between Final bills and Payments by cutoff): one row per
+    cutoff, newest first, the newest 12 then "Load older (n)". A cutoff is listed when the stay
+    (`[move_in, actual/planned move-out]`, open while active) overlaps its water or electric window, a FINAL final bill covers
+    it (`covered_cutoffs` / `cutoff_id`, per component), or the tenant has a payment on it. The row header shows the windows, an
+    "Open period" chip on the active cutoff, the final bill # when covered, and Paid R+W / Paid Elec (integer cents, voids
+    netted). Nothing is fetched when the tab opens.
+  - **Active tenants:** expanding a row recalculates that cutoff through the same loader and compute as the Billing page
+    (`src/lib/cutoffBilling.js`; tenants and advance-credit data fetched once, then 6 reads per cutoff, at most 2 at a time,
+    cached per cutoff, "Refresh" recomputes, an error shows on that row only). It shows the Billing page's figures to the cent
+    (Rent, Water m³/₱ with the old/new room split on a transfer, add-ons, RW Total, Less advance / Net, kWh, Elec ₱, Elec
+    add-ons, Elec Total), Paid, and Balance = displayed Net (or Elec Total) minus that component's payments in cents ("Credit"
+    when overpaid, never a negative balance). OTHER payments are listed apart, not netted. Every expanded row says
+    "Recalculated from current data … not the original printout": rate edits, re-readings, add-on/split/move-in corrections and
+    tenants who have since moved out without a final bill (left out of the recalculation) can make room shares differ from what
+    was originally billed. Kinds: own row; whole-room (a non-primary same-name bed shows the primary bed's row, no balance);
+    one-month stay ("billed on the final bill"); no row ("no charge computed"). A warning shows when the Billing page places the
+    tenant in their current room for a period they spent in another room (transfer in an earlier cutoff), and "Check readings
+    for Room X" when that room does not reconcile. Preview (admin and user) opens the printed statement, identical to the
+    print page, with Billing Date / Bill No. / Prepared by and the REPRINT notice (on by default); admin also gets Print
+    (`/print/rent-water` or `/print/electricity` `?cutoff=&tenant=`). Preview and Print are offered only when the component
+    is over ₱0.01 (the print filter), and not for Rent + Water while advance credits failed to load. Nothing is written or
+    cached for the Billing page.
+  - **Moved-out tenants:** no statement is recalculated (the Billing page drops moved-out tenants from earlier cutoffs, and
+    old inactive rows not covered by a final bill would dilute a rebuilt split). Each cutoff shows its payments per component
+    and, where a FINAL final bill covers that component, "Billed on final bill #n; payments on this cutoff are netted on that
+    final bill" (no balance); otherwise "Not on the current Billing page (moved out): payments only".
 - **Advance & Deposit:** unchanged, plus a "Final bills are on the Bills tab" link.
 - **Maintenance** (`tenantProfile/MaintenanceTab.jsx`): tickets with this `tenant_id` (room, concern,
   remarks, resolution notes, status, raised and resolved dates). Room tickets with no tenant linked
@@ -296,6 +322,19 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
 
 ## 5. Billing & rent
 - **Cutoff windows:** Rent + Water = 1st to end-of-month. Electricity = 10th to 10th.
+- **One compute path for monthly statements.** The Billing page, the Rent + Water / Electricity print pages and the tenant
+  profile's statement history all load a cutoff with `loadCutoffBillingInputs` and compute it with `computeCutoffBilling`
+  (`src/lib/cutoffBilling.js`: `computeBilling` with the cutoff's mid-period transfers, plus the advance credits). The printed
+  statement props (charges, total, billing details, notes) are built only in `src/lib/monthlyStatement.js`, shared by the print
+  pages and the profile preview. Since 2026-11-05 the print pages include mid-period transfers like the Billing page (before,
+  they left them out: a transferred tenant's printout showed different amounts than the screen, or no statement at all).
+- **Single-tenant reprint.** `/print/rent-water?cutoff=X&tenant=ID` (and `/print/electricity`) prints one tenant's statement
+  (for a whole-room rental, the primary bed's id). The Bill No. defaults to that statement's position in the full print, stays
+  editable, and the header reads "1 bill · … · reprint". A "Show reprint notice" checkbox (on by default) prints
+  "REPRINT - recalculated <date> from current data; may differ from the statement originally issued" on both copies, as a
+  small two-line note in the top-right corner under the copy label (it takes no height, so nothing on the fixed half-page copy
+  is pushed off). Back returns to the previous page. A tenant with no statement there gets "No … statement for this tenant on
+  <cutoff>"; a failed load shows "Could not load this cutoff: <message>" instead (on the full print too).
 - **Proration:** mid-cycle move-in/move-out/transfer prorates by exact day count against the
   rent/water cutoff window (not a calendar month) — confirmed correct as implemented.
 - **Due-date labels must be dynamic, not hardcoded.** Today `Collections.jsx` shows fixed strings
@@ -612,7 +651,8 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
         and Nov `{id, water:true, electric:false}`. `fetchTenants()` stamps `_finalBilledCutoffs` (both), `_finalBilledWater` and
         `_finalBilledElectric`; `computeBilling` makes the leaver a non-billed participant (ghost) per utility, only where that
         component is covered, and suppresses the leaver's rent only where rent/water is covered. A component the bill does not cover
-        stays on that statement as a normal billed row (the Oct statement keeps the leaver's rent and water). Voiding the bill releases them. "Closed"
+        stays on that statement as a normal billed row (the Oct statement keeps the leaver's rent and water). Voiding the bill releases them.
+        The tenant profile's Monthly statements show a covered component as "Billed on final bill #n" (§3 "Tenant profile history"). "Closed"
         means: not the active cutoff and older than it (no active cutoff = all closed); `open_cutoff()` deactivates every
         other cutoff, so the window holding the move-out date is covered regardless of is_active, a one-month stay covers
         every window it touches (it never appeared on a statement), and only EARLIER windows of longer or odd stays are
@@ -753,6 +793,10 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   present, priced per window), so it need not equal the share that tenant would have had on the cutoff statement as a ghost
   participant (gap days, a window opening reading older than the previous tenant's closing reading). The room still reconciles inside
   `computeBilling` because the ghost share stays in `perRoom.sum`. See section 5 "Final bill catch-up".
+- **Transferred tenant on a printed statement.** A tenant who transferred rooms inside a cutoff's rent/water window prints with
+  the same split as the Billing page: rent at the old rate for the days before the transfer and the new rate after, and water /
+  electricity shares from both rooms (since 2026-11-05; before, the print pages ignored the transfer). The billing-details box
+  still shows the tenant's current room's meter readings.
 - **Judgment-laden "losing"/"earning" wording removed from the utility P&L variance display —
   DONE.** `Utilities.jsx` now renders the room-collections-vs-provider-cost variance as
   "Shortfall" / "Surplus" instead of "losing" / "earning."
@@ -789,6 +833,9 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   reads). `user` may open and print final bills read-only (`/print/final-bill` is in the admin+user
   route block); Void and the receipt-number fixes stay admin-only. The profile's Visitors tab is
   admin/user only, like the Visitor Log (§17).
+- **Monthly statement history (profile Bills tab):** admin and user see it and open the statement Preview (including its
+  browser print, read-only). The "Print" link to `/print/rent-water` / `/print/electricity` `?tenant=` is admin-only, like those
+  routes (admin-only in `App.jsx`). Every input it reads is admin/user under RLS; nothing is written.
 - **Add-ons are explicitly NOT approval-gated.** `user` role can add/remove billing add-ons
   (parking, aircon, etc.) freely, with no approval and no reason required — the only requirement
   is that it's logged in `activity_log`. Confirmed intentional, not a gap to close.
@@ -1164,7 +1211,8 @@ for monitoring rent collection status across all tenants at once.
 - **Supports filtering/sorting** by outstanding balance / unpaid status, so "who hasn't paid" is a
   direct view.
 - **Selecting a non-active (historical) cutoff shows a warning banner**, since billed totals for a
-  closed cutoff may not reflect tenants who've since moved out.
+  closed cutoff may not reflect tenants who've since moved out. The tenant profile's Monthly statements (§3) carry the same
+  caveat in their "Recalculated from current data" label.
 - **Feeds the Dashboard's projected-vs-actual summary widget (§10)** — the two share one
   calculation (`src/lib/collectionsSummary.js`), so there's no room for the numbers to drift apart.
   This must continue to hold once payments are recorded via the new multi-select/batch-save flow
@@ -1373,6 +1421,19 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       confirm before adding many recipients or notification types.
 - [x] Non-admin blocked check — **done**. The owner confirmed on 2026-09-21 that an admin's email
       link lands in the correct module and a `user` is blocked from modules they have no access to.
+- [ ] Collections, Payment Monitoring, Dashboard and `snapshot.js` still compute cutoffs without mid-period transfers
+      (the Billing page, the print pages and the profile statement history include them, via `src/lib/cutoffBilling.js`).
+- [ ] The Billing page for a closed cutoff drops tenants who have since moved out without a final bill covering it (their
+      roommates absorb those days) and places every tenant in their current room, even for a period before an earlier
+      transfer. The profile statement history mirrors this (with a room warning) and shows moved-out tenants payments only.
+      Fixing it (period participation for closed cutoffs) changes Billing, Collections, P&L and snapshot figures of closed periods.
+- [ ] Second-to-last Rent + Water statements lose their bottom lines when printed (found 2026-11-05, predates the reprint
+      notice): the long "Less: Advanced Payment" detail (S.I# · credited … · remaining … for the final bill) wraps in the narrow
+      middle column, so the copy needs about 540 px of its 501 px fixed height and the "2% late fee" line (with an add-on or
+      split, also the notes) is cut off. The fix needs owner-approved wording/layout (e.g. move that detail to a note line). No
+      figure is affected.
+- [ ] Stored issued statements (`issued_statements`, captured at cutoff close) would give exact "as issued" figures from then
+      on; today every past statement is recalculated from current data.
 
 ## 16. Occupancy Simulator (isolated what-if module)
 - **Purpose.** Lets `admin`/`user` roles model potential rent at 100% (or a scaled) occupancy
