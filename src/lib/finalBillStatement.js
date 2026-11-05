@@ -24,13 +24,27 @@ export const addDays = (iso, n) => new Date(Date.parse(iso.slice(0, 10) + 'T00:0
 const MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 const fmt = (iso) => { if (!iso) return ''; const [y,m,d] = iso.slice(0,10).split('-'); return `${+d}-${MO[+m-1]}-${y}` }
 
+const NBSP = ' '
+const RATE_UNIT = { WATER: `/${NBSP}cu.${NBSP}m`, ELECTRIC: `/${NBSP}kWh` }
+const utilityOf = (l) => {
+  if (l.source === 'WATER' || l.source === 'ELECTRIC') return l.source
+  if (/^Add: Water/i.test(l.label || '')) return 'WATER'
+  if (/^Add: Electric/i.test(l.label || '')) return 'ELECTRIC'
+  return null
+}
+const rateTextOf = (l) => {
+  if (l.rate == null) return undefined
+  const unit = RATE_UNIT[utilityOf(l)]
+  return unit ? `${rate(l.rate)} ${unit}` : rate(l.rate)
+}
+
 function toCharge(l) {
   const credit = l.kind === 'credit'
   const forfeit = l.kind === 'forfeit'
   return {
     label: l.label,
     mid: forfeit && l.original != null ? [l.mid, `${peso(l.original)} forfeited`].filter(Boolean).join(' · ') : l.mid,
-    rateText: l.rate != null ? rate(l.rate) : undefined,
+    rateText: rateTextOf(l),
     amount: l.amount,
     amountText: credit || l.kind === 'payment' || Number(l.amount) < 0 ? signedPeso(l.amount) : undefined,
     italic: l.kind === 'unsettled',

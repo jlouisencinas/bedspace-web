@@ -634,7 +634,8 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
         (edits, typed lines, the summed sibling statement; in Approvals the will-apply figures) in an overlay. It writes nothing and stores nothing, the modal stays as it
         was, and it carries Billing No. "DRAFT" and the banner "DRAFT - not saved, not yet a final bill" on each copy, also when printed.
       - **Final-bill print.** `/print/final-bill?id=` / `?ids=` reuses the Rent + Water statement layout (same `Statement` component, rate column and
-        foot notes kept). Billing No. = `FINAL-<room_no>-<series>`, series = the final bill id zero-padded to 4 digits (a "Series" box lets staff
+        foot notes kept). The rate column is a unit price, not an amount: water shows "₱155.0375 / cu. m", electricity "₱22.00 / kWh"
+        (the unit may wrap under the number); also in the draft "Preview bill". Billing No. = `FINAL-<room_no>-<series>`, series = the final bill id zero-padded to 4 digits (a "Series" box lets staff
         override it, one per bill); a "Billing Date" box (default = the move-out date) sets the Due Date = billing date + 7 days; "As of" stays the
         move-out date. The copy grows with its content instead of clipping; when a copy is taller than half an A4 page the Tenant's and Owner's copies go
         on separate pages. The print pages are fixed light whatever the app theme. Old bills (no stay details) print as before.
