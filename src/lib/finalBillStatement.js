@@ -17,6 +17,7 @@ export const DRAFT_BANNER = 'DRAFT - not saved, not yet a final bill'
 export const peso = n => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const signedPeso = n => (Number(n) < 0 ? '-' : '') + peso(Math.abs(Number(n) || 0))
 const rate = n => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 4 })
+const num = n => Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 4 })
 const cu = n => Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const reading = n => (n == null ? '—' : Number(n).toLocaleString('en-PH', { maximumFractionDigits: 2, useGrouping: false }))
 
@@ -35,7 +36,7 @@ const utilityOf = (l) => {
 const rateTextOf = (l) => {
   if (l.rate == null) return undefined
   const unit = RATE_UNIT[utilityOf(l)]
-  return unit ? `${rate(l.rate)} ${unit}` : rate(l.rate)
+  return unit ? `${num(l.rate)} ${unit}` : rate(l.rate)
 }
 
 function toCharge(l) {
