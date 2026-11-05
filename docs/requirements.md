@@ -185,13 +185,14 @@ and **Move Out** only (Edit Details moved to its own module — see below).
   This is the infrastructure the lease-extension count metric (§9/§10) reads.
 
 ### Moved-out tenants on the Tenants page
-- **Status filter:** "Active (Leased)" (default, active tenants only, room order), "Moved out"
-  (inactive tenants only, newest move-out first) and "All tenants" (both; inactive rows carry a
-  "Moved out" chip). Room and search filters apply on top; a moved-out tenant matches the last room
+- **Status filter:** "Active (Leased)" (default, active tenants only), "Moved out" (inactive
+  tenants only) and "All tenants" (both; inactive rows carry a "Moved out" chip). Every view
+  defaults to room number ascending, then bed letter, for ease of checking; switching the filter
+  resets to that order, and the column headers still re-sort. Room and search filters apply on top; a moved-out tenant matches the last room
   and bed they occupied. The date column reads "Move Out" (planned date) in the Active view and
   "Moved Out" otherwise. The effective move-out date of an inactive tenant is
   `actual_move_out_date`, falling back to the planned `move_out_date` for legacy rows; rows with
-  neither show "—" and sort last.
+  neither show "—" and sort last when sorting by that column descending.
 - **Profile:** a moved-out tenant's profile shows a "Moved out <date>" chip under the name, an
   "Actual Move Out" row when it differs from the planned date, and an Overview banner listing each
   final bill ("Final bill #id · STATUS · Refund/Due amount") with a Print link for admins and a

@@ -187,8 +187,7 @@ export default function Tenants() {
   }
   function handleStatFilter(value) {
     setStatFilter(value)
-    if (value === 'MOVED_OUT')   { setSortKey('moveout'); setSortDir('desc') }
-    else if (value === 'LEASED') { setSortKey('room');    setSortDir('asc') }
+    setSortKey('room'); setSortDir('asc')
     setPage(0)
   }
   const arrow = key => key === sortKey ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''
