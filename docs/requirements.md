@@ -822,6 +822,11 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   any-signed-in-user policies, so admin/user/viewer access is unchanged). Its only reads and writes
   are the `visitor_*` SECURITY DEFINER RPCs plus uploading ID photos to the private `visitor-ids`
   bucket. `public.app_role()` returns the caller's role for RPC and storage-policy checks.
+- **Users page, Add New User (admin):** creates the account with `supabase.auth.signUp`. If the email is
+  already registered, Supabase returns a fake success (empty `identities`) and keeps the old password, so
+  the page rejects it with "This email already has an account" instead of reporting success
+  (`src/lib/userAccounts.js`). Re-adding a user is never a way to change a password: reset it from the
+  Supabase dashboard (Authentication → Users).
 - General principle: whatever is visible/accessible to the `user` role in the UI, they may do
   directly, **provided it's captured in `activity_log`**. A specific subset of actions additionally
   requires the approval workflow (current scope: move-out, transfer, room config, bed rate

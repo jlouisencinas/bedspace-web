@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
+import { isExistingAccountSignup, EXISTING_ACCOUNT_MESSAGE } from '../lib/userAccounts'
 import { useToast } from '../components/Toast'
 import { UserPlus, X, AlertTriangle } from 'lucide-react'
 
@@ -46,6 +47,7 @@ function CreateUserModal({ onClose, onCreated }) {
         options:  { emailRedirectTo: undefined },
       })
       if (error) throw error
+      if (isExistingAccountSignup(data)) throw new Error(EXISTING_ACCOUNT_MESSAGE)
       const userId = data.user?.id
       if (!userId) throw new Error('User created but ID not returned — check Supabase Auth settings.')
       if (form.role !== 'viewer') {
