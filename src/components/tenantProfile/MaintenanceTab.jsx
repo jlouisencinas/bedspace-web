@@ -1,3 +1,5 @@
+import { ticketPlace } from '../../lib/maintenanceTickets'
+
 function fmtDate(d) {
   if (!d) return '—'
   return new Date(d).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' })
@@ -16,11 +18,11 @@ export default function MaintenanceTab({ tickets, error }) {
   )
   return (
     <table className="payments-table">
-      <thead><tr><th>Room</th><th>Concern</th><th>Status</th><th>Raised</th><th>Resolved</th></tr></thead>
+      <thead><tr><th>Location</th><th>Concern</th><th>Status</th><th>Raised</th><th>Resolved</th></tr></thead>
       <tbody>
         {tickets.map(tk => (
           <tr key={tk.id}>
-            <td>{tk.rooms?.room_no ? `Rm ${tk.rooms.room_no}` : '—'}</td>
+            <td>{ticketPlace(tk)}</td>
             <td>
               {tk.concern}
               {tk.remarks && <div className="text-[11px] text-ink-muted mt-0.5">{tk.remarks}</div>}

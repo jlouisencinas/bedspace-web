@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth'
 import { useToast } from './Toast'
 import ResolveTicketModal from './ResolveTicketModal'
 import TicketDetailModal from './TicketDetailModal'
+import { ticketPlace } from '../lib/maintenanceTickets'
 import { Wrench, CheckCircle, ArrowRight } from 'lucide-react'
 
 function fmtDate(d) {
@@ -55,7 +56,7 @@ export default function RoomMaintenancePanel() {
               <div key={t.id} className="px-5 py-3 flex items-center justify-between gap-3 cursor-pointer hover:bg-surface-2" onClick={() => setDetailT(t)}>
                 <div className="min-w-0">
                   <div className="text-[13px] font-semibold text-ink truncate">
-                    {t.rooms?.room_no ? `Room ${t.rooms.room_no}` : '—'} — {t.concern}
+                    {ticketPlace(t)} — {t.concern}
                   </div>
                   <div className="text-[11px] text-ink-faint mt-0.5">
                     {t.tenants?.name || 'Staff-raised'} · {fmtDate(t.raised_at)}

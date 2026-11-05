@@ -43,9 +43,10 @@ npm run build     # -> dist/
 - `src/lib/` data layer: `supabase.js` (queries + move-out/receipt writes), `billing.js`, `cutoffBilling.js` (the one
   loader + compute for a cutoff's statements: Billing, print pages, profile history), `monthlyStatement.js` (printed
   statement props), `tenantStatements.js` (profile statement history), `finalBill.js`, `stay.js`,
-  `utilityPieces.js`, `receiptLines.js`, `moveOutData.js`, `pnl.js`, `snapshot.js`, `auth.jsx`, `approvals.js`,
+  `utilityPieces.js`, `receiptLines.js`, `moveOutData.js`, `maintenanceTickets.js` (ticket target/place helpers), `pnl.js`, `snapshot.js`, `auth.jsx`, `approvals.js`,
   `tenantProfile.js`, `tenantHistory.js` (profile history reads, in-house rule), `notify.js`, `visitors.js`, `idPhoto.js`, `guardShift.js`, `simCsv.js`, `theme.jsx`.
-- `supabase/functions/` notify-email Edge Function + `_shared/` (also imported by `src/`). `apps-script/` mailer copy.
+- `supabase/functions/` notify-email Edge Function + `_shared/` (also imported by `src/`; `maintenance-locations.ts` = the
+  fixed common-area list for tickets). `apps-script/` mailer copy.
 - Tests: `src/lib/*.test.js` next to their modules (`nonNegotiables.test.js` = the §14 regression tests), synthetic
   fixtures in `src/lib/__fixtures__/`, safety guard `src/test/setup.js` (blanks the Supabase config, refuses
   `src/lib/supabase.js` and the network). CI: `.github/workflows/ci.yml` (`npm test` + `npm run build` on every PR).

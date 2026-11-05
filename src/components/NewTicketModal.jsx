@@ -1,28 +1,28 @@
 import { useState, useMemo } from 'react'
 import { X } from 'lucide-react'
 import { addTicket } from '../lib/supabase'
+import { parseTargetValue, targetValue, tenantsForTarget } from '../lib/maintenanceTickets'
+import { MAINTENANCE_LOCATIONS } from '../../supabase/functions/_shared/maintenance-locations.ts'
 
 export default function NewTicketModal({ rooms, tenants, onClose, onSaved }) {
-  const [form, setForm] = useState({ room_id: '', tenant_id: '', concern: '', remarks: '' })
+  const [form, setForm] = useState({ target: '', tenant_id: '', concern: '', remarks: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
-  // Tenants that live in the selected room
-  const roomTenants = useMemo(() => {
-    if (!form.room_id) return tenants
-    return tenants.filter(t => String(t.beds?.room_id) === String(form.room_id))
-  }, [tenants, form.room_id])
+  const target = useMemo(() => parseTargetValue(form.target), [form.target])
+  const targetTenants = useMemo(() => tenantsForTarget(tenants, target), [tenants, target])
 
   async function handleSubmit(e) {
     e.preventDefault()
-    if (!form.room_id) { setError('Please select a room.'); return }
+    if (!target.roomId && !target.location) { setError('Please select a room or common area.'); return }
     if (!form.concern.trim()) { setError('Concern is required.'); return }
     setBusy(true); setError('')
     try {
       await addTicket({
-        roomId:    Number(form.room_id),
+        roomId:    target.roomId,
+        location:  target.location,
         tenantId:  form.tenant_id ? Number(form.tenant_id) : null,
         concern:   form.concern.trim(),
         remarks:   form.remarks.trim() || null,
@@ -45,16 +45,23 @@ export default function NewTicketModal({ rooms, tenants, onClose, onSaved }) {
           <div className="modal-body">
             <div className="form-grid">
               <div className="fg full">
-                <label>Room <span className="text-danger-text">*</span></label>
+                <label>Location <span className="text-danger-text">*</span></label>
                 <select
-                  value={form.room_id}
-                  onChange={e => { set('room_id', e.target.value); set('tenant_id', '') }}
+                  value={form.target}
+                  onChange={e => { setError(''); set('target', e.target.value); set('tenant_id', '') }}
                   required
                 >
-                  <option value="">— Select room —</option>
-                  {rooms.map(r => (
-                    <option key={r.id} value={r.id}>Room {r.room_no} · {r.room_type}</option>
-                  ))}
+                  <option value="">— Select room or common area —</option>
+                  <optgroup label="Common areas">
+                    {MAINTENANCE_LOCATIONS.map(l => (
+                      <option key={l.code} value={targetValue({ location: l.code })}>{l.label}</option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Rooms">
+                    {rooms.map(r => (
+                      <option key={r.id} value={targetValue({ roomId: r.id })}>Room {r.room_no} · {r.room_type}</option>
+                    ))}
+                  </optgroup>
                 </select>
               </div>
               <div className="fg full">
@@ -64,7 +71,7 @@ export default function NewTicketModal({ rooms, tenants, onClose, onSaved }) {
                   onChange={e => set('tenant_id', e.target.value)}
                 >
                   <option value="">— Staff-raised / anonymous —</option>
-                  {roomTenants.map(t => (
+                  {targetTenants.map(t => (
                     <option key={t.id} value={t.id}>{t.name}</option>
                   ))}
                 </select>

@@ -6,6 +6,8 @@ import NewTicketModal     from '../components/NewTicketModal'
 import ResolveTicketModal from '../components/ResolveTicketModal'
 import TicketDetailModal  from '../components/TicketDetailModal'
 import SearchInput from '../components/SearchInput'
+import { parseTargetValue, targetValue, ticketMatchesSearch, ticketPlace } from '../lib/maintenanceTickets'
+import { MAINTENANCE_LOCATIONS } from '../../supabase/functions/_shared/maintenance-locations.ts'
 import { Wrench, Plus, CheckCircle, Hammer } from 'lucide-react'
 
 function fmtDateTime(d) {
@@ -24,7 +26,7 @@ export default function Maintenance() {
   const [rooms,        setRooms]        = useState([])
   const [tenants,      setTenants]      = useState([])
   const [loading,      setLoading]      = useState(true)
-  const [roomFilter,   setRoomFilter]   = useState('')
+  const [placeFilter,  setPlaceFilter]  = useState('')
   const [statusFilter, setStatusFilter] = useState('PENDING')
   const [search,       setSearch]       = useState('')
   const [newModal,     setNewModal]     = useState(false)
@@ -37,8 +39,13 @@ export default function Maintenance() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
+      const place = parseTargetValue(placeFilter)
       const [t, roomRows, tenantRows] = await Promise.all([
-        fetchTickets({ roomId: roomFilter || undefined, status: statusFilter || undefined }),
+        fetchTickets({
+          roomId:   place.roomId || undefined,
+          location: place.location || undefined,
+          status:   statusFilter || undefined,
+        }),
         fetchRooms(),
         fetchTenants(),
       ])
@@ -47,19 +54,14 @@ export default function Maintenance() {
       setTenants(tenantRows.filter(t => t.is_active))
     } catch(e) { show(e.message, 'error') }
     setLoading(false)
-  }, [roomFilter, statusFilter])
+  }, [placeFilter, statusFilter])
 
   useEffect(() => { load() }, [load])
 
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase()
-    if (!q) return tickets
-    return tickets.filter(t =>
-      (t.concern || '').toLowerCase().includes(q) ||
-      (t.tenants?.name || '').toLowerCase().includes(q) ||
-      (t.rooms?.room_no || '').includes(q)
-    )
-  }, [tickets, search])
+  const filtered = useMemo(
+    () => tickets.filter(t => ticketMatchesSearch(t, search)),
+    [tickets, search],
+  )
 
   const pendingCount = tickets.filter(t => t.status === 'PENDING').length
 
@@ -78,7 +80,7 @@ export default function Maintenance() {
               </span>
             )}
           </h1>
-          <p className="page-sub">Track and resolve maintenance concerns for rooms and tenants</p>
+          <p className="page-sub">Track and resolve maintenance concerns for rooms, common areas and tenants</p>
         </div>
         {canWrite && (
           <button className="btn primary" onClick={() => setNewModal(true)}>
@@ -90,14 +92,19 @@ export default function Maintenance() {
       {/* ── Toolbar ── */}
       <div className="toolbar">
         <SearchInput
-          placeholder="Search concern, tenant, room…"
+          placeholder="Search concern, tenant, location…"
           value={search} onChange={e => setSearch(e.target.value)}
           className="w-64"
         />
-        <select value={roomFilter} onChange={e => setRoomFilter(e.target.value)}
+        <select value={placeFilter} onChange={e => setPlaceFilter(e.target.value)}
           className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 transition-colors">
-          <option value="">All Rooms</option>
-          {rooms.map(r => <option key={r.id} value={r.id}>Room {r.room_no}</option>)}
+          <option value="">All locations</option>
+          <optgroup label="Common areas">
+            {MAINTENANCE_LOCATIONS.map(l => <option key={l.code} value={targetValue({ location: l.code })}>{l.label}</option>)}
+          </optgroup>
+          <optgroup label="Rooms">
+            {rooms.map(r => <option key={r.id} value={targetValue({ roomId: r.id })}>Room {r.room_no}</option>)}
+          </optgroup>
         </select>
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
           className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 transition-colors">
@@ -119,7 +126,7 @@ export default function Maintenance() {
           <table>
             <thead>
               <tr>
-                <th>Room</th>
+                <th>Location</th>
                 <th>Tenant</th>
                 <th>Concern</th>
                 <th>Remarks</th>
@@ -133,7 +140,7 @@ export default function Maintenance() {
               {filtered.map(t => (
                 <tr key={t.id} className="cursor-pointer hover:bg-surface-2" onClick={() => setDetailT(t)}>
                   <td className="font-semibold text-ink whitespace-nowrap">
-                    {t.rooms?.room_no ? `Room ${t.rooms.room_no}` : '—'}
+                    {ticketPlace(t)}
                   </td>
                   <td>
                     {t.tenants?.name || <span className="text-ink-faint italic">Staff-raised</span>}
