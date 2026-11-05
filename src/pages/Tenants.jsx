@@ -83,6 +83,7 @@ export default function Tenants() {
       room_id:      t.beds?.room_id          || null,
       bed_letter:   t.beds?.bed_letter       || '',
       bed_location: t.beds?.bed_location     || '',
+      outDate:      t.is_active ? t.move_out_date : (t.actual_move_out_date || t.move_out_date),
     })),
   [tenants])
 
@@ -145,15 +146,17 @@ export default function Tenants() {
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase()
-    return enriched.filter(t => {
-      if (statFilter && statFilter !== 'ALL' && t.is_active !== (statFilter === 'LEASED')) return false
+    const base = statFilter === 'MOVED_OUT' ? allEnriched.filter(t => !t.is_active)
+               : statFilter === 'ALL'       ? allEnriched
+               : enriched
+    return base.filter(t => {
       if (roomFilter && t.room_no !== roomFilter) return false
       if (q && !(t.name || '').toLowerCase().includes(q)
            && !(t.room_no || '').includes(q)
            && !(t.bed_letter || '').toLowerCase().includes(q)) return false
       return true
     })
-  }, [enriched, search, statFilter, roomFilter])
+  }, [allEnriched, enriched, search, statFilter, roomFilter])
 
   const sorted = useMemo(() => {
     const val = (t, key) => {
@@ -163,7 +166,7 @@ export default function Tenants() {
         case 'bed':     return (t.bed_letter || '')
         case 'rate':    return Number(t.rate) || 0
         case 'movein':  return t.move_in_date  || ''
-        case 'moveout': return t.move_out_date || ''
+        case 'moveout': return t.outDate || ''
         default:        return ''
       }
     }
@@ -180,6 +183,11 @@ export default function Tenants() {
   function handleSort(key) {
     if (key === sortKey) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
     else { setSortKey(key); setSortDir('asc') }
+    setPage(0)
+  }
+  function handleStatFilter(value) {
+    setStatFilter(value)
+    setSortKey('room'); setSortDir('asc')
     setPage(0)
   }
   const arrow = key => key === sortKey ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''
@@ -291,7 +299,7 @@ export default function Tenants() {
         <div>
           <h1 className="page-title">Tenants</h1>
           <p className="page-sub">
-            {sorted.length} {statFilter === 'LEASED' ? 'active' : ''} tenants
+            {sorted.length} {statFilter === 'LEASED' ? 'active tenants' : statFilter === 'MOVED_OUT' ? 'moved-out tenants' : 'tenants'}
           </p>
         </div>
         <button
@@ -314,10 +322,11 @@ export default function Tenants() {
           value={search} onChange={e => { setSearch(e.target.value); setPage(0) }}
           className="w-60"
         />
-        <select value={statFilter} onChange={e => { setStatFilter(e.target.value); setPage(0) }}
+        <select value={statFilter} onChange={e => handleStatFilter(e.target.value)}
           className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors">
           <option value="LEASED">Active (Leased)</option>
-          <option value="ALL">All Tenants</option>
+          <option value="MOVED_OUT">Moved out</option>
+          <option value="ALL">All tenants</option>
         </select>
         <select value={roomFilter} onChange={e => { setRoomFilter(e.target.value); setPage(0) }}
           className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors">
@@ -335,7 +344,7 @@ export default function Tenants() {
               <th onClick={() => handleSort('bed')}     className="cursor-pointer select-none">Bed{arrow('bed')}</th>
               <th onClick={() => handleSort('rate')}    className="cursor-pointer select-none">Rate{arrow('rate')}</th>
               <th onClick={() => handleSort('movein')}  className="cursor-pointer select-none">Move In{arrow('movein')}</th>
-              <th onClick={() => handleSort('moveout')} className="cursor-pointer select-none">Move Out{arrow('moveout')}</th>
+              <th onClick={() => handleSort('moveout')} className="cursor-pointer select-none">{statFilter === 'LEASED' ? 'Move Out' : 'Moved Out'}{arrow('moveout')}</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -344,23 +353,30 @@ export default function Tenants() {
               ? <tr><td colSpan={7}><div className="empty"><SearchX size={28} className="mx-auto mb-3 text-ink-faint" /><p>No tenants found</p></div></td></tr>
               : pageRows.map(t => (
                 <tr key={t.id} className="group">
-                  <td className="td-name">{t.name}</td>
-                  <td className="font-medium text-ink-secondary">{t.room_no}</td>
+                  <td className="td-name">
+                    {t.name}
+                    {statFilter === 'ALL' && !t.is_active && (
+                      <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-surface-3 text-ink-muted">Moved out</span>
+                    )}
+                  </td>
+                  <td className="font-medium text-ink-secondary">{t.room_no || '—'}</td>
                   <td>
-                    <span className="font-bold text-ink">{t.bed_letter}</span>
+                    <span className="font-bold text-ink">{t.bed_letter || '—'}</span>
                     {t.bed_location && <span className="text-ink-faint text-[11px] ml-1">{t.bed_location}</span>}
                   </td>
                   <td className="td-rate">{fmt(t.rate)}</td>
                   <td className="text-[12px] text-ink-muted">{fmtDate(t.move_in_date)}</td>
-                  <td className="text-[12px] text-ink-muted">{fmtDate(t.move_out_date)}</td>
+                  <td className="text-[12px] text-ink-muted">{fmtDate(t.outDate)}</td>
                   <td>
                     <div className="flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
                       <button className="btn-xs blue"  onClick={() => setDetail(t)}>
                         <Eye size={10} /> View
                       </button>
-                      <button className="btn-xs red" onClick={() => setMoveOutT(t)}>
-                        <LogOut size={10} /> Move Out
-                      </button>
+                      {t.is_active && (
+                        <button className="btn-xs red" onClick={() => setMoveOutT(t)}>
+                          <LogOut size={10} /> Move Out
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

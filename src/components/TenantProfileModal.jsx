@@ -92,6 +92,8 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
   const [detailHistory, setDetailHistory] = useState([])
   const [detailDeposits,setDetailDeposits]= useState([])
   const [detailBills,   setDetailBills]   = useState([])
+  const [billsLoading,  setBillsLoading]  = useState(true)
+  const [billsError,    setBillsError]    = useState('')
   const [voidId,        setVoidId]        = useState(null)
   const [voidReason,    setVoidReason]    = useState('')
   const [billBusy,      setBillBusy]      = useState(false)
@@ -121,6 +123,8 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
     setDetailHistory([])
     setDetailDeposits([])
     setDetailBills([])
+    setBillsLoading(true)
+    setBillsError('')
     setVoidId(null)
     setDepLoadError('')
     setDepEditId(null)
@@ -152,6 +156,8 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
       if (results[6].status === 'fulfilled') setDetailDeposits(results[6].value)
       else setDepLoadError(results[6].reason?.message || 'unknown error')
       if (results[7].status === 'fulfilled') setDetailBills(results[7].value)
+      else setBillsError(results[7].reason?.message || 'unknown error')
+      setBillsLoading(false)
       if (results[8].status === 'fulfilled') setResHeld(results[8].value)
     }
     load()
@@ -291,6 +297,9 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
 
   const resHeldTotal = resHeld.reduce((sum, p) => sum + dbToCents(p.amount), 0) / 100
 
+  const movedOut = !tenant.is_active
+  const outDate  = tenant.actual_move_out_date || tenant.move_out_date
+
   const heldTotal = kind => detailDeposits
     .filter(d => d.kind === kind && d.status === 'HELD')
     .reduce((sum, d) => sum + Number(d.amount), 0)
@@ -311,6 +320,11 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                 {tenant.bed_location && ` (${tenant.bed_location})`}
                 {' · '}{fmt(tenant.rate)}/mo
               </div>
+              {movedOut && (
+                <span className="inline-block mt-1 text-[10px] font-bold px-1.5 py-0.5 rounded bg-surface-3 text-ink-muted">
+                  Moved out {fmtDate(outDate)}
+                </span>
+              )}
             </div>
           </div>
           <button className="btn-close" onClick={onClose}><X size={16} /></button>
@@ -344,6 +358,34 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
           {/* ── Overview ── */}
           {profileTab === 'overview' && (
             <>
+              {movedOut && (
+                <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5 mb-3 text-[12px] text-ink-secondary">
+                  {billsLoading ? (
+                    <div className="text-ink-muted">Loading final bills…</div>
+                  ) : billsError ? (
+                    <div className="text-danger-text">Could not load final bills: {billsError}</div>
+                  ) : detailBills.length === 0 ? (
+                    <div>No final bill on record (moved out before final bills were introduced, or imported from the sheet).</div>
+                  ) : (
+                    <div className="space-y-1">
+                      {detailBills.map(b => {
+                        const net = Number(b.net_amount)
+                        return (
+                          <div key={b.id} className="flex items-center gap-2 flex-wrap">
+                            <span className="font-semibold text-ink">
+                              Final bill #{b.id} · {b.status} · {net < 0 ? `Refund ${money(-net)}` : `Due ${money(net)}`}
+                            </span>
+                            {isAdmin && (
+                              <Link className="btn-xs blue" to={`/print/final-bill?id=${b.id}`}>Print</Link>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                  <button className="btn-xs mt-2" onClick={() => setProfileTab('advance')}>Go to Advance &amp; Deposit</button>
+                </div>
+              )}
               {[
                 ['Room',             `${tenant.room_no} · Bed ${tenant.bed_letter}${tenant.bed_location ? ` (${tenant.bed_location})` : ''}`],
                 ['Room Type',        tenant.room_type],
@@ -353,6 +395,8 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                 ['Duration',         tenant.duration],
                 ['Move In',          fmtDate(tenant.move_in_date)],
                 ['Move Out',         fmtDate(tenant.move_out_date)],
+                ['Actual Move Out',  tenant.actual_move_out_date && tenant.actual_move_out_date !== tenant.move_out_date
+                                       ? fmtDate(tenant.actual_move_out_date) : null],
                 ['Permanent Address',tenant.permanent_address],
                 ['Occupation',       tenant.occupation],
                 ['Employer',         tenant.employer],
