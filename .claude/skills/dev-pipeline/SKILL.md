@@ -26,7 +26,7 @@ commit). Without switches, decide yourself.
 ## 1. Set up
 1. Task id: `<yyyymmdd>-<short-kebab>`. Create `.pipeline/<task>/` and write `requirement.md` (the user's words verbatim +
    tier + switches) and `status.md` (one line per step as it completes, so a new session can resume).
-2. Branch: follow the `git-workflow` skill §1 before any file edit.
+2. Branch: follow the `git-workflow` skill §1 before any file edit, including its overlap check against open PRs.
 3. Load the knowledge skills that match the area (`billing-rules`, `roles-and-rls`, `db-migrations`, `notifications`,
    `visitor-log`, `occupancy-dashboard`) and name them in every agent prompt so the agent loads them too.
 
@@ -64,9 +64,11 @@ The plan names the `docs/requirements.md` sections to update; the engineer edits
 Map if files/pages were added); QA checks the docs match the code. Mark a backlog item done in §15 when it is.
 
 ## 6. Finish
-1. Before the commit, run `npm test && npm run build` once more yourself. Commit, push, PR: `git-workflow` skill §2-3. Write
-   `.pipeline/<task>/pr.md` first; it is the PR body and includes the `npm test` summary line. CI (`.github/workflows/ci.yml`)
-   runs the same two commands on the PR.
+1. Before the commit, run `npm test && npm run build` once more yourself. Commit, then **sync with `main`** (`git-workflow`
+   §3: merge `origin/main`, resolve conflicts, re-run `npm test && npm run build`), then push and open the PR. Write
+   `.pipeline/<task>/pr.md` first; it is the PR body and includes the `npm test` summary line and the sync line. CI
+   (`.github/workflows/ci.yml`) runs the same two commands on the PR. After opening, check mergeability (`git-workflow` §4).
+   Stacked on an unmerged PR? Follow `git-workflow` §6 (draft, bottom-up merge order).
 2. Report to the user (short): tier, what changed (user-visible), files, QA/tester results, database changes (applied to
    production yes/no), requirements.md sections updated, PR link, anything they must do before merging. Merging is
    theirs.
@@ -75,6 +77,7 @@ Map if files/pages were added); QA checks the docs match the code. Mark a backlo
 - `.pipeline/` is git-ignored and is the memory of a task: to resume in a new session, read `status.md` and continue.
 - Production investigation (a user reports an error): `database-admin` in read-only mode first (logs via `query_logs`,
   data, policies), then a fix pipeline with the root cause in requirement.md.
-- Never commit or push to `main`; the user merges every PR.
+- Never commit or push to `main`; the user merges every PR. When the user says a PR was merged, re-sync the other open
+  pipeline PRs (`git-workflow` §5) before starting new work.
 - Never run tests against production. Tests are fixture-only by design (`src/test/setup.js` blocks `src/lib/supabase.js` and
   the network).

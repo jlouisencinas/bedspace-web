@@ -19,7 +19,7 @@ The main session is the orchestrator. Triage every request first (a hook reminds
 ## Knowledge skills (load the one that matches the code you touch)
 `billing-rules` (money, receipts, final bill, stays) · `roles-and-rls` (roles, policies, guard lockout) ·
 `db-migrations` (production DB procedure, init.sql) · `notifications` (Edge Function, emails) ·
-`visitor-log` · `occupancy-dashboard` (occupancy, snapshots, drill-downs) · `git-workflow` (branch, PR).
+`visitor-log` · `occupancy-dashboard` (occupancy, snapshots, drill-downs) · `git-workflow` (branch, PR, sync with main, re-sync open PRs, stacked PRs).
 
 ## Stack & commands
 React 18 + Vite + react-router-dom + Tailwind · Supabase/Postgres (DB, auth, RLS, Edge Function) · static SPA on Vercel
