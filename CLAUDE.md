@@ -43,7 +43,9 @@ npm run build     # -> dist/
 - `src/lib/` data layer: `supabase.js` (queries + move-out/receipt writes), `billing.js`, `cutoffBilling.js` (the one
   loader + compute for a cutoff's statements: Billing, print pages, profile history), `monthlyStatement.js` (printed
   statement props), `tenantStatements.js` (profile statement history), `finalBill.js`, `stay.js`,
-  `utilityPieces.js`, `receiptLines.js`, `moveOutData.js`, `maintenanceTickets.js` (ticket target/place helpers), `pnl.js`, `snapshot.js`, `auth.jsx`, `approvals.js`,
+  `utilityPieces.js`, `receiptLines.js`, `moveOutData.js`, `maintenanceTickets.js` (ticket target/place helpers), `pnl.js`,
+  `snapshot.js`, `occupancyMtd.js` (Dashboard Occupancy tile: Manila month-to-date window + MTD average / today figures),
+  `auth.jsx`, `approvals.js`,
   `tenantProfile.js`, `tenantHistory.js` (profile history reads, in-house rule), `notify.js`, `visitors.js`, `idPhoto.js`, `guardShift.js`, `simCsv.js`, `theme.jsx`.
 - `supabase/functions/` notify-email Edge Function + `_shared/` (also imported by `src/`; `maintenance-locations.ts` = the
   fixed common-area list for tickets). `apps-script/` mailer copy.
