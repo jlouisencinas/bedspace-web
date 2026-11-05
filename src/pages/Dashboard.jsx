@@ -17,7 +17,7 @@ import { localToday } from '../lib/stay'
 import { targetDateState } from '../lib/reservation'
 import RoomMaintenancePanel  from '../components/RoomMaintenancePanel'
 import OccupancyYtdChart     from '../components/OccupancyYtdChart'
-import { computeOccupancySnapshot } from '../../supabase/functions/_shared/occupancy.ts'
+import { occupancyTileFigures, formatPct1, formatNum1 } from '../lib/occupancyMtd'
 import {
   BedDouble, Users, PhilippinePeso, Clock,
   CheckCircle2, AlertTriangle, Zap, FileText, Droplets, History,
@@ -185,21 +185,10 @@ export default function Dashboard() {
   // not the active cutoff: a cutoff stays active after month-end until the next one is opened, so it
   // would keep showing last month's full average. Computed directly from live beds/tenants, so snapshot
   // timing has no effect on it.
-  const occupancyMTD = useMemo(() => {
-    // Business runs in Asia/Manila — derive "today" in that zone explicitly (not
-    // the browser/server's local timezone) via Intl, then step forward one day
-    // with pure-UTC arithmetic, matching PrintElectricity.jsx/PrintRentWater.jsx's
-    // addDays() convention. Mixing local Date fields with toISOString() (as an
-    // earlier version of this did) silently lands back on today's date for any
-    // positive UTC offset, permanently excluding today from the average.
-    const todayManilaISO = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
-    }).format(new Date())
-    const monthStartISO = todayManilaISO.slice(0, 8) + '01'
-    const tomorrowISO = new Date(Date.parse(todayManilaISO + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10)
-    const result = computeOccupancySnapshot(monthStartISO, tomorrowISO, beds, tenants)
-    return { ...result, monthStartISO, todayISO: todayManilaISO, tomorrowISO }
-  }, [beds, tenants])
+  const occupancyMTD = useMemo(
+    () => occupancyTileFigures({ beds, tenants, now: new Date() }),
+    [beds, tenants],
+  )
 
   // Occupancy This Month drill-down rows — join detail's bedId against beds
   // (same join style as typeMap below) for room_no/bed_letter display.
@@ -310,7 +299,7 @@ export default function Dashboard() {
       shape: 'table',
       icon: BedDouble,
       title: 'Occupied Beds',
-      subtitle: `${leased} of ${sellable} sellable`,
+      subtitle: `${occupancyMTD.todayPct}% · ${occupancyMTD.leasedNow} of ${occupancyMTD.sellableBeds} beds occupied now`,
       rows: occupiedBeds,
       rowKey: b => b.bed_id,
       searchFields: ['tenant_name', 'room_no', 'bed_letter'],
@@ -393,7 +382,7 @@ export default function Dashboard() {
       shape: 'table',
       icon: Percent,
       title: 'Occupancy This Month (So Far)',
-      subtitle: `${occupancyMTD.occupancyPct}% average beds occupied per day · ${fmtDate(occupancyMTD.monthStartISO)} – ${fmtDate(occupancyMTD.todayISO)}`,
+      subtitle: `${formatPct1(occupancyMTD.mtdPct)} average occupancy · avg ${formatNum1(occupancyMTD.mtdBedsAvg)} of ${occupancyMTD.sellableBeds} beds per day · ${occupancyMTD.periodDays} day${occupancyMTD.periodDays === 1 ? '' : 's'} · ${fmtDate(occupancyMTD.monthStartISO)} – ${fmtDate(occupancyMTD.todayISO)}`,
       rows: occupancyMTDDetail,
       rowKey: row => `${row.tenantId}-${row.bedId}-${row.startISO}`,
       emptyMessage: 'No occupancy intervals this period.',
@@ -521,27 +510,35 @@ export default function Dashboard() {
 
       {/* ── KPI Cards ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
-        {/* One occupancy card: the point-in-time figure (beds leased right now) and the live calendar-month
-            average of beds occupied per day. The month figure reads live beds/tenants, not a snapshot. */}
+        {/* One occupancy card. Headline: the live calendar-month day-weighted average (1st through today,
+            Asia/Manila); clicking opens its Month detail. Secondary: today's point-in-time rate (beds LEASED
+            now), with a link to Occupied Beds. Both read live beds/tenants, not a snapshot, and can differ on
+            the same day (tenant dates vs bed status). */}
         <KpiCard
-          label="Occupancy"
-          value={`${occPct}%`}
+          label="Occupancy · Month to date"
+          value={occupancyMTD.hasBeds ? formatPct1(occupancyMTD.mtdPct) : '—'}
           sub={(
             <>
-              <div>{leased} of {sellable} beds occupied now</div>
-              <div className="mt-0.5">
-                <span className="font-semibold text-ink-secondary">{occupancyMTD.occupancyPct}%</span> avg beds per day · {fmtDate(occupancyMTD.monthStartISO)} – {fmtDate(occupancyMTD.todayISO)}
-              </div>
+              {occupancyMTD.hasBeds ? (
+                <>
+                  <div className="text-ink-secondary">avg {formatNum1(occupancyMTD.mtdBedsAvg)} of {occupancyMTD.sellableBeds} beds per day · {fmtDate(occupancyMTD.monthStartISO)} – {fmtDate(occupancyMTD.todayISO)}</div>
+                  <div className="mt-1 pt-1 border-t border-line text-[10px] font-normal text-ink-faint">
+                    <span className="uppercase tracking-wider">Today</span> {occupancyMTD.todayPct}% · {occupancyMTD.leasedNow} of {occupancyMTD.sellableBeds} beds occupied now
+                  </div>
+                </>
+              ) : (
+                <div>No sellable beds</div>
+              )}
               <button
                 type="button"
                 className="mt-1 text-[11px] underline text-info-text"
-                onClick={e => { e.stopPropagation(); openOccupancyMTD() }}
-              >Month detail</button>
+                onClick={e => { e.stopPropagation(); openOccupiedBeds() }}
+              >Beds occupied now</button>
             </>
           )}
           icon={BedDouble}
           color="blue"
-          onClick={openOccupiedBeds}
+          onClick={openOccupancyMTD}
         />
         <KpiCard label="Vacant"          value={vacant}              sub="available now"                  icon={CheckCircle2} color="green" onClick={openVacant} />
         <KpiCard label="Reserved"        value={reserved}            sub="pending move-in"                icon={Clock}       color="amber" onClick={openReserved} />
