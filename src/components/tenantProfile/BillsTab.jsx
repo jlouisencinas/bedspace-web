@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { CreditCard } from 'lucide-react'
 import { dbToCents } from '../../lib/receiptLines'
 import { groupPaymentsByCutoff, centsToPeso } from '../../lib/tenantHistory'
+import StatementHistory from './StatementHistory'
 
 const CATEGORY_LABEL = { RENT_WATER: 'Rent & Water', ELECTRICITY: 'Electricity', OTHER: 'Other' }
 const DEPOSIT_STATUSES = ['HELD', 'APPLIED', 'FORFEITED', 'REFUNDED']
@@ -22,6 +23,7 @@ function ErrorBox({ children }) {
 }
 
 export default function BillsTab({
+  tenant, siblingIds, transfers, transfersError,
   payments, paysError, cutoffs, cutoffsError,
   bills, billsLoading, billsError,
   deposits, depLoadError,
@@ -89,6 +91,15 @@ export default function BillsTab({
             })}
           </div>
         )}
+      </div>
+
+      {/* ── Monthly statements ── */}
+      <div>
+        <SectionTitle>Monthly statements</SectionTitle>
+        <StatementHistory key={tenant.id}
+          tenant={tenant} siblingIds={siblingIds} cutoffs={cutoffs} cutoffsError={cutoffsError}
+          payments={payments} paysError={paysError} finalBills={bills} billsLoading={billsLoading} billsError={billsError}
+          transfers={transfers} transfersError={transfersError} isAdmin={isAdmin} canAct={canPrint} />
       </div>
 
       {/* ── Payments by cutoff ── */}

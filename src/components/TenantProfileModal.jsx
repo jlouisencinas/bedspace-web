@@ -665,6 +665,7 @@ export default function TenantProfileModal({ tenant, siblingIds = [tenant.id], o
           {/* ── Bills ── */}
           {profileTab === 'bills' && (
             <BillsTab
+              tenant={tenant} siblingIds={siblingIds} transfers={transfers} transfersError={transfersError}
               payments={detailPays} paysError={paysError} cutoffs={cutoffs} cutoffsError={cutoffsError}
               bills={detailBills} billsLoading={billsLoading} billsError={billsError}
               deposits={detailDeposits} depLoadError={depLoadError}
