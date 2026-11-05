@@ -184,6 +184,23 @@ and **Move Out** only (Edit Details moved to its own module — see below).
   formal move-out — writes an `activity_log` entry (`activity_type: 'Move-out Date Changed'`).
   This is the infrastructure the lease-extension count metric (§9/§10) reads.
 
+### Moved-out tenants on the Tenants page
+- **Status filter:** "Active (Leased)" (default, active tenants only, room order), "Moved out"
+  (inactive tenants only, newest move-out first) and "All tenants" (both; inactive rows carry a
+  "Moved out" chip). Room and search filters apply on top; a moved-out tenant matches the last room
+  and bed they occupied. The date column reads "Move Out" (planned date) in the Active view and
+  "Moved Out" otherwise. The effective move-out date of an inactive tenant is
+  `actual_move_out_date`, falling back to the planned `move_out_date` for legacy rows; rows with
+  neither show "—" and sort last.
+- **Profile:** a moved-out tenant's profile shows a "Moved out <date>" chip under the name, an
+  "Actual Move Out" row when it differs from the planned date, and an Overview banner listing each
+  final bill ("Final bill #id · STATUS · Refund/Due amount") with a Print link for admins and a
+  "Go to Advance & Deposit" button. With no final bill it says so (moved out before final bills
+  existed, or imported from the sheet).
+- **Actions hidden for inactive tenants:** the row "Move Out" button, the profile footer Transfer /
+  Move Out, and the Rate / Move-In "Correct" buttons. View stays available. Admin receipt Add/Edit
+  on the Advance & Deposit tab is unchanged (used to fix receipts after a final bill is voided).
+
 ### Transfer
 - Rate and utility responsibility split proportionally by exact day count between old and new
   bed/room within the cutoff. Admin can transfer directly; non-admin needs approval + reason.
@@ -508,6 +525,7 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       `Statement.jsx` (additive props: rate column, amount text, italic rows, total label/colour). Buttons: "Print
       final bill" on the move-out result screen and in the tenant profile (Advance & Deposit tab, with an admin
       Void). Voiding sets the bill VOID with a reason and puts its HELD-then-settled receipts back to HELD.
+      A moved-out tenant's final bills are also reachable from Tenants → "Moved out" → View (Overview banner, §3).
     - **Utility split after a move-out:** `fetchTenants()` stamps tenants that have a non-void final bill
       (`_finalBilled`, `_finalBilledCutoffs`); for that bill's cutoff `computeBilling` keeps them in the split as
       non-billed participants (their days still apportion the room, so roommates pay only their own share) but
@@ -716,6 +734,8 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   requires the approval workflow (current scope: move-out, transfer, room config, bed rate
   changes, bed removal — see `.claude/agents/`). Room reconfiguration (§4) is deliberately
   admin-only instead, not approval-gated.
+- **Moved-out tenants:** `user` sees moved-out tenants on the Tenants page and their final bills in
+  the profile (RLS allows the reads), but gets no Print or Void: print routes are admin-only.
 - **Add-ons are explicitly NOT approval-gated.** `user` role can add/remove billing add-ons
   (parking, aircon, etc.) freely, with no approval and no reason required — the only requirement
   is that it's logged in `activity_log`. Confirmed intentional, not a gap to close.
