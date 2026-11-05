@@ -1068,7 +1068,7 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
     admin override and are never touched by any of the above.
   - **Snapshot timing does not affect any live Dashboard number** — worth stating explicitly since it
     was a real point of confusion during implementation. Both figures on the Dashboard's Occupancy
-    card (right now, and the calendar-month average so far) compute directly from live
+    card (the headline month-to-date average, and the secondary "right now" rate) compute directly from live
     `beds`/`tenants`, never from stored `monthly_reports` rows. Only the historical "Occupancy Rate
     YTD" bar chart reads stored snapshots, so it only reflects a month once that month has actually
     been snapshotted.
@@ -1156,11 +1156,18 @@ in another module.**
   - Lease extensions (this month, later-date edits only)
   - Month-to-date projected move-outs
   - Occupancy rate YTD (bar graph)
-  - Occupancy — ONE card (replaces the separate "Occupied Beds" and "Occupancy This Month" tiles): the
-    point-in-time figure (beds leased right now / sellable) plus the live **calendar-month** average of
-    beds occupied per day (1st of this month through today, Asia/Manila; §9), with a "Month detail"
-    drill-down. The month figure no longer follows the active cutoff (a cutoff stays active after
-    month-end until the next one is opened, which kept showing last month).
+  - Occupancy — ONE card ("Occupancy · Month to date"; replaces the separate "Occupied Beds" and
+    "Occupancy This Month" tiles). **Headline (2026-11-05, owner request):** the live **calendar-month**
+    day-weighted average occupancy % (1st of this month through today, Asia/Manila; §9), one decimal,
+    with "avg X of Y beds per day" and the date range under it; it equals the Occupancy page's
+    current-month weighted daily average. **Secondary:** today's point-in-time rate (beds leased right
+    now / sellable, whole %), a smaller non-bold "Today: …" line. Clicking the card opens Month detail;
+    its "Beds occupied now" link opens Occupied Beds. With no sellable beds the headline shows "—". On
+    the same day the two figures can differ: the average counts tenant records by their dates, "Today"
+    counts bed statuses (see "Occupancy counts records by their dates" below); neither is adjusted to
+    match the other. Logic in `src/lib/occupancyMtd.js`. The month figure no longer follows the active
+    cutoff (a cutoff stays active after month-end until the next one is opened, which kept showing last
+    month).
   - Move-in source breakdown
   - Projected vs. actual rent collection summary (links into §11 for full drill-down)
 - **Icon convention. — DONE.** The Monthly Revenue KPI card uses `lucide-react`'s `PhilippinePeso`
@@ -1168,8 +1175,8 @@ in another module.**
   wrong), not a dollar sign.
 - **Existing Dashboard elements to keep, unchanged:** Upcoming Move-outs (rolling 30-day) list,
   Recent Activity feed, today's occupancy segmented bar. The Dashboard shows occupancy in three
-  places, each answering a different question: the merged Occupancy card (right now + calendar-month
-  average so far), the segmented bar (right now, by status), and the YTD bar graph (day-weighted
+  places, each answering a different question: the merged Occupancy card (calendar-month
+  average so far as the headline + right now), the segmented bar (right now, by status), and the YTD bar graph (day-weighted
   per-month history from stored snapshots).
 - **Occupancy counts records by their dates.** The day-weighted formula counts a tenant record by its
   dates, active or not, so an inactive tenant whose move-out date is still in the future counts until
@@ -1177,8 +1184,8 @@ in another module.**
   passed stops counting in the month average until moved out or extended. A Dashboard "Occupancy data
   check" banner that listed such records was removed at the owner's request (2026-11-03): the six rows
   it flagged have real dates and are kept as they are.
-- **KPI tile drill-downs — DONE.** All KPI tiles (Occupancy [occupied beds; its "Month detail" link opens
-  the calendar-month occupancy list], Vacant, Reserved, Monthly
+- **KPI tile drill-downs — DONE.** All KPI tiles (Occupancy [the card opens Month detail, the calendar-month
+  occupancy list; its "Beds occupied now" link opens Occupied Beds], Vacant, Reserved, Monthly
   Revenue, Moving Out This Month, Move-ins This Month, Lease
   Extensions, MTD Projected Move-outs) are clickable, opening a shared `DrillDownModal`
   (`src/components/DrillDownModal.jsx`) built from data already in the Dashboard's memory (no new
@@ -1451,6 +1458,10 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       bill (`utilityPieces.js`) already does this exactly with integer-cent largest-remainder allocation.
 - [ ] `finalBill.js` `toCents` (low): an x.xx5 float half is not always rounded up (1.005 -> 1.00, 0.285 -> 0.28; 2.675 -> 2.68 is fine) because
       it multiplies by 100 before rounding. Stored 2-decimal amounts are unaffected; only computed floats are.
+- [ ] (2026-11-05) The Occupancy page (`Occupancy.jsx`) takes "today" from the browser's local date (`localISO`), the
+      Dashboard Occupancy card from Asia/Manila (`manilaMonthToDateWindow` in `src/lib/occupancyMtd.js`). Outside the
+      Philippines, between 00:00 and 08:00 Manila time, their current-month averages can briefly disagree. Follow-up:
+      have Occupancy.jsx use `manilaMonthToDateWindow`.
 
 ## 16. Occupancy Simulator (isolated what-if module)
 - **Purpose.** Lets `admin`/`user` roles model potential rent at 100% (or a scaled) occupancy
