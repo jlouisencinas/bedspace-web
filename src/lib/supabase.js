@@ -5,6 +5,7 @@ import { finalCutoffForUtility, newLeaseMoveOutProblem, finalBilledStamps, planR
 import { parseMoney, moneyProblem, centsToNumber } from './receiptLines'
 import { deriveBedStatuses, activeTenantOnBedMessage, isActiveTenantPerBedViolation } from './bedEligibility'
 import { windowLastDay } from './cutoffDates'
+import { fmtTargetDate } from './reservation'
 import { PROFILE_FIELD_LABELS } from '../../supabase/functions/_shared/approval-labels.ts'
 
 const url = import.meta.env.VITE_SUPABASE_URL
@@ -19,18 +20,57 @@ export const supabase = isMissingConfig ? null : createClient(url, key)
 export async function fetchBeds() {
   const [viewRes, bedsRes] = await Promise.all([
     supabase.from('beds_with_tenant').select('*').order('room_no').order('bed_letter'),
-    supabase.from('beds').select('id, reserved_name'),
+    supabase.from('beds').select('id, reserved_name, reserved_move_in_date'),
   ])
   if (viewRes.error) throw viewRes.error
-  const nameMap = {}
-  if (bedsRes.data) bedsRes.data.forEach(b => { nameMap[b.id] = b.reserved_name })
-  return deriveBedStatuses(viewRes.data.map(b => ({ ...b, reserved_name: nameMap[b.bed_id] ?? null })))
+  const resMap = {}
+  if (bedsRes.data) bedsRes.data.forEach(b => { resMap[b.id] = b })
+  return deriveBedStatuses(viewRes.data.map(b => ({
+    ...b,
+    reserved_name:         resMap[b.bed_id]?.reserved_name ?? null,
+    reserved_move_in_date: resMap[b.bed_id]?.reserved_move_in_date ?? null,
+  })))
 }
 
-export async function updateBedStatus(bedId, status, reservedName = null) {
-  const patch = { status, reserved_name: status === 'RESERVED' ? reservedName : null }
-  const { error } = await supabase.from('beds').update(patch).eq('id', bedId)
+const BED_NOT_UPDATED = 'This bed could not be updated (it changed or your role no longer allows it). Refresh the Bed Map.'
+
+export async function updateBedStatus(bedId, status, reservedName = null, targetDate = null, { requireRow = false } = {}) {
+  // Leaving RESERVED, trg_beds_reservation_date clears the date; not sending the column keeps Move In / transfer /
+  // move-out independent of it.
+  const patch = status === 'RESERVED'
+    ? { status, reserved_name: reservedName, reserved_move_in_date: targetDate }
+    : { status, reserved_name: null }
+  let q = supabase.from('beds').update(patch).eq('id', bedId)
+  if (requireRow) q = q.select('id')
+  const { data, error } = await q
   if (error) throw error
+  if (requireRow && !data?.length) throw new Error(BED_NOT_UPDATED)
+}
+
+export async function updateReservationTargetDate(bed, dateISO) {
+  const { data, error } = await supabase
+    .from('beds')
+    .update({ reserved_move_in_date: dateISO })
+    .eq('id', bed.bed_id)
+    .eq('status', 'RESERVED')
+    .select('id')
+  if (error) throw error
+  if (!data?.length) throw new Error(BED_NOT_UPDATED)
+  const oldDate = bed.reserved_move_in_date || null
+  await logActivity({
+    activity_type: 'Reservation Target Date Changed',
+    entity_type:   'BED',
+    room_no:       bed.room_no,
+    bed_letter:    bed.bed_letter,
+    notes:         `Room ${bed.room_no} Bed ${bed.bed_letter}${bed.reserved_name ? ` (${bed.reserved_name})` : ''}: target move-in ${oldDate || '—'} → ${dateISO || '—'}`,
+    metadata: {
+      room_no:       bed.room_no,
+      bed_letter:    bed.bed_letter,
+      reserved_name: bed.reserved_name || null,
+      old_reserved_move_in_date: oldDate,
+      new_reserved_move_in_date: dateISO || null,
+    },
+  })
 }
 
 // ── Tenants ───────────────────────────────────────────────────────────────────
@@ -89,7 +129,7 @@ const TENANT_COLUMNS = new Set([
 
 export async function addTenant(bedId, tenantData) {
   // Strip helper fields and any non-column keys (e.g. contacts, emails arrays)
-  const { _room_no, _bed_letter, ...raw } = tenantData
+  const { _room_no, _bed_letter, _reservation, ...raw } = tenantData
   // Convert empty strings to null so optional fields (incl. source CHECK constraint) don't break
   const dbData = Object.fromEntries(
     Object.entries(raw)
@@ -139,6 +179,7 @@ export async function addTenant(bedId, tenantData) {
     entity_type:   'TENANT',
     entity_id:     tenant.id,
     notes:         `Moved in to Room ${_room_no} Bed ${_bed_letter} at ₱${dbData.rate}/mo`,
+    metadata:      { from_reservation: _reservation || null },
   })
 
   return tenant
@@ -1261,19 +1302,22 @@ export async function fetchTenantHistory(tenantId, { limit = 500 } = {}) {
   return data
 }
 
-export async function logBedStatusChange(bed, newStatus, reservedName = null) {
+export async function logBedStatusChange(bed, newStatus, reservedName = null, targetDate = null) {
+  const target = targetDate ? fmtTargetDate(targetDate) || targetDate : ''
+  const detail = [reservedName, target ? `target ${target}` : ''].filter(Boolean).join(', ')
   await logActivity({
     activity_type: 'Bed Status Changed',
     entity_type:   'BED',
     room_no:       bed.room_no,
     bed_letter:    bed.bed_letter,
-    notes:         `Room ${bed.room_no} Bed ${bed.bed_letter}: ${(bed.status || 'VACANT')} → ${newStatus}${reservedName ? ` (${reservedName})` : ''}`,
+    notes:         `Room ${bed.room_no} Bed ${bed.bed_letter}: ${(bed.status || 'VACANT')} → ${newStatus}${detail ? ` (${detail})` : ''}`,
     metadata: {
       room_no:       bed.room_no,
       bed_letter:    bed.bed_letter,
       old_status:    bed.status || 'VACANT',
       new_status:    newStatus,
       reserved_name: reservedName || null,
+      reserved_move_in_date: targetDate || null,
     },
   })
 }

@@ -42,6 +42,7 @@ describe('month arithmetic', () => {
     expect(leaseMoveOut('2026-10-01', 1)).toBe('2026-10-31')
     expect(leaseMoveOut('2026-10-01', 6)).toBe('2027-03-31')
     expect(leaseMoveOut('2026-10-01', 0)).toBe('')
+    expect(leaseMoveOut('2026-11-20', 1)).toBe('2026-12-31')
   })
 
   it('newLeaseMoveOutProblem', () => {

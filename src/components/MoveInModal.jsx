@@ -7,6 +7,7 @@ import {
   parseMoney, dbToCents, centsToInput, fmtCents, planDeposit, validateLines, nameMatches, blankLine, sumCents, refsOf,
 } from '../lib/receiptLines'
 import { leaseMoveOut, newLeaseMoveOutProblem, localToday } from '../lib/stay'
+import { moveInDefaults, moveInDateNotice, fmtTargetDate } from '../lib/reservation'
 import { isDriveConfigured, isDriveConnected, preloadDrive, connectDrive } from '../lib/googleDrive'
 
 export const GENDER_OPTIONS = [
@@ -81,17 +82,21 @@ export default function MoveInModal({
   const [driveConnected, setDriveConnected] = useState(isDriveConnected)
   const [drivePreloaded, setDrivePreloaded] = useState(false)
 
-  // Last name we auto-filled from a reservation; only replaced/cleared while the field still holds it.
+  // Last name / move-in date we auto-filled from a reservation; only replaced while the field still holds it.
   const prefilledName = useRef('')
+  const prefilledDate = useRef(form.move_in_date)
   useEffect(() => {
     if (!bed) return
-    const reserved = bed.status === 'RESERVED' ? (bed.reserved_name || '') : ''
+    const defaults = moveInDefaults(bed, today())
     const previous = prefilledName.current
-    prefilledName.current = reserved
+    const previousDate = prefilledDate.current
+    prefilledName.current = defaults.name
+    prefilledDate.current = defaults.moveInDate
     setForm(f => ({
       ...f,
       rate: bed.default_rate || '',
-      name: f.name === '' || f.name === previous ? reserved : f.name,
+      name: f.name === '' || f.name === previous ? defaults.name : f.name,
+      move_in_date: f.move_in_date === '' || f.move_in_date === previousDate ? defaults.moveInDate : f.move_in_date,
     }))
   }, [bed])
 
@@ -107,6 +112,9 @@ export default function MoveInModal({
   const set = (k, v) => { setFormError(''); setForm(f => ({ ...f, [k]: v })) }
   // The planned move-out of a new lease is always a month end: the lease length picks it.
   const moveOutDate = leaseMoveOut(form.move_in_date, leaseMonths)
+  const bedIsReserved = bed?.status === 'RESERVED'
+  const targetDate = moveInDefaults(bed, today()).targetDate
+  const dateNotice = bedIsReserved ? moveInDateNotice(form.move_in_date, targetDate, today()) : null
 
   function setDocFile(i, file) {
     setFormError('')
@@ -193,6 +201,9 @@ export default function MoveInModal({
       ...form,
       move_out_date: moveOutDate,
       duration: calcDuration(form.move_in_date, moveOutDate),
+      _reservation: bedIsReserved
+        ? { reserved_name: bed.reserved_name || null, reserved_move_in_date: bed.reserved_move_in_date || null }
+        : null,
       contacts, emails, docs,
       receipts: {
         advanceDueCents:          advDueCents,
@@ -235,7 +246,7 @@ export default function MoveInModal({
                     <option value="" disabled>Select…</option>
                     {allBeds.map(b => (
                       <option key={b.bed_id} value={b.bed_id}>
-                        Room {b.room_no} · Bed {b.bed_letter} {b.bed_location ? `(${b.bed_location})` : ''} — {b.room_type}{b.status === 'RESERVED' ? ` — Reserved${b.reserved_name ? ` for ${b.reserved_name}` : ''}` : ''}
+                        Room {b.room_no} · Bed {b.bed_letter} {b.bed_location ? `(${b.bed_location})` : ''} — {b.room_type}{b.status === 'RESERVED' ? ` — Reserved${b.reserved_name ? ` for ${b.reserved_name}` : ''}${b.reserved_move_in_date ? `, target ${fmtTargetDate(b.reserved_move_in_date)}` : ''}` : ''}
                       </option>
                     ))}
                   </select>
@@ -453,6 +464,18 @@ export default function MoveInModal({
               <div className="fg">
                 <label>Move In Date *</label>
                 <input type="date" value={form.move_in_date} onChange={e => set('move_in_date', e.target.value)} required />
+                {bedIsReserved && (
+                  <span className="text-[11px] text-ink-muted mt-1">
+                    {targetDate
+                      ? `Target move-in from the reservation: ${fmtTargetDate(targetDate)}`
+                      : 'This reservation has no target move-in date.'}
+                  </span>
+                )}
+                {dateNotice && (
+                  <span className="mt-1 rounded-lg border border-warning-border bg-warning-bg text-warning-text px-2.5 py-1.5 text-[11px]">
+                    {dateNotice}
+                  </span>
+                )}
               </div>
               <div className="fg">
                 <label>Lease length (months) *</label>

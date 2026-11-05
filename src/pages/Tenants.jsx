@@ -1,17 +1,11 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import {
-  fetchBeds, fetchTenants, addTenant, processMoveOutGroup, addTenantDocument,
-  fetchReservationPayments, fetchAllReservationPayments, recordMoveInReceipts, assertMoveInReceiptsAvailable,
-  supabase,
-} from '../lib/supabase'
-import { dbToCents } from '../lib/receiptLines'
-import { getOrCreateTenantFolder, uploadFileToDrive, isDriveConfigured } from '../lib/googleDrive'
+import { fetchBeds, fetchTenants, processMoveOutGroup } from '../lib/supabase'
 import { moveInEligibleBeds } from '../lib/bedEligibility'
 import { isInHouse, siblingIdsFor, CATEGORY_LABEL } from '../lib/tenantHistory'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
-import MoveInModal          from '../components/MoveInModal'
+import MoveInFlow           from '../components/MoveInFlow'
 import MoveOutModal         from '../components/MoveOutModal'
 import TransferModal        from '../components/TransferModal'
 import TenantProfileModal   from '../components/TenantProfileModal'
@@ -59,11 +53,6 @@ export default function Tenants({ scope = 'all' }) {
   const [transferT,  setTransferT]  = useState(null)
   const [correctRateT, setCorrectRateT] = useState(null)
   const [correctMoveInT, setCorrectMoveInT] = useState(null)
-  const [saving,    setSaving]    = useState(false)
-  const [resPayments, setResPayments] = useState([])
-  const [resLoading,  setResLoading]  = useState(false)
-  const [resError,    setResError]    = useState('')
-  const [otherReserved, setOtherReserved] = useState([])
 
   const { show, ToastEl } = useToast()
 
@@ -99,44 +88,6 @@ export default function Tenants({ scope = 'all' }) {
   const detailSiblingIds = useMemo(() => (detail ? siblingIdsFor(detail, allEnriched) : []), [detail, allEnriched])
 
   const eligibleBeds = useMemo(() => moveInEligibleBeds(beds, tenants), [beds, tenants])
-
-  // HELD reservation money belongs to the selected bed; re-fetched whenever another bed is picked.
-  const moveInBedId = moveInBed?.bed_id ?? null
-  const moveInReserved = moveInBed?.status === 'RESERVED'
-  useEffect(() => {
-    setResPayments([]); setResError('')
-    if (moveInBedId == null || !moveInReserved) { setResLoading(false); return }
-    let cancelled = false
-    setResLoading(true)
-    fetchReservationPayments({ bedId: moveInBedId, statuses: ['HELD'] })
-      .then(rows => { if (!cancelled) setResPayments(rows) })
-      .catch(e => { if (!cancelled) setResError(e.message) })
-      .finally(() => { if (!cancelled) setResLoading(false) })
-    return () => { cancelled = true }
-  }, [moveInBedId, moveInReserved])
-
-  // For the "name matches a different reserved bed that holds money" warning; best-effort.
-  const moveInOpen = moveInBedId != null
-  useEffect(() => {
-    if (!moveInOpen) { setOtherReserved([]); return }
-    let cancelled = false
-    fetchAllReservationPayments({ statuses: ['HELD'] })
-      .then(rows => {
-        if (cancelled) return
-        const byBed = new Map()
-        for (const r of rows) {
-          const cur = byBed.get(r.bed_id) || {
-            bed_id: r.bed_id, reserved_name: r.reserved_name,
-            room_no: r.beds?.rooms?.room_no, bed_letter: r.beds?.bed_letter, totalCents: 0,
-          }
-          cur.totalCents += dbToCents(r.amount)
-          byBed.set(r.bed_id, cur)
-        }
-        setOtherReserved([...byBed.values()])
-      })
-      .catch(() => { if (!cancelled) setOtherReserved([]) })
-    return () => { cancelled = true }
-  }, [moveInOpen])
 
   // Deep-link from Dashboard drill-down modals — resolves the tenant whether
   // currently active or since moved out (allEnriched is unfiltered). Consumes
@@ -204,84 +155,6 @@ export default function Tenants({ scope = 'all' }) {
 
   const pageRows   = sorted.slice(page * PAGE, (page + 1) * PAGE)
   const totalPages = Math.ceil(sorted.length / PAGE)
-
-  async function handleMoveIn(data) {
-    if (!moveInBed) return
-    setSaving(true)
-    try {
-      const { contacts = [], emails = [], docs = [], receipts, ...tenantData } = data
-      // Stops BEFORE the tenant is created if the receipts RPC is not deployed yet.
-      await assertMoveInReceiptsAvailable()
-      const tenant = await addTenant(moveInBed.bed_id, {
-        ...tenantData,
-        _room_no:    moveInBed.room_no,
-        _bed_letter: moveInBed.bed_letter,
-      })
-
-      let depositError = null
-      try {
-        await recordMoveInReceipts(tenant.id, receipts)
-      } catch(depErr) {
-        depositError = depErr
-      }
-
-      const validContacts = contacts.filter(c => c.value.trim())
-      if (validContacts.length) {
-        await supabase.from('tenant_contacts').insert(
-          validContacts.map((c, i) => ({
-            tenant_id:  tenant.id,
-            value:      c.value.trim(),
-            label:      c.label?.trim() || null,
-            is_primary: c.isPrimary || i === 0,
-          }))
-        )
-      }
-
-      const validEmails = emails.filter(e => e.value.trim())
-      if (validEmails.length) {
-        await supabase.from('tenant_emails').insert(
-          validEmails.map((e, i) => ({
-            tenant_id:  tenant.id,
-            value:      e.value.trim(),
-            label:      e.label?.trim() || null,
-            is_primary: e.isPrimary || i === 0,
-          }))
-        )
-      }
-
-      const validDocs = docs.filter(d => d.file)
-      if (validDocs.length) {
-        if (!isDriveConfigured()) {
-          show('Documents skipped — Google Drive not configured. Upload via tenant profile later.', 'error')
-        } else {
-          try {
-            const folderId = await getOrCreateTenantFolder(tenant.name, moveInBed.room_no)
-            for (const d of validDocs) {
-              const driveFile = await uploadFileToDrive(d.file, folderId)
-              await addTenantDocument(tenant.id, {
-                docType:     d.docType,
-                filename:    d.file.name,
-                driveFileId: driveFile.id,
-                driveUrl:    driveFile.webViewLink,
-                sizeBytes:   d.file.size || null,
-              })
-            }
-          } catch(driveErr) {
-            show(`Documents not uploaded: ${driveErr.message}. Upload via tenant profile later.`, 'error')
-          }
-        }
-      }
-
-      setMoveInBed(null)
-      if (depositError) {
-        show(`${tenant.name} was moved in, but the advance/deposit was NOT recorded: ${depositError.message}. An admin can add them from the tenant profile (Advance & Deposit tab). If this bed already had a reservation payment recorded, do not retype it: open the tenant's Advance & Deposit tab and use Apply reservation payment. Any reservation payment lines typed in Move In were NOT saved either; an admin can add them as Deposit receipts from that tab.`, 'error', { duration: 20000 })
-      } else {
-        show('Tenant moved in!', 'success')
-      }
-      load()
-    } catch(e) { show(e.message, 'error') }
-    setSaving(false)
-  }
 
   // Errors propagate to the modal, which shows them in full (they say exactly which steps ran).
   // The list reloads when the modal closes: reloading now would unmount the modal's result screen.
@@ -428,17 +301,13 @@ export default function Tenants({ scope = 'all' }) {
 
       {/* Move In / Move Out / Transfer modals */}
       {moveInBed && (
-        <MoveInModal
+        <MoveInFlow
           bed={moveInBed}
           allBeds={eligibleBeds}
           onBedChange={setMoveInBed}
           onClose={() => setMoveInBed(null)}
-          onSubmit={handleMoveIn}
-          saving={saving}
-          reservationPayments={resPayments}
-          reservationLoading={resLoading}
-          reservationError={resError}
-          otherReservedWithMoney={otherReserved}
+          onDone={load}
+          show={show}
         />
       )}
       {moveOutT && (
