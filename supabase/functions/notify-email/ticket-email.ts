@@ -4,11 +4,13 @@ import {
   button, cleanSubject, clip, fmtManila, footerLine, heading, indented, intro, kvCard, line, noteBlock,
   pillRow, shell, stack, flat, type KV,
 } from './email-kit.ts'
+import { ticketPlaceLabel } from '../_shared/maintenance-locations.ts'
 
 export type TicketData = {
   id: string | number
   raisedBy?: string | null
   roomNo?: unknown
+  location?: unknown
   tenantName?: unknown
   concern?: unknown
   remarks?: unknown
@@ -28,7 +30,9 @@ const refOf = (id: string | number) => `MT-${String(id).replace(/\D/g, '').slice
 
 export function buildTicketEmail(t: TicketData, ctx: TicketCtx): TicketBuilt {
   const raisedBy = line(t.raisedBy || 'Unknown user', 120)
-  const room = has(t.roomNo) ? line(t.roomNo, 20) : ''
+  const roomNo = has(t.roomNo) ? line(t.roomNo, 20) : null
+  const location = has(t.location) ? line(t.location, 40) : null
+  const place = roomNo || location ? line(ticketPlaceLabel({ roomNo, location }), 60) : ''
   const concern = has(t.concern) ? line(t.concern, 200) : '—'
   const tenant = has(t.tenantName) ? line(t.tenantName, 80) : 'Staff-raised'
   const remarks = has(t.remarks) ? clip(String(t.remarks).trim(), 1000) : NO_REMARKS
@@ -37,9 +41,9 @@ export function buildTicketEmail(t: TicketData, ctx: TicketCtx): TicketBuilt {
   const url = ctx.appUrl ? `${ctx.appUrl}/maintenance` : ''
 
   const title = `New maintenance ticket: ${line(concern, 80)}`
-  const introText = `${raisedBy} raised a ticket${room ? ` for Room ${room}` : ''}.`
+  const introText = `${raisedBy} raised a ticket${place ? ` for ${place}` : ''}.`
   const summary: KV[] = [
-    { label: 'Room', value: room || '—' },
+    { label: 'Location', value: place || '—' },
     { label: 'Tenant', value: tenant },
     { label: 'Concern', value: concern },
     { label: 'Raised by', value: raisedBy },
@@ -58,7 +62,7 @@ export function buildTicketEmail(t: TicketData, ctx: TicketCtx): TicketBuilt {
 
   const html = shell({
     title,
-    preheader: `${ctx.sample ? 'Sample: ' : ''}${room ? `Room ${room} · ` : ''}${line(concern, 80)} — raised by ${raisedBy}`,
+    preheader: `${ctx.sample ? 'Sample: ' : ''}${place ? `${place} · ` : ''}${line(concern, 80)} — raised by ${raisedBy}`,
     headerLabel: 'Maintenance',
     bodyHtml: body,
     footerHtml: footerLine(FOOTER),
@@ -83,6 +87,6 @@ export function buildTicketEmail(t: TicketData, ctx: TicketCtx): TicketBuilt {
     FOOTER,
   ].join('\n')
 
-  const lead = [room && `Room ${line(room, 35)}`, line(concern, 40)].filter(Boolean).join(' · ')
+  const lead = [place && line(place, 35), line(concern, 40)].filter(Boolean).join(' · ')
   return { subject: cleanSubject(`${ctx.sample ? '[SAMPLE] ' : ''}[New ticket] ${lead}`), html, text }
 }

@@ -460,6 +460,8 @@ const tickets = [
   { name: 'ticket-normal', t: ticketBase, ctx: TCTX, present: ['Leaking faucet in bathroom', 'Juan Dela Cruz', 'Water drips constantly', 'Tenant asked for a repair this week.'] },
   { name: 'ticket-staff-raised-no-remarks', t: { ...ticketBase, tenantName: null, remarks: '' }, ctx: TCTX, present: ['Staff-raised', 'No remarks provided'] },
   { name: 'ticket-no-room', t: { ...ticketBase, roomNo: null }, ctx: TCTX, noRoom: true },
+  { name: 'ticket-common-area', t: { ...ticketBase, roomNo: null, location: 'ROOF_DECK' }, ctx: TCTX, area: 'ROOF DECK', areaHtml: 'ROOF DECK' },
+  { name: 'ticket-unknown-location', t: { ...ticketBase, roomNo: null, location: 'X<b>' }, ctx: TCTX, area: 'X<b>', areaHtml: 'X&lt;b&gt;' },
   { name: 'ticket-app-url-unset', t: ticketBase, ctx: { appUrl: '' }, noCta: true },
   { name: 'ticket-bad-date', t: { ...ticketBase, raisedAt: 'not a date' }, ctx: TCTX, badDate: true },
   { name: 'ticket-hostile', t: { ...ticketBase, roomNo: '7<0>2', tenantName: `Juan\r\nBcc: attacker@example.com ${HOSTILE_TEXT}`, concern: `${HOSTILE_TEXT}\r\nsecond line שלום`, remarks: `${HOSTILE_TEXT}\r\nsecond line שלום עולם مرحبا\n${'A'.repeat(5000)}`, raisedBy: 'x"<b>@example.com' }, ctx: TCTX, hostile: true },
@@ -495,10 +497,17 @@ function checkTicket(f) {
   check(`${label}: html < ${HTML_MAX}, text < ${TEXT_MAX}`, html.length < HTML_MAX && text.length < TEXT_MAX, `${html.length}/${text.length}`)
   check(`${label}: subject [New ticket] prefix, clean, <= 150`, /^(\[SAMPLE\] )?\[New ticket\] /.test(subject) && subject.length <= 150 && !/[\r\n]/.test(subject), JSON.stringify(subject))
   check(`${label}: sample marker only on samples`, !!f.sample === /^\[SAMPLE\]/.test(subject) && (!f.sample || (html.includes('Sample') && text.includes('Sample:'))))
-  check(`${label}: text sections + every fact`, ['TICKET', 'REMARKS', 'Status: PENDING', 'Room: ', 'Tenant: ', 'Concern: ', 'Raised by: ', 'Raised: '].every(s => text.includes(s)))
-  check(`${label}: summary labels in html`, ['Room', 'Tenant', 'Concern', 'Raised by', 'Raised'].every(s => html.includes(`>${s}</div>`)) && html.includes('>Remarks</div>'))
+  check(`${label}: text sections + every fact`, ['TICKET', 'REMARKS', 'Status: PENDING', 'Location: ', 'Tenant: ', 'Concern: ', 'Raised by: ', 'Raised: '].every(s => text.includes(s)))
+  check(`${label}: summary labels in html`, ['Location', 'Tenant', 'Concern', 'Raised by', 'Raised'].every(s => html.includes(`>${s}</div>`)) && html.includes('>Remarks</div>'))
   check(`${label}: Manila time shown (dash for a bad date)`, f.badDate || f.huge ? /^Raised: —$/m.test(text) : /^Raised: .+ PHT$/m.test(text) && /, \d{1,2}:\d{2} (AM|PM) PHT/.test(html))
-  if (f.noRoom) check(`${label}: no room -> intro/subject omit Room`, !/for Room/.test(html) && !/\[New ticket\] Room /.test(subject) && /^Room: —$/m.test(text))
+  if (f.noRoom) check(`${label}: no room -> intro/subject omit Room`, !/for Room/.test(html) && !/\[New ticket\] Room /.test(subject) && /^Location: —$/m.test(text))
+  else if (f.area) {
+    check(`${label}: common area in subject/intro/preheader/Location row`,
+      subject.startsWith(`[New ticket] ${f.area} · `) && !/Room/.test(subject) &&
+      html.includes(`for ${f.areaHtml}.`) && html.includes(`${f.areaHtml} · `) &&
+      text.includes(`for ${f.area}.`) && text.split('\n').includes(`Location: ${f.area}`))
+    check(`${label}: no raw markup from the location`, !html.includes('X<b>'))
+  }
   else if (!f.huge) check(`${label}: room in subject/intro/preheader`, /\[New ticket\] Room /.test(subject) && html.includes('for Room ') && /Room [^<]* · /.test(html))
   for (const s of f.present ?? []) check(`${label}: contains "${s}"`, html.includes(s) && text.includes(s))
   spacingChecks(label, html, !f.noCta)

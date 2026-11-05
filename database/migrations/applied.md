@@ -6,3 +6,4 @@ Earlier migrations in this folder were applied by hand before this log existed.
 
 | Date (Asia/Manila) | File | Task / branch | Backup table | Result |
 |---|---|---|---|---|
+| 2026-11-05 19:45 | maintenance_common_areas.sql | 20261105-maintenance-common-areas / feat/maintenance-common-areas | none (schema-only) | OK: location column + 2 checks + index; 11 rows unchanged; RLS unchanged, per-role verified; notify-email v11 deployed (verify_jwt=true) |

@@ -411,7 +411,8 @@ create index if not exists room_logs_room_idx on room_logs(room_id, created_at d
 
 create table if not exists maintenance_tickets (
   id               serial primary key,
-  room_id          int  not null references rooms(id),
+  room_id          int  references rooms(id),
+  location         text,
   tenant_id        int  references tenants(id),
   concern          text not null,
   remarks          text,
@@ -421,12 +422,40 @@ create table if not exists maintenance_tickets (
   resolution_notes text,
   resolved_by      uuid references auth.users(id),
   resolved_at      timestamptz,
-  created_at       timestamptz default now()
+  created_at       timestamptz default now(),
+  constraint maintenance_tickets_location_check
+    check (location is null or location in
+      ('LOBBY','FLOOR_2','FLOOR_3','FLOOR_4','FLOOR_5','FLOOR_6','FLOOR_7','KITCHEN','ROOF_DECK')),
+  constraint maintenance_tickets_room_xor_location
+    check ((room_id is not null) <> (location is not null))
 );
 
 create index if not exists tickets_room_status_idx   on maintenance_tickets(room_id, status);
 create index if not exists tickets_tenant_idx        on maintenance_tickets(tenant_id);
 create index if not exists tickets_status_raised_idx on maintenance_tickets(status, raised_at desc);
+
+-- Common-area tickets (migrations/maintenance_common_areas.sql): converge an existing table.
+-- The location codes mirror supabase/functions/_shared/maintenance-locations.ts.
+alter table maintenance_tickets add column if not exists location text;
+alter table maintenance_tickets alter column room_id drop not null;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'maintenance_tickets_location_check') then
+    alter table maintenance_tickets
+      add constraint maintenance_tickets_location_check
+      check (location is null or location in
+        ('LOBBY','FLOOR_2','FLOOR_3','FLOOR_4','FLOOR_5','FLOOR_6','FLOOR_7','KITCHEN','ROOF_DECK'));
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'maintenance_tickets_room_xor_location') then
+    alter table maintenance_tickets
+      add constraint maintenance_tickets_room_xor_location
+      check ((room_id is not null) <> (location is not null));
+  end if;
+end $$;
+create index if not exists tickets_location_status_idx
+  on maintenance_tickets(location, status) where location is not null;
+comment on column maintenance_tickets.location is
+  'Common-area code (fixed list in supabase/functions/_shared/maintenance-locations.ts). Exactly one of room_id / location is set.';
 
 create table if not exists approval_requests (
   id                uuid primary key default gen_random_uuid(),
