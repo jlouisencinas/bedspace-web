@@ -8,6 +8,7 @@ import {
 import { dbToCents } from '../lib/receiptLines'
 import { getOrCreateTenantFolder, uploadFileToDrive, isDriveConfigured } from '../lib/googleDrive'
 import { moveInEligibleBeds } from '../lib/bedEligibility'
+import { isInHouse, siblingIdsFor, CATEGORY_LABEL } from '../lib/tenantHistory'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
 import MoveInModal          from '../components/MoveInModal'
@@ -31,7 +32,12 @@ function fmtDate(d)  {
 
 // ── Tenants Page ───────────────────────────────────────────────────────────────
 
-export default function Tenants() {
+// No-bed rows (commercial / parking) sort after every room.
+const roomKey = t => (t.bed_id ? (parseInt(t.room_no) || 0) : Number.MAX_SAFE_INTEGER)
+
+// scope 'all' = every tenant past and present (/tenants); 'current' = in-house only (/current-tenants).
+export default function Tenants({ scope = 'all' }) {
+  const isCurrentScope = scope === 'current'
   const { isAdmin, user } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
@@ -40,7 +46,7 @@ export default function Tenants() {
   const [tenants,    setTenants]    = useState([])
   const [loading,    setLoading]    = useState(true)
   const [search,     setSearch]     = useState('')
-  const [statFilter, setStatFilter] = useState('LEASED')
+  const [statFilter, setStatFilter] = useState(isCurrentScope ? 'CURRENT' : 'ALL')
   const [roomFilter, setRoomFilter] = useState('')
   const [page,       setPage]       = useState(0)
   const [sortKey,    setSortKey]    = useState('room')
@@ -88,6 +94,9 @@ export default function Tenants() {
   [tenants])
 
   const enriched = useMemo(() => allEnriched.filter(t => t.is_active), [allEnriched])
+  const inHouse  = useMemo(() => allEnriched.filter(isInHouse), [allEnriched])
+  const movedOutCount = useMemo(() => allEnriched.filter(t => !t.is_active).length, [allEnriched])
+  const detailSiblingIds = useMemo(() => (detail ? siblingIdsFor(detail, allEnriched) : []), [detail, allEnriched])
 
   const eligibleBeds = useMemo(() => moveInEligibleBeds(beds, tenants), [beds, tenants])
 
@@ -146,23 +155,24 @@ export default function Tenants() {
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase()
-    const base = statFilter === 'MOVED_OUT' ? allEnriched.filter(t => !t.is_active)
-               : statFilter === 'ALL'       ? allEnriched
-               : enriched
+    const base = isCurrentScope || statFilter === 'CURRENT' ? inHouse
+               : statFilter === 'MOVED_OUT' ? allEnriched.filter(t => !t.is_active)
+               : allEnriched
     return base.filter(t => {
       if (roomFilter && t.room_no !== roomFilter) return false
       if (q && !(t.name || '').toLowerCase().includes(q)
            && !(t.room_no || '').includes(q)
-           && !(t.bed_letter || '').toLowerCase().includes(q)) return false
+           && !(t.bed_letter || '').toLowerCase().includes(q)
+           && !(t.unit_label || '').toLowerCase().includes(q)) return false
       return true
     })
-  }, [allEnriched, enriched, search, statFilter, roomFilter])
+  }, [allEnriched, inHouse, isCurrentScope, search, statFilter, roomFilter])
 
   const sorted = useMemo(() => {
     const val = (t, key) => {
       switch (key) {
         case 'name':    return (t.name || '').toLowerCase()
-        case 'room':    return parseInt(t.room_no) || 0
+        case 'room':    return roomKey(t)
         case 'bed':     return (t.bed_letter || '')
         case 'rate':    return Number(t.rate) || 0
         case 'movein':  return t.move_in_date  || ''
@@ -174,7 +184,7 @@ export default function Tenants() {
       const av = val(a, sortKey), bv = val(b, sortKey)
       let c = av < bv ? -1 : av > bv ? 1 : 0
       if (c !== 0) return sortDir === 'asc' ? c : -c
-      const ra = parseInt(a.room_no) || 0, rb = parseInt(b.room_no) || 0
+      const ra = roomKey(a), rb = roomKey(b)
       if (ra !== rb) return ra - rb
       return (a.bed_letter || '').localeCompare(b.bed_letter || '')
     })
@@ -297,9 +307,12 @@ export default function Tenants() {
       {/* ── Header ── */}
       <div className="page-header">
         <div>
-          <h1 className="page-title">Tenants</h1>
+          <h1 className="page-title">{isCurrentScope ? 'Current Tenants' : 'Tenants'}</h1>
           <p className="page-sub">
-            {sorted.length} {statFilter === 'LEASED' ? 'active tenants' : statFilter === 'MOVED_OUT' ? 'moved-out tenants' : 'tenants'}
+            {isCurrentScope
+              ? `${inHouse.length} in-house tenants · ${inHouse.filter(t => t.category !== 'COMMERCIAL').length} bed · ${inHouse.filter(t => t.category === 'COMMERCIAL').length} commercial`
+              : `${allEnriched.length} tenants · ${inHouse.length} in-house · ${movedOutCount} moved out`
+                + (enriched.length > inHouse.length ? ` · ${enriched.length - inHouse.length} active parking/other` : '')}
           </p>
         </div>
         <button
@@ -322,12 +335,14 @@ export default function Tenants() {
           value={search} onChange={e => { setSearch(e.target.value); setPage(0) }}
           className="w-60"
         />
-        <select value={statFilter} onChange={e => handleStatFilter(e.target.value)}
-          className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors">
-          <option value="LEASED">Active (Leased)</option>
-          <option value="MOVED_OUT">Moved out</option>
-          <option value="ALL">All tenants</option>
-        </select>
+        {!isCurrentScope && (
+          <select value={statFilter} onChange={e => handleStatFilter(e.target.value)}
+            className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors">
+            <option value="ALL">All tenants</option>
+            <option value="CURRENT">Current (in-house)</option>
+            <option value="MOVED_OUT">Moved out</option>
+          </select>
+        )}
         <select value={roomFilter} onChange={e => { setRoomFilter(e.target.value); setPage(0) }}
           className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors">
           <option value="">All Rooms</option>
@@ -344,7 +359,7 @@ export default function Tenants() {
               <th onClick={() => handleSort('bed')}     className="cursor-pointer select-none">Bed{arrow('bed')}</th>
               <th onClick={() => handleSort('rate')}    className="cursor-pointer select-none">Rate{arrow('rate')}</th>
               <th onClick={() => handleSort('movein')}  className="cursor-pointer select-none">Move In{arrow('movein')}</th>
-              <th onClick={() => handleSort('moveout')} className="cursor-pointer select-none">{statFilter === 'LEASED' ? 'Move Out' : 'Moved Out'}{arrow('moveout')}</th>
+              <th onClick={() => handleSort('moveout')} className="cursor-pointer select-none">{statFilter === 'MOVED_OUT' ? 'Moved Out' : 'Move Out'}{arrow('moveout')}</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -358,8 +373,11 @@ export default function Tenants() {
                     {statFilter === 'ALL' && !t.is_active && (
                       <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-surface-3 text-ink-muted">Moved out</span>
                     )}
+                    {!t.bed_id && CATEGORY_LABEL[t.category] && (
+                      <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-info-bg text-info-text">{CATEGORY_LABEL[t.category]}</span>
+                    )}
                   </td>
-                  <td className="font-medium text-ink-secondary">{t.room_no || '—'}</td>
+                  <td className="font-medium text-ink-secondary">{t.bed_id ? (t.room_no || '—') : (t.unit_label || '—')}</td>
                   <td>
                     <span className="font-bold text-ink">{t.bed_letter || '—'}</span>
                     {t.bed_location && <span className="text-ink-faint text-[11px] ml-1">{t.bed_location}</span>}
@@ -372,7 +390,7 @@ export default function Tenants() {
                       <button className="btn-xs blue"  onClick={() => setDetail(t)}>
                         <Eye size={10} /> View
                       </button>
-                      {t.is_active && (
+                      {t.is_active && t.bed_id && (
                         <button className="btn-xs red" onClick={() => setMoveOutT(t)}>
                           <LogOut size={10} /> Move Out
                         </button>
@@ -399,6 +417,7 @@ export default function Tenants() {
       {detail && (
         <TenantProfileModal
           tenant={detail}
+          siblingIds={detailSiblingIds}
           onClose={() => setDetail(null)}
           onTransfer={t => { setDetail(null); setTransferT(t) }}
           onMoveOut={t => { setDetail(null); setMoveOutT(t) }}

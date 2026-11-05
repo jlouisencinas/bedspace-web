@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { fetchApprovals, approveRequest, rejectRequest } from '../lib/approvals'
-import { supabase, processTransfer, logTenantMoveOutDateChange, deleteInterimReading, processMoveOutWithBill, fetchTenantDeposits, fetchCutoffs, fetchStoredAdvanceCredits, fetchAdvanceSiblingIds, verifyMoveOutApplied, fetchPayments, moveOutGroupNames, fetchReceiptRefIndex, DEPOSIT_REF_LABEL } from '../lib/supabase'
+import { supabase, processTransfer, logTenantMoveOutDateChange, deleteInterimReading, processMoveOutWithBill, fetchTenantDeposits, fetchCutoffs, fetchStoredAdvanceCredits, fetchAdvanceSiblingIds, verifyMoveOutApplied, fetchPayments, moveOutGroupNames, fetchReceiptRefIndex, DEPOSIT_REF_LABEL, fetchFinalBillsForRequest } from '../lib/supabase'
 import { reconcileBill, toCents, mergeRecomputedLines, computeTotals, normalizeLines, appliedByRequest, bedRequestState, earlierLeavers, earlierLeaverWarning, figuresChangedMessage, normalizeReceiptRef, receiptRefsNeeded, missingReceiptRefs } from '../lib/finalBill'
 import ReceiptRefInputs from '../components/ReceiptRefInputs'
 import { buildRequestFreshDrafts } from '../lib/moveOutData'
@@ -210,6 +211,33 @@ const STATUS_CONFIG = {
   PENDING:  { bg: 'bg-warning-bg',   text: 'text-warning-text',  icon: Clock,        dot: 'bg-amber-500'   },
   APPROVED: { bg: 'bg-success-bg', text: 'text-success-text',icon: CheckCircle,  dot: 'bg-emerald-500' },
   REJECTED: { bg: 'bg-danger-bg',     text: 'text-danger-text',    icon: XCircle,      dot: 'bg-red-400'     },
+}
+
+// Approved move-out row: opens the FINAL bills this request issued (looked up on click).
+function FinalBillButton({ requestId }) {
+  const navigate = useNavigate()
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState(null)
+  async function open() {
+    setBusy(true); setMsg(null)
+    try {
+      const bills = await fetchFinalBillsForRequest(requestId)
+      const finalIds = bills.filter(b => b.status === 'FINAL').map(b => b.id)
+      if (finalIds.length) { navigate(`/print/final-bill?ids=${finalIds.join(',')}`); return }
+      setMsg(bills.length
+        ? { tone: 'text-danger-text', text: `Final bill voided (${bills.map(b => '#' + b.id).join(', ')})` }
+        : { tone: 'text-ink-muted', text: 'No final bill on this request' })
+    } catch (e) {
+      setMsg({ tone: 'text-danger-text', text: `Could not load the final bill: ${e.message}` })
+    }
+    setBusy(false)
+  }
+  return (
+    <div>
+      <button className="btn-xs blue whitespace-nowrap" disabled={busy} onClick={open}>{busy ? 'Loading…' : 'Final bill'}</button>
+      {msg && <div className={`text-[11px] mt-1 max-w-[180px] ${msg.tone}`}>{msg.text}</div>}
+    </div>
+  )
 }
 
 function StatusBadge({ status }) {
@@ -573,7 +601,7 @@ function DecideModal({ request, onClose, onDone }) {
   async function decide(d) {
     setDecision(d); setBusy(true); setError('')
     try {
-      let warning = null
+      let warning = null, moveOut = null
       if (d === 'APPROVED' && request.field_name === 'tenant_profile') {
         // Apply before marking approved so a failed apply leaves the request PENDING.
         warning = await applyTenantProfileRequest()
@@ -584,7 +612,8 @@ function DecideModal({ request, onClose, onDone }) {
         }
       } else if (d === 'APPROVED' && moveOutBill) {
         // Apply before marking approved so a failed apply leaves the request PENDING.
-        await applyMoveOutRequest(Object.fromEntries(reqBeds.filter(b => recs?.[b.id] && !recs[b.id].appliedBy).map(b => [b.id, recs[b.id].totals.net_amount])))
+        const applied = await applyMoveOutRequest(Object.fromEntries(reqBeds.filter(b => recs?.[b.id] && !recs[b.id].appliedBy).map(b => [b.id, recs[b.id].totals.net_amount])))
+        moveOut = { label: entityDesc(request), tenantId: Number(request.entity_id), billIds: applied.map(x => x.billId).filter(Boolean) }
         try {
           await approveRequest(request.id, notes || null)
         } catch (err) {
@@ -598,7 +627,7 @@ function DecideModal({ request, onClose, onDone }) {
       }
       // Only after the whole path succeeded; a `warning` (change applied, log write failed) still counts.
       notifyAsync('approval_decision', request.id)
-      onDone(d, warning)
+      onDone(d, warning, moveOut)
     } catch (err) {
       let msg = err.message, markable = false
       if (err.orphanBill) {
@@ -681,13 +710,17 @@ function DecideModal({ request, onClose, onDone }) {
     const { data: { user } } = await supabase.auth.getUser()
     const vacatedRec = { confirmed: true, by: user?.email || user?.id, at: new Date().toISOString() }
     const groupNames = moveOutGroupNames(reqBeds.map(b => ({ name: b.name, bed: b.bed })))
-    const done = [], failed = []
+    const done = [], failed = [], results = []
     for (const p of plan) {
-      if (p.applied) { done.push(`${bedLabel(p.b)} (already applied)`); continue }
+      if (p.applied) {
+        done.push(`${bedLabel(p.b)} (already applied)`)
+        results.push({ tenantId: p.b.id, billId: c.beds[p.b.id].applied?.billId ?? null })
+        continue
+      }
       const { b, r } = p
       const t = c.beds[b.id].tenant
       try {
-        await processMoveOutWithBill(
+        const saved = await processMoveOutWithBill(
           { ...t, room_id: t.beds?.room_id ?? null, _room_no: t.beds?.rooms?.room_no ?? b.room, _bed_letter: t.beds?.bed_letter ?? b.bed },
           {
             move_out_date: nvReq.move_out_date, actual_move_out_date: nvReq.actual_move_out_date,
@@ -702,26 +735,30 @@ function DecideModal({ request, onClose, onDone }) {
           user?.id, { groupNames, vacated: vacatedRec, groupTenantIds: reqBeds.map(x => x.id), receiptRefs: p.receiptRefs },
         )
         done.push(bedLabel(b))
+        results.push({ tenantId: b.id, billId: saved?.billId ?? null })
       } catch (e) { failed.push({ b, e }) }
     }
     if (failed.length) {
       if (reqBeds.length === 1) throw failed[0].e
       throw new Error(`Applied: ${done.join(', ') || 'none'}. FAILED: ${failed.map(f => `${bedLabel(f.b)} (${f.e.message})`).join(' | ')}. The request stays PENDING; fix the problem and approve again: beds that are already applied are skipped.`)
     }
+    return results
   }
 
   async function markApplied() {
     setBusy(true); setError('')
     try {
       if (String(nvReq._tenant_id) !== String(request.entity_id)) throw new Error('The request is inconsistent: its tenant does not match the tenant it was filed against.')
+      const billIds = []
       for (const b of reqBeds) {
         const v = await verifyMoveOutApplied(b.id, moveOutDay)
         if (!v.ok) throw new Error(`Not marked approved: ${bedLabel(b)}: ${v.reason}. This action only records a move-out that was really applied.`)
         if (!appliedByRequest(v, request.id)) throw new Error(`Not marked approved: ${bedLabel(b)}: its final bill was issued outside this request. This action only records a move-out that this request applied.`)
+        billIds.push(v.billId)
       }
       await approveRequest(request.id, notes || null)
       notifyAsync('approval_decision', request.id)
-      onDone('APPROVED', null)
+      onDone('APPROVED', null, { label: entityDesc(request), tenantId: Number(request.entity_id), billIds })
     } catch (err) { setError(err.message); setBusy(false) }
   }
 
@@ -971,6 +1008,7 @@ export default function Approvals() {
   const [loading,      setLoading]      = useState(true)
   const [filterStatus, setFilterStatus] = useState('PENDING')
   const [selected,     setSelected]     = useState(null)
+  const [lastMoveOut,  setLastMoveOut]  = useState(null)
   const { show, ToastEl } = useToast()
 
   const load = useCallback(async () => {
@@ -983,8 +1021,9 @@ export default function Approvals() {
 
   useEffect(() => { load() }, [load])
 
-  async function onDone(decision, warning = null) {
+  async function onDone(decision, warning = null, moveOut = null) {
     setSelected(null)
+    if (decision === 'APPROVED' && moveOut) setLastMoveOut(moveOut)
     if (warning) show(warning, 'error')
     else show(decision === 'APPROVED' ? 'Request approved and applied.' : 'Request rejected.', 'success')
     await load()
@@ -1038,6 +1077,31 @@ export default function Approvals() {
           ))}
         </div>
       </div>
+
+      {lastMoveOut && (
+        <div className="flex items-start gap-3 flex-wrap rounded-xl border border-success-border bg-success-bg text-success-text px-4 py-3 mb-4 text-[13px]">
+          <CheckCircle size={16} className="shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold">Move-out applied: {lastMoveOut.label}</div>
+            <div className="text-[12px] mt-0.5">
+              {lastMoveOut.billIds.length
+                ? `Final bill${lastMoveOut.billIds.length > 1 ? 's' : ''} ${lastMoveOut.billIds.map(id => '#' + id).join(', ')}`
+                : 'No final bill id was returned; open the tenant profile to find it.'}
+            </div>
+            <div className="flex items-center gap-2 mt-2 flex-wrap">
+              {lastMoveOut.billIds.length > 0 && (
+                <Link className="btn-xs blue" to={`/print/final-bill?ids=${lastMoveOut.billIds.join(',')}`}>
+                  Print final bill{lastMoveOut.billIds.length > 1 ? 's' : ''}
+                </Link>
+              )}
+              {Number.isFinite(lastMoveOut.tenantId) && (
+                <Link className="btn-xs" to="/tenants" state={{ openTenantId: lastMoveOut.tenantId }}>Open tenant profile</Link>
+              )}
+            </div>
+          </div>
+          <button className="btn-close" onClick={() => setLastMoveOut(null)} aria-label="Dismiss"><X size={14} /></button>
+        </div>
+      )}
 
       {/* ── Content ── */}
       {loading ? (
@@ -1099,6 +1163,14 @@ export default function Approvals() {
                         >
                           Review →
                         </button>
+                      )}
+                      {r.status === 'APPROVED' && r.field_name === 'move_out' && (
+                        <div className="flex items-start gap-1.5">
+                          <FinalBillButton requestId={r.id} />
+                          {Number.isFinite(Number(r.entity_id)) && (
+                            <Link className="btn-xs whitespace-nowrap" to="/tenants" state={{ openTenantId: Number(r.entity_id) }}>Open tenant</Link>
+                          )}
+                        </div>
                       )}
                     </td>
                   </tr>

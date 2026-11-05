@@ -6,7 +6,7 @@ import {
   LayoutDashboard, LayoutGrid, Users, Wrench, Zap,
   CreditCard, BarChart2, History, CheckSquare, UserCog,
   Menu, X, LogOut, Wallet, Building2, TrendingUp, UserPen,
-  Sun, Moon, Bell, Calculator, PieChart, DoorOpen,
+  Sun, Moon, Bell, Calculator, PieChart, DoorOpen, UserCheck,
 } from 'lucide-react'
 import BrandIcon from './BrandIcon'
 
@@ -14,6 +14,7 @@ const ALL_NAV = [
   { to: '/',            label: 'Dashboard',   icon: LayoutDashboard, end: true },
   { to: '/beds',        label: 'Bed Map',      icon: LayoutGrid },
   { to: '/tenants',     label: 'Tenants',      icon: Users,          roles: ['admin','user'] },
+  { to: '/current-tenants', label: 'Current Tenants', icon: UserCheck, roles: ['admin','user'] },
   { to: '/edit-tenant', label: 'Edit Tenant Profile', icon: UserPen, roles: ['admin','user'] },
   { to: '/collections', label: 'Collections',  icon: Wallet,         roles: ['admin','user'] },
   { to: '/payment-monitoring', label: 'Payment Monitoring', icon: TrendingUp, roles: ['admin','user'] },

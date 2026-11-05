@@ -17,6 +17,8 @@
  *   checkNote string, optional note under the table (the final bill's advance check)
  *   footNotes array of strings, optional (rate fallbacks, rounding rule, start readings), rendered like asOfNote
  *   draftBanner string, optional: printed at the top of the copy (an unsaved preview must not pass for an issued bill)
+ *   reprintNote [line, line], optional: small notice in the top-right corner, positioned so it adds no height (a
+ *             fixed-height monthly copy would otherwise clip its last lines)
  *   lateFee   boolean, default true: print the 2% late-fee line (off on the final bill, which is settled at move-out)
  *   flow      boolean, optional: the copy grows with its content (no fixed half-page height, nothing is clipped) and the charges
  *             table gets wider label / narrower rate and amount columns; used by the final bill, whose line count varies
@@ -24,7 +26,7 @@
  */
 export default function Statement({
   company, copyLabel, name, room, asOf, due, billNo, preparedBy,
-  charges, total, details, asOfNote, checkNote, footNotes, splitNote, peso,
+  charges, total, details, asOfNote, checkNote, footNotes, splitNote, peso, reprintNote,
   totalLabel = 'Total amount due', totalColor, flow = false, draftBanner, lateFee = true,
 }) {
   const hasRate = charges.some(c => c.rateText)
@@ -32,6 +34,7 @@ export default function Statement({
     <div className={flow ? 'stmt-copy flow' : 'stmt-copy'}>
       {copyLabel && <div className="copy-label">{copyLabel}</div>}
       {draftBanner && <div className="draft-banner">{draftBanner}</div>}
+      {reprintNote && <div className="reprint-note">{reprintNote.map((l, i) => <div key={i}>{l}</div>)}</div>}
 
       <div style={{ textAlign: 'center' }}>
         <img

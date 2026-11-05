@@ -319,8 +319,8 @@ export default function Dashboard() {
         { key: 'move_in_date', label: 'Move-in', render: b => fmtDate(b.move_in_date) },
         { key: 'rate', label: 'Rate', align: 'right', render: b => `₱${fmt(Number(b.rate || b.default_rate) || 0)}` },
       ],
-      onRowClick: b => navigate('/tenants', { state: { openTenantId: b.tenant_id } }),
-      footerLink: { label: 'Open full list in Tenants →', to: '/tenants' },
+      onRowClick: b => navigate('/current-tenants', { state: { openTenantId: b.tenant_id } }),
+      footerLink: { label: 'Open full list in Current Tenants →', to: '/current-tenants' },
     })
   }
 
@@ -424,7 +424,7 @@ export default function Dashboard() {
           </>
         )
       },
-      onRowClick: b => navigate('/tenants', { state: { openTenantId: b.tenant_id } }),
+      onRowClick: b => navigate('/current-tenants', { state: { openTenantId: b.tenant_id } }),
     })
   }
 
@@ -472,7 +472,7 @@ export default function Dashboard() {
           </div>
         </>
       ),
-      onRowClick: e => navigate('/tenants', { state: { openTenantId: e.tenant_id } }),
+      onRowClick: e => navigate('/current-tenants', { state: { openTenantId: e.tenant_id } }),
     })
   }
 
@@ -500,7 +500,7 @@ export default function Dashboard() {
           </>
         )
       },
-      onRowClick: b => navigate('/tenants', { state: { openTenantId: b.tenant_id } }),
+      onRowClick: b => navigate('/current-tenants', { state: { openTenantId: b.tenant_id } }),
     })
   }
 

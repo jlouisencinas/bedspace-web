@@ -701,6 +701,17 @@ export async function fetchFinalBill(id) {
   return data
 }
 
+// The bills an approved move-out request issued (details.approval_request_id), FINAL and VOID.
+export async function fetchFinalBillsForRequest(requestId) {
+  const { data, error } = await supabase
+    .from('final_bills')
+    .select('id, tenant_id, status, net_amount')
+    .eq('details->>approval_request_id', String(requestId))
+    .order('id')
+  if (error) throw error
+  return data
+}
+
 // Just what the automatic second-to-last advance credit needs, for every tenant.
 export async function fetchFinalBillsLite() {
   const { data, error } = await supabase
@@ -1239,13 +1250,13 @@ export async function fetchActivityLogByType(activityType, sinceISO) {
   return data
 }
 
-export async function fetchTenantHistory(tenantId) {
+export async function fetchTenantHistory(tenantId, { limit = 500 } = {}) {
   const { data, error } = await supabase
     .from('activity_log')
     .select('*')
     .eq('tenant_id', tenantId)
     .order('recorded_at', { ascending: false })
-    .limit(100)
+    .limit(limit)
   if (error) throw error
   return data
 }
