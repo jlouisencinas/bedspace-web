@@ -1299,6 +1299,15 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
 - [x] Fix role-gated deep links so notification-email links land in the target module for
       permitted roles (§7 "Login & role-gated routing") — **done**.
 - [x] Add a show/hide password toggle to the Login page (§7) — **done**.
+- [x] Automated unit tests for the money logic — **done** (phase 1). Vitest (`npm test`) covers the pure `src/lib/`
+      modules (`receiptLines`, `stay`, `utilityPieces`, `billing`, `finalBill`, `pnl`, `finalBillStatement`,
+      `bedEligibility`, `collectionsSummary`, `cutoffDates`), using the worked examples of §5 and §6 as golden cases.
+      `src/lib/nonNegotiables.test.js` runs the §14 non-negotiables over a table of scenarios (simple, mid-period move-out,
+      move-in, transfer, vacant days, odd centavo splits). Tests are fixture-only and synthetic: `src/test/setup.js` blanks
+      the Supabase config and refuses `src/lib/supabase.js` and the network, so a test can never reach production. CI
+      (`.github/workflows/ci.yml`) runs `npm test` + `npm run build` on every PR, without secrets. What pure logic can't
+      show (one active tenant per bed is the DB index `uniq_active_tenant_per_bed`; never deleting billing records is RLS)
+      stays a QA/tester check. Tests describe today's behaviour; a test marked `it.fails` documents a known bug below.
 
 ### Known follow-ups (not scheduled)
 - [ ] Mobile: the sidebar drawer stays open after tapping a nav link (unverified whether this
@@ -1315,6 +1324,14 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       confirm before adding many recipients or notification types.
 - [x] Non-admin blocked check — **done**. The owner confirmed on 2026-09-21 that an admin's email
       link lands in the correct module and a `user` is blocked from modules they have no access to.
+- [ ] Billing statements drift by a centavo (found by the unit tests, `it.fails` in `billing.test.js` and
+      `nonNegotiables.test.js`). `billing.js` computes in float pesos and never allocates the odd cent: (a) a room's
+      tenant shares, each rounded as printed, can add up to a centavo less than consumption x rate (100.00 over three
+      tenants prints 33.33 x 3 = 99.99; a room with a final-billed ghost shows 73.33 + 403.33 + 403.33 = 879.99 for 880.00); (b) a
+      statement's rounded lines can differ from its rounded total (4,838.71 + 10.65 printed, total due 4,849.35). The final
+      bill (`utilityPieces.js`) already does this exactly with integer-cent largest-remainder allocation.
+- [ ] `finalBill.js` `toCents` (low): an x.xx5 float half is not always rounded up (1.005 -> 1.00, 0.285 -> 0.28; 2.675 -> 2.68 is fine) because
+      it multiplies by 100 before rounding. Stored 2-decimal amounts are unaffected; only computed floats are.
 
 ## 16. Occupancy Simulator (isolated what-if module)
 - **Purpose.** Lets `admin`/`user` roles model potential rent at 100% (or a scaled) occupancy

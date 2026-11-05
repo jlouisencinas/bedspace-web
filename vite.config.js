@@ -17,4 +17,9 @@ export default defineConfig({
       'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
     },
   },
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.{js,jsx}', 'supabase/functions/_shared/**/*.test.ts'],
+    setupFiles: ['./src/test/setup.js'],
+  },
 })

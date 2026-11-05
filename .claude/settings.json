@@ -1,0 +1,57 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__execute_sql",
+      "mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__apply_migration",
+      "mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__list_tables",
+      "mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__list_migrations",
+      "mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__list_extensions",
+      "mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__query_logs",
+      "mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__get_advisors",
+      "mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__list_edge_functions",
+      "mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__get_edge_function",
+      "mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__deploy_edge_function",
+      "Bash(git *)",
+      "Bash(gh *)",
+      "Bash(npm run build)",
+      "Bash(npm run build *)"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/route-prompt.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__.*__(execute_sql|apply_migration|deploy_edge_function)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-db.mjs\"",
+            "timeout": 15,
+            "onFailure": "block",
+            "statusMessage": "Checking SQL against production guard"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-git.mjs\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
