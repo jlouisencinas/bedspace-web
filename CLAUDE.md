@@ -27,7 +27,9 @@ React 18 + Vite + react-router-dom + Tailwind · Supabase/Postgres (DB, auth, RL
 ```
 npm install
 npm run dev       # http://localhost:5173 (talks to the PRODUCTION database)
-npm run build     # -> dist/, the only automated correctness check (no test suite)
+npm test          # Vitest unit tests for src/lib/ (fixture-only, never touches the database)
+npm run test:watch
+npm run build     # -> dist/
 ```
 
 ## Map
@@ -44,6 +46,9 @@ npm run build     # -> dist/, the only automated correctness check (no test suit
   `utilityPieces.js`, `receiptLines.js`, `moveOutData.js`, `pnl.js`, `snapshot.js`, `auth.jsx`, `approvals.js`,
   `tenantProfile.js`, `tenantHistory.js` (profile history reads, in-house rule), `notify.js`, `visitors.js`, `idPhoto.js`, `guardShift.js`, `simCsv.js`, `theme.jsx`.
 - `supabase/functions/` notify-email Edge Function + `_shared/` (also imported by `src/`). `apps-script/` mailer copy.
+- Tests: `src/lib/*.test.js` next to their modules (`nonNegotiables.test.js` = the §14 regression tests), synthetic
+  fixtures in `src/lib/__fixtures__/`, safety guard `src/test/setup.js` (blanks the Supabase config, refuses
+  `src/lib/supabase.js` and the network). CI: `.github/workflows/ci.yml` (`npm test` + `npm run build` on every PR).
 - `database/init.sql` consolidated schema · `database/migrations/` one-off SQL + `applied.md` log · `scripts/` one-time
   Sheets migration scripts and the email preview script.
 
@@ -65,7 +70,9 @@ follow the `db-migrations` procedure (inspect → back up → apply → verify �
 its seed starts with `truncate table rooms, cutoffs, activity_log cascade`. The guard-db hook blocks destructive SQL.
 
 ## Conventions
-- No test suite: `npm run build` plus running the app is the verification.
+- Verification: Vitest unit tests for `src/lib/` (`npm test`), plus `npm run build`, plus browser testing. Put new logic in
+  a pure `src/lib/` function with a test; tests use synthetic fixtures only (the repo is public) and never the database.
+  `it.fails` marks a known bug the test surfaced (listed in `docs/requirements.md` §15), not a test to delete.
 - Theming: CSS custom properties in `src/index.css` (light + `data-theme="dark"`), bridged in `tailwind.config.js`. Use
   token classes (`bg-surface`, `text-ink`, `border-line`, …), not raw `slate`/`white`. `Login.jsx` and print pages are
   deliberately fixed light.
