@@ -31,15 +31,16 @@ npm run build     # -> dist/, the only automated correctness check (no test suit
 ```
 
 ## Map
-- `src/pages/` one file per route: Dashboard, BedMap, Tenants, EditTenantProfile, Billing, Utilities, Collections,
+- `src/pages/` one file per route: Dashboard, BedMap, Tenants, CurrentTenants (Tenants with scope="current"), EditTenantProfile, Billing, Utilities, Collections,
   PaymentMonitoring, Maintenance, Approvals, Reports, Occupancy, OccupancySimulator, Property, Activity, Users,
   NotificationSettings, VisitorLog, Login, PrintElectricity, PrintRentWater, PrintFinalBill.
   Property.jsx: "Reconfigure" (bed count/rates) is in the Bed Rates tab; "+ Add Room" / "Retire" in the Room Config tab.
 - `src/components/` shared UI (MoveInModal, MoveOutModal, TransferModal, Statement, DrillDownModal, ReceiptLinesInput,
-  ReservationLedgerModal, RoomReconfigureModal, AddRoomModal, RetireRoomModal, Guard*/Visitor* …).
+  ReservationLedgerModal, RoomReconfigureModal, AddRoomModal, RetireRoomModal, Guard*/Visitor* …);
+  `tenantProfile/` holds the TenantProfileModal tabs (BillsTab, StayTimeline, MaintenanceTab, VisitorsTab).
 - `src/lib/` data layer: `supabase.js` (queries + move-out/receipt writes), `billing.js`, `finalBill.js`, `stay.js`,
   `utilityPieces.js`, `receiptLines.js`, `moveOutData.js`, `pnl.js`, `snapshot.js`, `auth.jsx`, `approvals.js`,
-  `tenantProfile.js`, `notify.js`, `visitors.js`, `idPhoto.js`, `guardShift.js`, `simCsv.js`, `theme.jsx`.
+  `tenantProfile.js`, `tenantHistory.js` (profile history reads, in-house rule), `notify.js`, `visitors.js`, `idPhoto.js`, `guardShift.js`, `simCsv.js`, `theme.jsx`.
 - `supabase/functions/` notify-email Edge Function + `_shared/` (also imported by `src/`). `apps-script/` mailer copy.
 - `database/init.sql` consolidated schema · `database/migrations/` one-off SQL + `applied.md` log · `scripts/` one-time
   Sheets migration scripts and the email preview script.

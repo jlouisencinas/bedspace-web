@@ -184,23 +184,64 @@ and **Move Out** only (Edit Details moved to its own module — see below).
   formal move-out — writes an `activity_log` entry (`activity_type: 'Move-out Date Changed'`).
   This is the infrastructure the lease-extension count metric (§9/§10) reads.
 
-### Moved-out tenants on the Tenants page
-- **Status filter:** "Active (Leased)" (default, active tenants only), "Moved out" (inactive
-  tenants only) and "All tenants" (both; inactive rows carry a "Moved out" chip). Every view
-  defaults to room number ascending, then bed letter, for ease of checking; switching the filter
-  resets to that order, and the column headers still re-sort. Room and search filters apply on top; a moved-out tenant matches the last room
-  and bed they occupied. The date column reads "Move Out" (planned date) in the Active view and
-  "Moved Out" otherwise. The effective move-out date of an inactive tenant is
-  `actual_move_out_date`, falling back to the planned `move_out_date` for legacy rows; rows with
-  neither show "—" and sort last when sorting by that column descending.
-- **Profile:** a moved-out tenant's profile shows a "Moved out <date>" chip under the name, an
-  "Actual Move Out" row when it differs from the planned date, and an Overview banner listing each
-  final bill ("Final bill #id · STATUS · Refund/Due amount") with a Print link for admins and a
-  "Go to Advance & Deposit" button. With no final bill it says so (moved out before final bills
-  existed, or imported from the sheet).
+### Tenants and Current Tenants
+- **Two pages (admin and user; viewer and guard have neither).** `/tenants` ("Tenants") is the
+  register of every tenant, past and present. `/current-tenants` ("Current Tenants", sidebar entry right
+  after Tenants; `src/pages/CurrentTenants.jsx` renders the Tenants page with `scope="current"`) lists
+  only the in-house tenants and has no status filter.
+- **In-house** = `tenants.is_active = true` and `category` is `BED` or `COMMERCIAL` (JB Water Refilling
+  Station is in-house). Active `PARKING_ONLY` / `OTHER` rows are not in-house: they appear only on
+  Tenants ("All tenants"). An active tenant whose planned move-out date has passed stays in-house until
+  the move-out is processed. A reserved bed is not a tenant and is never listed. `tenants.status` is
+  unused; `is_active` is the flag.
+- **Tenants status filter:** "All tenants" (default), "Current (in-house)" (same list as Current
+  Tenants) and "Moved out" (inactive rows). In "All tenants" inactive rows carry a "Moved out" chip.
+  Subtitle: "{n} tenants · {a} in-house · {m} moved out", plus "· {p} active parking/other" when there
+  are any. Current Tenants subtitle: "{n} in-house tenants · {b} bed · {c} commercial".
+- Every view defaults to room number ascending, then bed letter; switching the filter resets to that
+  order and the column headers still re-sort. Room and search filters apply on top; a moved-out tenant
+  matches the last room and bed they occupied. Search also matches the unit label. The date column
+  reads "Moved Out" in the Moved-out view and "Move Out" otherwise. The effective move-out date of an
+  inactive tenant is `actual_move_out_date`, falling back to the planned `move_out_date` for legacy
+  rows; rows with neither show "—" and sort last when sorting by that column descending.
+- **No-bed rows (commercial / parking / other):** a category chip ("Commercial", "Parking", "Other"),
+  the `unit_label` in the Room column, "—" for the bed, and they sort after every room. They have no
+  Move Out or Transfer buttons (row or profile footer); the profile header shows "<unit label> ·
+  <category>" instead of "Room · Bed". How a commercial tenancy ends is a §15 follow-up.
+- **Moved-out profile:** a "Moved out <date>" chip under the name, an "Actual Move Out" row when it
+  differs from the planned date, and an Overview banner listing each final bill ("Final bill #id ·
+  STATUS · Refund/Due amount") with a Print link for admin and user and a "Go to Bills" button. With
+  no final bill it says so (moved out before final bills existed, or imported from the sheet).
 - **Actions hidden for inactive tenants:** the row "Move Out" button, the profile footer Transfer /
   Move Out, and the Rate / Move-In "Correct" buttons. View stays available. Admin receipt Add/Edit
   on the Advance & Deposit tab is unchanged (used to fix receipts after a final bill is voided).
+
+### Tenant profile history
+The profile (`TenantProfileModal`, tabs scroll sideways on a narrow screen) is the tenant's full
+record and works the same for moved-out tenants. Every source is read by `tenant_id`; each tab shows
+its own "Could not load …: <message>" if its read fails (the other tabs still load). Nothing here writes.
+- **Bills** (`tenantProfile/BillsTab.jsx`): the final bills (with Print for admin and user, Void for
+  admin only, voided bills shown with their reason); payments grouped by cutoff name, newest cutoff
+  first and "No cutoff" last, columns Date / Category / Type / Amount / Notes, a void row shown
+  negative with "Void of #id" and its original marked "Voided"; per-cutoff and overall totals summed
+  in integer cents (a void pair nets to 0); a summary of advance/deposit receipts by status linking to
+  the Advance & Deposit tab. Past monthly statements are not shown yet (phase 2: recomputed, labelled).
+- **Advance & Deposit:** unchanged, plus a "Final bills are on the Bills tab" link.
+- **Maintenance** (`tenantProfile/MaintenanceTab.jsx`): tickets with this `tenant_id` (room, concern,
+  remarks, resolution notes, status, raised and resolved dates). Room tickets with no tenant linked
+  are not shown.
+- **Visitors** (`tenantProfile/VisitorsTab.jsx`, admin/user only): read-only visits (check-in,
+  check-out, visitor name, contact, state chip, overnight status, void reason), no ID number or photo,
+  latest 300, link to the Visitor Log. A visit is keyed to the lowest tenant id of the active same-name
+  group in the room at check-in (§17), so the profile reads visits for every same-name row in the same
+  room whose stay overlaps this one ("siblings", `siblingIdsFor` in `src/lib/tenantHistory.js`),
+  limited to check-ins inside this tenant's stay window (Manila dates, move-in to move-out). Sibling
+  beds therefore show the same visits; two separate stays of the same person each show their own.
+  Commercial / parking tenants have none (visits target bed tenants).
+- **History:** a stay timeline (`tenantProfile/StayTimeline.jsx`): Move in (first room/bed), each
+  COMPLETED transfer (date, from → to room/bed, rate change) and Moved out (date, final bill ids) or
+  the planned move-out while active; then the tenant's `activity_log` entries (latest 500, with a note
+  when capped). Legacy log rows with only a name and no `tenant_id` are not shown.
 
 ### Transfer
 - Rate and utility responsibility split proportionally by exact day count between old and new
@@ -522,11 +563,17 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       With no cutoff covering the move-out date an admin can still proceed (rent/utility lines at 0, to be keyed
       in); non-admins cannot. Going back and changing the date/readings rebuilds the computed lines but keeps
       lines staff added.
-    - **Print:** `/print/final-bill?id=` (`PrintFinalBill.jsx`, admin only like the other print pages) reuses
+    - **Print:** `/print/final-bill?id=` / `?ids=` (`PrintFinalBill.jsx`, admin and user, read-only for user: the
+      receipt-number fix panel is admin-only; the rent-water / electricity print pages stay admin-only) reuses
       `Statement.jsx` (additive props: rate column, amount text, italic rows, total label/colour). Buttons: "Print
-      final bill" on the move-out result screen and in the tenant profile (Advance & Deposit tab, with an admin
+      final bill" on the move-out result screen and in the tenant profile (Bills tab, with an admin-only
       Void). Voiding sets the bill VOID with a reason and puts its HELD-then-settled receipts back to HELD.
-      A moved-out tenant's final bills are also reachable from Tenants → "Moved out" → View (Overview banner, §3).
+      Final bills stay reachable after the move-out: Tenants → View (Overview banner and Bills tab, §3), and
+      Approvals: after an admin approves a move-out request a banner shows "Move-out applied: <tenant>.
+      Final bill #n" with Print final bill(s) and Open tenant profile; every Approved move-out row has a
+      "Final bill" button (opens that request's FINAL bills, found by `details.approval_request_id`; "No
+      final bill on this request" for an old date-only request, "Final bill voided (#n)" when all are void)
+      and "Open tenant".
     - **Utility split after a move-out:** `fetchTenants()` stamps tenants that have a non-void final bill
       (`_finalBilled`, `_finalBilledCutoffs`); for that bill's cutoff `computeBilling` keeps them in the split as
       non-billed participants (their days still apportion the room, so roommates pay only their own share) but
@@ -736,8 +783,12 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   requires the approval workflow (current scope: move-out, transfer, room config, bed rate
   changes, bed removal — see `.claude/agents/`). Room reconfiguration (§4) is deliberately
   admin-only instead, not approval-gated.
-- **Moved-out tenants:** `user` sees moved-out tenants on the Tenants page and their final bills in
-  the profile (RLS allows the reads), but gets no Print or Void: print routes are admin-only.
+- **Tenants / Current Tenants / profile history:** both pages are admin and user (viewer is redirected
+  to `/`, guard never reaches them). `user` sees every tenant, past and present, and every profile tab
+  (bills, payments, final bills, receipts, transfers, activity, maintenance, visitors; RLS allows the
+  reads). `user` may open and print final bills read-only (`/print/final-bill` is in the admin+user
+  route block); Void and the receipt-number fixes stay admin-only. The profile's Visitors tab is
+  admin/user only, like the Visitor Log (§17).
 - **Add-ons are explicitly NOT approval-gated.** `user` role can add/remove billing add-ons
   (parking, aircon, etc.) freely, with no approval and no reason required — the only requirement
   is that it's logged in `activity_log`. Confirmed intentional, not a gap to close.
@@ -897,6 +948,8 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   raised it (nullable — supports staff-raised tickets with no tenant attached), resolution notes,
   resolved-by/resolved-at, pending/resolved status, with an auto-write to `room_logs` and
   `activity_log` on raise/resolve.
+- A tenant's tickets (`maintenance_tickets.tenant_id`) also appear on their profile's Maintenance tab,
+  past tenants included (§3 "Tenant profile history").
 - This same ticket list (with tenant name shown) is also reachable from the Dashboard as a "Room
   Maintenance" panel — see §10. It's the same underlying data as `Maintenance.jsx`, not a second
   parallel maintenance system.
@@ -1086,12 +1139,15 @@ in another module.**
   call's `detail` field). Two shapes: **table** (Occupied Beds/Vacant/Reserved/Monthly
   Revenue/Month detail — search bar, row cap with "···N more", optional "Open full list in
   …" footer link) and **list** (the other four — reuses `.upcoming-item` styling, no search/cap).
-  Occupied Beds / Month detail / the four monthly-metric tiles navigate a clicked row to
-  `/tenants` and auto-open that tenant's profile (works even if the tenant has since moved out);
+  Occupied Beds / Month detail / the four monthly-metric tiles navigate a clicked row to a tenants page
+  and auto-open that tenant's profile (works even if the tenant has since moved out): Occupied Beds,
+  Moving Out This Month, Lease Extensions and MTD Projected Move-outs go to `/current-tenants` (the
+  Occupied Beds footer is "Open full list in Current Tenants →"); Month detail and Move-ins This Month
+  go to `/tenants` because those tenants may already have moved out;
   Vacant/Reserved navigate to `/property`'s Bed Rates tab with the room auto-expanded and scrolled
   into view. Monthly Revenue's rows are aggregate (by room type) and not clickable. **Viewer
   role:** every drill-down still opens with full, correct data — only row-click navigation and the
-  footer link are hidden (routes `/tenants`/`/property` are admin/user only, same `canAct` gate as
+  footer link are hidden (routes `/tenants`/`/current-tenants`/`/property` are admin/user only, same `canAct` gate as
   the Room Maintenance panel above). The month occupancy no longer depends on an active cutoff.
 
 ## 11. Tenant Payment Monitoring module — DONE
@@ -1310,6 +1366,8 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       to `viewer` until reload.
 - [ ] Tickets have no `created_by` column, so "Raised by" in notification emails is the JWT email
       of the user who triggered the notification.
+- [ ] Commercial / parking tenants (no bed) have no Move Out or Transfer in the app: ending one is done
+      in the database by an admin until a dedicated flow exists (Tenants and Current Tenants, §3).
 - [ ] Vercel Hobby plan is for non-commercial use — check the terms against this business's use.
 - [ ] Gmail Apps Script daily recipient quota (~100/day for a consumer account) — unverified;
       confirm before adding many recipients or notification types.
@@ -1398,6 +1456,9 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
   void writes `visitor_log_edits` (old → new) and a non-PII `activity_log` line. Direct writes to
   `visitor_logs` are impossible (no grants/policies; a trigger rejects anything outside the RPCs
   and every DELETE).
+- **On the tenant profile.** Visits also appear read-only on the visited tenant's profile (Visitors tab,
+  admin/user only; no ID number or photo), matched through the same-name group in the room and the
+  tenant's stay window (§3 "Tenant profile history").
 - **PII.** The visitor's contact number, email, ID number, photo and photo path never appear in
   `approval_requests.new_value`, `activity_log` or any email. Check-ins/check-outs are not written to
   `activity_log`; `visitor_logs` is that audit.

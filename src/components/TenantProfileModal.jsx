@@ -4,8 +4,13 @@ import {
   fetchTenantDocuments, addTenantDocument, deleteTenantDocument, fetchTenantHistory,
   fetchTenantDeposits, addTenantDeposit, updateTenantDeposit, DEPOSIT_KIND_LABEL, DEPOSIT_REF_LABEL,
   fetchFinalBills, voidFinalBill, correctReceiptRef,
-  fetchReservationPayments, applyReservationPayments, PAYMENT_MODES, PAYMENT_MODE_LABEL,
+  fetchReservationPayments, applyReservationPayments, PAYMENT_MODES, PAYMENT_MODE_LABEL, fetchCutoffs,
 } from '../lib/supabase'
+import { fetchTenantTransfers, fetchVisitsForTenant, CATEGORY_LABEL } from '../lib/tenantHistory'
+import BillsTab from './tenantProfile/BillsTab'
+import StayTimeline from './tenantProfile/StayTimeline'
+import MaintenanceTab from './tenantProfile/MaintenanceTab'
+import VisitorsTab from './tenantProfile/VisitorsTab'
 import { Link } from 'react-router-dom'
 import { getOrCreateTenantFolder, uploadFileToDrive, isDriveConfigured, isDriveConnected, preloadDrive, connectDrive } from '../lib/googleDrive'
 import { useAuth } from '../lib/auth'
@@ -21,11 +26,14 @@ const PROFILE_TABS = [
   { id: 'overview',   label: 'Overview'   },
   { id: 'contacts',   label: 'Contacts'   },
   { id: 'documents',  label: 'Documents'  },
-  { id: 'payments',   label: 'Payments'   },
+  { id: 'bills',      label: 'Bills'      },
   { id: 'advance',    label: 'Advance & Deposit' },
-  { id: 'tickets',    label: 'Tickets'    },
+  { id: 'tickets',    label: 'Maintenance' },
+  { id: 'visitors',   label: 'Visitors', staffOnly: true },
   { id: 'history',    label: 'History'    },
 ]
+
+const HISTORY_LIMIT = 500
 
 const HISTORY_COLORS = {
   'Move In':                 'bg-emerald-500',
@@ -78,8 +86,10 @@ function fmtSize(b)  {
 
 // Parent owns what happens when each footer button is clicked (opens its own
 // modal state) — this component just calls the callback.
-export default function TenantProfileModal({ tenant, onClose, onTransfer, onMoveOut, onCorrectRate, onCorrectMoveIn }) {
+export default function TenantProfileModal({ tenant, siblingIds = [tenant.id], onClose, onTransfer, onMoveOut, onCorrectRate, onCorrectMoveIn }) {
   const { isAdmin, isUser, user } = useAuth()
+  const isStaff = isAdmin || isUser
+  const siblingKey = siblingIds.join(',')
   const docFileRef = useRef(null)
   const { show, ToastEl } = useToast()
 
@@ -92,6 +102,16 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
   const [detailHistory, setDetailHistory] = useState([])
   const [detailDeposits,setDetailDeposits]= useState([])
   const [detailBills,   setDetailBills]   = useState([])
+  const [paysError,     setPaysError]     = useState('')
+  const [ticketsError,  setTicketsError]  = useState('')
+  const [historyError,  setHistoryError]  = useState('')
+  const [cutoffs,       setCutoffs]       = useState([])
+  const [cutoffsError,  setCutoffsError]  = useState('')
+  const [transfers,     setTransfers]     = useState([])
+  const [transfersError,setTransfersError]= useState('')
+  const [visits,        setVisits]        = useState([])
+  const [visitsLoading, setVisitsLoading] = useState(true)
+  const [visitsError,   setVisitsError]   = useState('')
   const [billsLoading,  setBillsLoading]  = useState(true)
   const [billsError,    setBillsError]    = useState('')
   const [voidId,        setVoidId]        = useState(null)
@@ -123,6 +143,10 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
     setDetailHistory([])
     setDetailDeposits([])
     setDetailBills([])
+    setPaysError(''); setTicketsError(''); setHistoryError('')
+    setCutoffs([]); setCutoffsError('')
+    setTransfers([]); setTransfersError('')
+    setVisits([]); setVisitsLoading(true); setVisitsError('')
     setBillsLoading(true)
     setBillsError('')
     setVoidId(null)
@@ -139,30 +163,44 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
         fetchTenantContacts(tenant.id),
         fetchTenantEmails(tenant.id),
         fetchTenantDocuments(tenant.id),
-        fetchTenantHistory(tenant.id),
+        fetchTenantHistory(tenant.id, { limit: HISTORY_LIMIT }),
         fetchTenantDeposits(tenant.id),
         fetchFinalBills(tenant.id),
         tenant.is_active !== false && tenant.bed_id
           ? fetchReservationPayments({ bedId: tenant.bed_id, statuses: ['HELD'] })
           : Promise.resolve([]),
+        fetchCutoffs(),
+        fetchTenantTransfers(tenant.id),
+        isStaff ? fetchVisitsForTenant(tenant, siblingKey.split(',').map(Number)) : Promise.resolve([]),
       ])
       if (cancelled) return
+      const errOf = r => r.reason?.message || 'unknown error'
       if (results[0].status === 'fulfilled') setDetailPays(results[0].value)
+      else setPaysError(errOf(results[0]))
       if (results[1].status === 'fulfilled') setDetailTickets(results[1].value)
+      else setTicketsError(errOf(results[1]))
       if (results[2].status === 'fulfilled') setDetailContacts(results[2].value)
       if (results[3].status === 'fulfilled') setDetailEmails(results[3].value)
       if (results[4].status === 'fulfilled') setDetailDocs(results[4].value)
       if (results[5].status === 'fulfilled') setDetailHistory(results[5].value)
+      else setHistoryError(errOf(results[5]))
       if (results[6].status === 'fulfilled') setDetailDeposits(results[6].value)
       else setDepLoadError(results[6].reason?.message || 'unknown error')
       if (results[7].status === 'fulfilled') setDetailBills(results[7].value)
       else setBillsError(results[7].reason?.message || 'unknown error')
       setBillsLoading(false)
       if (results[8].status === 'fulfilled') setResHeld(results[8].value)
+      if (results[9].status === 'fulfilled') setCutoffs(results[9].value)
+      else setCutoffsError(errOf(results[9]))
+      if (results[10].status === 'fulfilled') setTransfers(results[10].value)
+      else setTransfersError(errOf(results[10]))
+      if (results[11].status === 'fulfilled') setVisits(results[11].value)
+      else setVisitsError(errOf(results[11]))
+      setVisitsLoading(false)
     }
     load()
     return () => { cancelled = true }
-  }, [tenant.id])
+  }, [tenant.id, siblingKey, isStaff])
 
   // Preload Drive only when the Documents tab is opened (avoids Google popup on every View click)
   useEffect(() => {
@@ -298,6 +336,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
   const resHeldTotal = resHeld.reduce((sum, p) => sum + dbToCents(p.amount), 0) / 100
 
   const movedOut = !tenant.is_active
+  const noBed    = !tenant.bed_id
   const outDate  = tenant.actual_move_out_date || tenant.move_out_date
 
   const heldTotal = kind => detailDeposits
@@ -316,8 +355,9 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
             <div>
               <h3 className="text-[15px] font-semibold text-ink">{tenant.name}</h3>
               <div className="text-[11px] text-ink-faint font-normal mt-0.5">
-                Room {tenant.room_no} · Bed {tenant.bed_letter}
-                {tenant.bed_location && ` (${tenant.bed_location})`}
+                {noBed
+                  ? <>{tenant.unit_label || '—'} · {CATEGORY_LABEL[tenant.category] || tenant.category}</>
+                  : <>Room {tenant.room_no} · Bed {tenant.bed_letter}{tenant.bed_location && ` (${tenant.bed_location})`}</>}
                 {' · '}{fmt(tenant.rate)}/mo
               </div>
               {movedOut && (
@@ -331,19 +371,20 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
         </div>
 
         {/* Tab bar */}
-        <div className="flex gap-0 px-4" style={{ borderBottom: '1px solid var(--border)' }}>
-          {PROFILE_TABS.map(t => (
+        <div className="flex gap-0 px-4 overflow-x-auto whitespace-nowrap" style={{ borderBottom: '1px solid var(--border)' }}>
+          {PROFILE_TABS.filter(t => !t.staffOnly || isStaff).map(t => (
             <button
               key={t.id}
               onClick={() => setProfileTab(t.id)}
-              className={`px-3 py-2 text-[12px] font-medium border-b-2 -mb-px transition-colors ${
+              className={`shrink-0 px-3 py-2 text-[12px] font-medium border-b-2 -mb-px transition-colors ${
                 profileTab === t.id
                   ? 'border-navy-500 text-navy-700 font-semibold'
                   : 'border-transparent text-ink-muted hover:text-ink-secondary'
               }`}
             >
               {t.label}
-              {t.id === 'payments'  && detailPays.length    > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailPays.length}</span>}
+              {t.id === 'bills'     && detailPays.length + detailBills.length > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailPays.length + detailBills.length}</span>}
+              {t.id === 'visitors'  && visits.length       > 0 && <span className="ml-1 text-[10px] text-ink-faint">{visits.length}</span>}
               {t.id === 'tickets'   && detailTickets.length  > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailTickets.length}</span>}
               {t.id === 'advance'   && detailDeposits.length > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailDeposits.length}</span>}
               {t.id === 'documents' && detailDocs.length     > 0 && <span className="ml-1 text-[10px] text-ink-faint">{detailDocs.length}</span>}
@@ -375,7 +416,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                             <span className="font-semibold text-ink">
                               Final bill #{b.id} · {b.status} · {net < 0 ? `Refund ${money(-net)}` : `Due ${money(net)}`}
                             </span>
-                            {isAdmin && (
+                            {isStaff && (
                               <Link className="btn-xs blue" to={`/print/final-bill?id=${b.id}`}>Print</Link>
                             )}
                           </div>
@@ -383,11 +424,13 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
                       })}
                     </div>
                   )}
-                  <button className="btn-xs mt-2" onClick={() => setProfileTab('advance')}>Go to Advance &amp; Deposit</button>
+                  <button className="btn-xs mt-2" onClick={() => setProfileTab('bills')}>Go to Bills</button>
                 </div>
               )}
               {[
-                ['Room',             `${tenant.room_no} · Bed ${tenant.bed_letter}${tenant.bed_location ? ` (${tenant.bed_location})` : ''}`],
+                noBed
+                  ? ['Unit',         `${tenant.unit_label || '—'} · ${CATEGORY_LABEL[tenant.category] || tenant.category}`]
+                  : ['Room',         `${tenant.room_no} · Bed ${tenant.bed_letter}${tenant.bed_location ? ` (${tenant.bed_location})` : ''}`],
                 ['Room Type',        tenant.room_type],
                 ['Rate',             fmt(tenant.rate)],
                 ['Gender',           GENDER_OPTIONS.find(g => g.value === tenant.gender)?.label ?? tenant.gender],
@@ -619,28 +662,19 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
             </div>
           )}
 
-          {/* ── Payments ── */}
-          {profileTab === 'payments' && (
-            detailPays.length === 0 ? (
-              <div className="text-center py-6">
-                <CreditCard size={28} className="mx-auto mb-2 text-ink-faint" />
-                <p className="text-[13px] text-ink-faint">No payments recorded yet.</p>
-              </div>
-            ) : (
-              <table className="payments-table">
-                <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Notes</th></tr></thead>
-                <tbody>
-                  {detailPays.map(p => (
-                    <tr key={p.id}>
-                      <td>{fmtDate(p.payment_date)}</td>
-                      <td>{p.pay_type}</td>
-                      <td>{'₱' + Number(p.amount).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                      <td className="text-ink-muted">{p.notes || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )
+          {/* ── Bills ── */}
+          {profileTab === 'bills' && (
+            <BillsTab
+              payments={detailPays} paysError={paysError} cutoffs={cutoffs} cutoffsError={cutoffsError}
+              bills={detailBills} billsLoading={billsLoading} billsError={billsError}
+              deposits={detailDeposits} depLoadError={depLoadError}
+              canPrint={isStaff} isAdmin={isAdmin} voidId={voidId} voidReason={voidReason} billBusy={billBusy}
+              onStartVoid={id => { setVoidId(id); setVoidReason('') }}
+              onVoidReason={setVoidReason}
+              onConfirmVoid={doVoidBill}
+              onCancelVoid={() => setVoidId(null)}
+              onGoToAdvance={() => setProfileTab('advance')}
+            />
           )}
 
           {/* ── Advance & Deposit ── */}
@@ -856,86 +890,33 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
               )}
 
               {detailBills.length > 0 && (
-                <div className="mt-5">
-                  <div className="text-[10px] font-bold text-ink-faint uppercase tracking-widest mb-2">Final bills</div>
-                  <div className="space-y-2">
-                    {detailBills.map(b => {
-                      const net = Number(b.net_amount)
-                      return (
-                        <div key={b.id} className="p-3 rounded-xl bg-surface-2">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-[13px] font-semibold text-ink">Final bill #{b.id}</span>
-                            <span className="text-[12px] text-ink-muted">{fmtDate(b.move_out_date)}</span>
-                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${b.status === 'VOID' ? 'bg-danger-bg text-danger-text' : 'bg-success-bg text-success-text'}`}>{b.status}</span>
-                            <span className={`text-[13px] font-semibold ml-auto ${net < 0 ? 'text-success-text' : 'text-ink'}`}>
-                              {net < 0 ? `Refund ${money(-net)}` : `Due ${money(net)}`}
-                            </span>
-                          </div>
-                          {b.early_termination && (
-                            <div className="text-[11px] text-ink-muted mt-0.5">
-                              Early termination — {b.forfeit_waived ? `forfeiture waived: ${b.waived_reason}` : 'advance and deposit forfeited'}
-                            </div>
-                          )}
-                          {b.details?.advance_check?.text && <div className="text-[11px] text-ink-muted mt-0.5">{b.details.advance_check.text}</div>}
-                          {b.status === 'VOID' && <div className="text-[11px] text-danger-text mt-0.5">Voided: {b.void_reason}</div>}
-                          {isAdmin && (
-                            <div className="flex items-center gap-2 mt-2">
-                              <Link className="btn-xs blue" to={`/print/final-bill?id=${b.id}`}>Print</Link>
-                              {b.status === 'FINAL' && voidId !== b.id && (
-                                <button className="btn-xs red" onClick={() => { setVoidId(b.id); setVoidReason('') }}>Void</button>
-                              )}
-                            </div>
-                          )}
-                          {isAdmin && voidId === b.id && (
-                            <div className="flex items-center gap-2 mt-2">
-                              <input type="text" className="flex-1" placeholder="Reason for voiding (required)" value={voidReason}
-                                onChange={e => setVoidReason(e.target.value)} />
-                              <button className="btn-xs red" disabled={billBusy || !voidReason.trim()} onClick={doVoidBill}>{billBusy ? 'Voiding…' : 'Confirm void'}</button>
-                              <button className="btn-xs" disabled={billBusy} onClick={() => setVoidId(null)}>Cancel</button>
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
+                <div className="mt-5 text-[12px] text-ink-muted">
+                  Final bills are on the{' '}
+                  <button className="text-navy-600 font-semibold hover:underline" onClick={() => setProfileTab('bills')}>Bills tab</button>.
                 </div>
               )}
             </div>
           )}
 
-          {/* ── Tickets ── */}
-          {profileTab === 'tickets' && (
-            detailTickets.length === 0 ? (
-              <div className="text-center py-6">
-                <p className="text-[13px] text-ink-faint">No maintenance tickets.</p>
-              </div>
-            ) : (
-              <table className="payments-table">
-                <thead><tr><th>Room</th><th>Concern</th><th>Status</th><th>Raised</th></tr></thead>
-                <tbody>
-                  {detailTickets.map(tk => (
-                    <tr key={tk.id}>
-                      <td>{tk.rooms?.room_no ? `Rm ${tk.rooms.room_no}` : '—'}</td>
-                      <td>{tk.concern}</td>
-                      <td>
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          tk.status === 'PENDING' ? 'bg-warning-bg text-warning-text' : 'bg-success-bg text-success-text'
-                        }`}>
-                          {tk.status}
-                        </span>
-                      </td>
-                      <td className="text-[11px] text-ink-faint">
-                        {tk.raised_at ? new Date(tk.raised_at).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )
+          {/* ── Maintenance ── */}
+          {profileTab === 'tickets' && <MaintenanceTab tickets={detailTickets} error={ticketsError} />}
+
+          {/* ── Visitors ── */}
+          {profileTab === 'visitors' && isStaff && (
+            <VisitorsTab visits={visits} loading={visitsLoading} error={visitsError} noBed={noBed} />
           )}
 
           {/* ── History ── */}
-          {profileTab === 'history' && (
+          {profileTab === 'history' && <StayTimeline tenant={tenant} transfers={transfers} transfersError={transfersError} bills={detailBills} />}
+          {profileTab === 'history' && historyError && (
+            <div className="text-[12px] text-danger-text bg-danger-bg border border-danger-border rounded-lg px-3 py-2.5 mb-3">
+              Could not load activity history: {historyError}
+            </div>
+          )}
+          {profileTab === 'history' && detailHistory.length >= HISTORY_LIMIT && (
+            <p className="text-[11px] text-ink-faint mb-2">Showing the latest {HISTORY_LIMIT} activity entries.</p>
+          )}
+          {profileTab === 'history' && !historyError && (
             detailHistory.length === 0 ? (
               <div className="text-center py-6">
                 <History size={28} className="mx-auto mb-2 text-ink-faint" />
@@ -985,7 +966,7 @@ export default function TenantProfileModal({ tenant, onClose, onTransfer, onMove
         {/* Footer */}
         <div className="modal-foot">
           <button className="btn secondary" onClick={onClose}>Close</button>
-          {tenant.is_active && (
+          {tenant.is_active && tenant.bed_id && (
             <>
               <button className="btn primary" onClick={() => onTransfer(tenant)}>
                 <ArrowRightLeft size={13} /> Transfer

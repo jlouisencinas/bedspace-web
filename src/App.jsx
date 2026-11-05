@@ -8,6 +8,7 @@ import Login          from './pages/Login'
 import Dashboard      from './pages/Dashboard'
 import BedMap         from './pages/BedMap'
 import Tenants        from './pages/Tenants'
+import CurrentTenants from './pages/CurrentTenants'
 import EditTenantProfile from './pages/EditTenantProfile'
 import Collections    from './pages/Collections'
 import Utilities      from './pages/Utilities'
@@ -64,6 +65,7 @@ function Layout() {
             {/* user + admin */}
             {(isAdmin || isUser) && <>
               <Route path="/tenants"     element={<Tenants />}     />
+              <Route path="/current-tenants" element={<CurrentTenants />} />
               <Route path="/edit-tenant" element={<EditTenantProfile />} />
               <Route path="/collections" element={<Collections />} />
               <Route path="/payment-monitoring" element={<PaymentMonitoring />} />
@@ -74,13 +76,13 @@ function Layout() {
               <Route path="/property"   element={<Property />}    />
               <Route path="/occupancy-simulator" element={<OccupancySimulator />} />
               <Route path="/visitors"    element={<VisitorLog />}  />
+              <Route path="/print/final-bill" element={<PrintFinalBill />} />
             </>}
 
             {/* admin only */}
             {isAdmin && <>
               <Route path="/print/rent-water"  element={<PrintRentWater />}   />
               <Route path="/print/electricity" element={<PrintElectricity />} />
-              <Route path="/print/final-bill" element={<PrintFinalBill />} />
               <Route path="/approvals"         element={<Approvals />}        />
               <Route path="/users"             element={<Users />}            />
               <Route path="/notification-settings" element={<NotificationSettings />} />
