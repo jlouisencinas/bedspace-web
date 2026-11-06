@@ -79,3 +79,15 @@ export function typedExtensionBill() {
     ],
   }
 }
+
+// Pro-rated second-to-last advance (owner's example): rate 5,000, in Sep 1, planned out Nov 23, advance 5,000.
+// The Oct statement credited 5,000 x 23/31 = 3,709.68 (stored at Open Cutoff); 1,290.32 is left for the final bill.
+export function proratedAdvanceOut() {
+  const t = tenant({ id: 130, name: 'Tenant Prorate', rate: 5000, move_in_date: '2026-09-01', move_out_date: '2026-11-23' })
+  return {
+    tenant: t, tenants: [t], cutoffs: CUTOFFS, moveOutDate: '2026-11-23', now: NOW,
+    readings: {}, bundle: {},
+    deposits: new Map([[130, [deposit({ id: 931, tenant_id: 130, kind: 'ADVANCE', amount: 5000, ref_no: '5301' })]]]),
+    storedCredits: [{ id: 3, tenant_id: 130, cutoff_id: 2, amount: 3709.68, ref_text: 'S.I# 5301', allocations: [{ deposit_id: 931, amount: 3709.68 }] }],
+  }
+}

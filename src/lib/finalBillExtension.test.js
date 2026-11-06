@@ -31,9 +31,9 @@ describe('advance credit with the month-end rule (active Oct)', () => {
     tenants: [tenant({ id: 1, rate: 5000, move_in_date: '2026-08-01', move_out_date })], cutoff: OCT_ACTIVE,
     perTenant: [{ id: 1, rent: 5000 }], deposits: [adv], ...extra,
   })
-  it('out Nov 30 -> no credit; out Nov 15 -> 5,000.00', () => {
+  it('out Nov 30 -> no credit; out Nov 15 -> 2,419.35 (15 of 31 days), 2,580.65 left for the final bill', () => {
     expect(advanceCredits(args('2026-11-30')).size).toBe(0)
-    expect(advanceCredits(args('2026-11-15')).get(1)).toMatchObject({ amount: 5000, remaining: 0 })
+    expect(advanceCredits(args('2026-11-15')).get(1)).toMatchObject({ amount: 2419.35, remaining: 2580.65, days: 15, windowDays: 31 })
   })
   it('a stored row of a closed cutoff is still returned for that cutoff', () => {
     const stored = [{ tenant_id: 1, cutoff_id: SEP.id, amount: 4000, ref_text: 'S.I# 5031', allocations: [{ deposit_id: 31, amount: 4000 }] }]

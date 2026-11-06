@@ -494,8 +494,9 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   - **Final bill / move-out settlement — Phase 2 DONE** (rules below; what was built and its known
     limits are in the "Phase 2 as built" bullet that follows the rules). Only the refund tracker is left (Phase 3):
     - **Billing periods** follow the cutoff windows (rent/water 1st–EOM, electric 10th–10th).
-    - The **advance is credited against the rent of the second-to-last bill** — the billing period
-      *before* the one containing the move-out date. If the tenant stays only one or two billing
+    - The **advance is credited against the rent of the second-to-last bill, pro-rated by days** (2026-11-06) — the
+      billing period *before* the one containing the move-out date gets advance x (days of the stay in the move-out
+      month) / (days of the second-to-last month); the rest of the advance is credited on the final bill. If the tenant stays only one or two billing
       periods, the unused advance is credited on the final bill and any excess is refunded.
     - The **deposit covers the final bill**: prorated rent through the move-out date + utilities as
       of the move-out readings + any unsettled earlier amounts entered manually by staff. (Data in
@@ -590,9 +591,28 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       (Nov 15, Nov 29) still gets the Oct credit. This applies to the active cutoff (Oct 2026) and every later one: no badge,
       no "Less advance", no credit line on PrintRentWater, no Collections / Payment Monitoring adjustment, and Open Cutoff
       stores no `advance_credits` row for that tenant. Credits already stored for closed cutoffs (Sep 2026) are unchanged.
-      Billing (Rent + Water view) shows a "2nd-to-last bill" badge plus "Less
-      advance / Net"; PrintRentWater prints the credit line and the reduced total; credit = min(advance on file,
-      that period's rent). The credit is an **adjustment, not cash**: Collections' amount to collect is net of it,
+      Billing (Rent + Water view) shows a "2nd-to-last bill" badge plus "Less advance (pro-rated D of W days) / Net";
+      PrintRentWater prints the credit line and the reduced total.
+      **The credit is pro-rated by days (2026-11-06, `proratedAdvanceCents` in `finalBill.js`):** W = days of the
+      second-to-last window (`water_end - water_start`, e.g. Oct = 31, Sep = 30, Feb = 28/29), D = days of the stay in the
+      next window through the move-out day inclusive (`moveOut - water_end + 1`, 1..W-1 since a month end is STANDARD);
+      A = advance on file (HELD/APPLIED ADVANCE receipts, whole-room beds summed; never the deposit or a reservation
+      payment). credit = min(half-up integer cents of A x D / W, that period's rent); remaining = A - credit, exact by
+      subtraction (it absorbs the rounding, so credit + remaining = A to the cent). The remaining part stays HELD and the
+      final bill credits it ("already credited P.. on <cutoff> · remaining P.. (credited here)"); the final bill's rent is
+      unchanged (Nov 1-23 on `stayRent`, no flat month). Worked example (rate and advance 5,000, out Nov 23, Oct window 31
+      days): Oct credit 5,000 x 23/31 = 3,709.68, Oct rent due 1,290.32 (+ water); final bill (in Sep 1) rent 3,833.33
+      (2 months + 23 of 30 days = 13,833.33 less 10,000.00 billed on closed statements), Less: Advanced Payment
+      -1,290.32, rent payable 2,543.01; total rent after the advance 1,290.32 + 2,543.01 = 3,833.33. Other days: out Nov 15
+      -> 2,419.35 (2,580.65 carried), Nov 1 -> 161.29 (4,838.71 carried, any excess on the final bill is returned), Nov 29
+      -> 4,677.42. Advance 6,000 on rent 5,000, out Nov 23 -> 4,451.61; out Nov 29 -> capped at 5,000.00. Printed detail:
+      "S.I# 1234 · credited ₱3,709.68 on this bill (pro-rated 23 of 31 days) · remaining ₱1,290.32 for the final bill"
+      (the day count prints only while advance x D / W reproduces the credit; a credit capped at the rent says
+      "(pro-rated)"; a stored credit from before this rule, or one whose move-out date moved since, prints no note).
+      Live while the cutoff is ACTIVE (the amount follows the move-out date until Open Cutoff, which stores it and freezes
+      it). It applies to the active Oct 2026 cutoff too, so Oct statements printed before the deploy show the old full
+      credit and differ from a reprint. Stored credits (Sep 2026) and issued final bills are unchanged; Void & re-issue
+      keeps the stored credit. The credit is an **adjustment, not cash**: Collections' amount to collect is net of it,
       and Payment Monitoring / Dashboard use it as `adjustments` in `buildPaymentMonitoring` (outstanding =
       billed - adjustments - paid; "paid"/collected never includes it), so sum(bills) = sum(payments) +
       adjustments + outstanding. Viewers cannot read the receipts (RLS), so their Dashboard summary omits it.
@@ -1582,6 +1602,9 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       or another browser does not see them.
 - [ ] (2026-11-06) The stay extension has no cap (P500/night, a warning above 7 nights); a long overstay should be a lease extension
       (edit the planned move-out date) instead.
+- [ ] (2026-11-06) The pro-rated second-to-last advance credit (§5) changed the live Oct 2026 statements of tenants moving
+      out in November (rent due goes up): copies printed before the deploy show the full credit; reprint and hand out
+      the new figures. A move-out on day 1-2 of the month gives a tiny credit and a large carry to the final bill (what the formula gives; no minimum credit).
 - [ ] (2026-11-06) "Void & re-issue" is per bed: a final bill of a sibling group (several beds, one name) cannot be re-issued yet.
 
 ## 16. Occupancy Simulator (isolated what-if module)
