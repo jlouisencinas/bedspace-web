@@ -19,6 +19,8 @@
  *   draftBanner string, optional: printed at the top of the copy (an unsaved preview must not pass for an issued bill)
  *   reprintNote [line, line], optional: small notice in the top-right corner, positioned so it adds no height (a
  *             fixed-height monthly copy would otherwise clip its last lines)
+ *   paymentNote string, optional: printed under the bank details beside the charges (adds no height); the
+ *             second-to-last bill's advance breakdown
  *   lateFee   boolean, default true: print the 2% late-fee line (off on the final bill, which is settled at move-out)
  *   flow      boolean, optional: the copy grows with its content (no fixed half-page height, nothing is clipped) and the charges
  *             table gets wider label / narrower rate and amount columns; used by the final bill, whose line count varies
@@ -26,7 +28,7 @@
  */
 export default function Statement({
   company, copyLabel, name, room, asOf, due, billNo, preparedBy,
-  charges, total, details, asOfNote, checkNote, footNotes, splitNote, peso, reprintNote,
+  charges, total, details, asOfNote, checkNote, footNotes, splitNote, peso, reprintNote, paymentNote,
   totalLabel = 'Total amount due', totalColor, flow = false, draftBanner, lateFee = true,
 }) {
   const hasRate = charges.some(c => c.rateText)
@@ -96,6 +98,7 @@ export default function Statement({
           <div>Account No. : {company.bankAcct}</div>
           <div>Branch: {company.bankBranch}</div>
           <div style={{ marginTop: 6 }}>Please provide proof of payment once payment is made. Thank you.</div>
+          {paymentNote && <div style={{ marginTop: 4, fontWeight: 700, fontSize: 9, lineHeight: 1.25 }}>* {paymentNote}</div>}
         </td>
       </tr></tbody></table>
 
