@@ -1300,7 +1300,9 @@ in another module.**
     cutoff (a cutoff stays active after month-end until the next one is opened, which kept showing last
     month).
   - Move-in source breakdown
-  - Projected vs. actual rent collection summary (links into §11 for full drill-down)
+  - Projected vs. actual rent collection summary (links into §11 for full drill-down). Active cutoff only, so late
+    payments to past cutoffs (§12) do not change it; billed figures come from the shared loader `src/lib/cutoffBilling.js`
+    (2026-11-06, mid-period transfers included).
 - **Icon convention. — DONE.** The Monthly Revenue KPI card uses `lucide-react`'s `PhilippinePeso`
   icon (it does exist in the installed version — an earlier note here assuming otherwise was
   wrong), not a dollar sign.
@@ -1352,6 +1354,9 @@ for monitoring rent collection status across all tenants at once.
 - **Selecting a non-active (historical) cutoff shows a warning banner**, since billed totals for a
   closed cutoff may not reflect tenants who've since moved out. The tenant profile's Monthly statements (§3) carry the same
   caveat in their "Recalculated from current data" label.
+- **Late payments (2026-11-06):** a payment recorded in Collections against a past cutoff (§12) carries that cutoff's id,
+  so it lowers that cutoff's outstanding here. Billed figures come from the shared loader `src/lib/cutoffBilling.js`
+  (same as Billing and Collections, mid-period transfers included).
 - **Feeds the Dashboard's projected-vs-actual summary widget (§10)** — the two share one
   calculation (`src/lib/collectionsSummary.js`), so there's no room for the numbers to drift apart.
   This must continue to hold once payments are recorded via the new multi-select/batch-save flow
@@ -1399,6 +1404,22 @@ Tenants module.
   separator, 2 decimal places — matching the peso formatting convention used elsewhere in the app,
   e.g. Payment Monitoring). Checking the cell still stages it for the batch save as before; this
   is purely about always-visible display. *(Implementation task — see backlog §15.)*
+- **Past cutoffs and late payments — DONE (2026-11-06).** A cutoff picker in the header (default: the active cutoff,
+  marked "(active)") switches the table to any cutoff; a past one shows a "Past cutoff" badge. A late payment is
+  recorded while its own cutoff is selected, so `payments.cutoff_id` is the cutoff it belongs to (not the active one);
+  the save bar says "Recording against <cutoff>". One batch never mixes cutoffs: changing the cutoff clears the staged
+  cells and the picker is locked while saving. Undo voids with the original row's `cutoff_id`, so the reversal lands on
+  the same cutoff.
+  - **Past-due banner:** the 3 most recent closed cutoffs (`pickPastDueCandidates`) are checked after the table loads;
+    each with money still owed shows "<cutoff>: ₱x outstanding (n tenants) · View". Outstanding is per tenant and
+    component, never netted against another tenant's overpayment. If the check fails the page says "Past-due check
+    unavailable: <reason>". Refreshed after every save/undo. Older cutoffs are reachable through the picker.
+  - **Rows:** the active cutoff lists every active tenant, as before. A past cutoff lists exactly the tenants on that
+    cutoff's bill (moved-out ones included); a tenant whose final bill covers the cutoff has no row (the balance lives on
+    the final bill). A past cutoff with no utility bill says "No billing data for this cutoff".
+  - **Figures:** billed amounts come from the shared loader `src/lib/cutoffBilling.js` (same as Billing, so mid-period
+    transfers are included), net of the second-to-last-bill advance credit; row logic in `src/lib/collectionsRows.js`.
+  - A late payment never moves `tenants.last_pay_eom` / `last_pay_10th` back to an earlier date than they hold.
 
 ## 13. UI/UX & theming
 - **Dark / Light theme toggle.** Confirmed requirement: the app gets a theme toggle (dark and
@@ -1569,12 +1590,15 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       confirm before adding many recipients or notification types.
 - [x] Non-admin blocked check — **done**. The owner confirmed on 2026-09-21 that an admin's email
       link lands in the correct module and a `user` is blocked from modules they have no access to.
-- [ ] Collections, Payment Monitoring, Dashboard and `snapshot.js` still compute cutoffs without mid-period transfers
-      (the Billing page, the print pages and the profile statement history include them, via `src/lib/cutoffBilling.js`).
+- [ ] `snapshot.js` still computes cutoffs without mid-period transfers. Collections, Payment Monitoring and the Dashboard
+      moved to the shared loader on 2026-11-06 (`src/lib/cutoffBilling.js`, like Billing, the print pages and the profile
+      statement history), so those now include them.
 - [ ] The Billing page for a closed cutoff drops tenants who have since moved out without a final bill covering it (their
       roommates absorb those days) and places every tenant in their current room, even for a period before an earlier
       transfer. The profile statement history mirrors this (with a room warning) and shows moved-out tenants payments only.
       Fixing it (period participation for closed cutoffs) changes Billing, Collections, P&L and snapshot figures of closed periods.
+      Collections' past-cutoff view and past-due banner (2026-11-06, §12) inherit this: such a tenant shows no row and is not
+      counted as past due.
 - [ ] Second-to-last Rent + Water statements lose their bottom lines when printed (found 2026-11-05, predates the reprint
       notice): the long "Less: Advanced Payment" detail (S.I# · credited … · remaining … for the final bill) wraps in the narrow
       middle column, so the copy needs about 540 px of its 501 px fixed height and the "2% late fee" line (with an add-on or

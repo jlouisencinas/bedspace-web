@@ -1,17 +1,16 @@
 import { useState, useEffect, useMemo } from 'react'
 import {
   fetchCutoffs, fetchTenants, recordPaymentsBatch, voidPayments,
-  fetchPaymentsForCutoff, fetchUtilityBill, fetchInterimReadings,
-  fetchSplits, fetchAddons, fetchAreaReadings, fetchAdvanceCreditData,
+  fetchPaymentsForCutoff, fetchAdvanceCreditData,
 } from '../lib/supabase'
-import { computeBilling } from '../lib/billing'
-import { advanceAdjustments } from '../lib/finalBill'
-import { getCachedBilling, cacheBilling } from '../lib/billingCache'
+import { loadCutoffBillingInputs, computeCutoffBilling } from '../lib/cutoffBilling'
+import { buildCollectionRows, cutoffOutstanding, pickPastDueCandidates } from '../lib/collectionsRows'
 import { useToast } from '../components/Toast'
-import { Droplets, Zap, Wallet } from 'lucide-react'
+import { Droplets, Zap, Wallet, AlertTriangle } from 'lucide-react'
 import { windowLastDay } from '../lib/cutoffDates'
 
 const r2 = n => Math.round((Number(n) || 0) * 100) / 100
+const amountsOf = credits => new Map([...(credits || new Map())].map(([id, c]) => [id, c.amount]))
 
 function fmt(n) { return n ? '₱' + Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—' }
 function fmtDate(d) {
@@ -94,10 +93,14 @@ function PayCell({ row, category, pays, billed, selected, onToggle, onAmountChan
 export default function Collections() {
   const [tenants,         setTenants]         = useState([])
   const [loading,         setLoading]         = useState(true)
-  const [activeCutoff,    setActiveCutoff]    = useState(null)
+  const [cutoffs,         setCutoffs]         = useState([])
+  const [selectedId,      setSelectedId]      = useState(null)
   const [cutoffPayments,  setCutoffPayments]  = useState([])
   const [billingPerTenant,setBillingPerTenant]= useState([])
+  const [credits,         setCredits]         = useState(new Map())
+  const [hasBill,         setHasBill]         = useState(false)
   const [advData,         setAdvData]         = useState({ deposits: [], finalBills: [], stored: [], error: null })
+  const [pastDue,         setPastDue]         = useState({ loading: false, items: [], error: null })
 
   const [selected,   setSelected]   = useState(new Map())
   const [batchDate,  setBatchDate]  = useState(todayStr())
@@ -106,76 +109,71 @@ export default function Collections() {
 
   const { show, ToastEl } = useToast()
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load(null) }, [])
 
-  async function load() {
+  // refreshPastDue is false when only the picker changed: the banner is cached for the page session, saves/undos refresh it.
+  async function load(id = selectedId, { refreshPastDue = true } = {}) {
     setLoading(true)
+    let shared = null
     try {
-      const allTenants = await fetchTenants()
-      setTenants(allTenants)
+      const [cuts, allTenants, adv] = await Promise.all([fetchCutoffs(), fetchTenants(), fetchAdvanceCreditData()])
+      setCutoffs(cuts); setTenants(allTenants); setAdvData(adv)
+      shared = { cuts, tenants: allTenants, advData: adv }
 
-      const cuts   = await fetchCutoffs()
-      const active = cuts.find(c => c.is_active) || cuts[0] || null
-      setActiveCutoff(active)
-      setAdvData(await fetchAdvanceCreditData())
-
-      if (active) {
-        const cached = getCachedBilling(active.id)
-        if (cached) {
-          const cutoffPays = await fetchPaymentsForCutoff(active.id)
-          setCutoffPayments(cutoffPays)
-          setBillingPerTenant(cached)
-        } else {
-          const [cutoffPays, bill, ir, sp, ad, ar] = await Promise.all([
-            fetchPaymentsForCutoff(active.id),
-            fetchUtilityBill(active.id),
-            fetchInterimReadings(active.id),
-            fetchSplits(active.id),
-            fetchAddons(active.id),
-            fetchAreaReadings(active.id),
-          ])
-          setCutoffPayments(cutoffPays)
-          if (bill.length) {
-            const { perTenant } = computeBilling(active, bill, ir, allTenants, sp, ad, ar)
-            cacheBilling(active.id, perTenant)
-            setBillingPerTenant(perTenant)
-          }
-        }
+      const target = cuts.find(c => c.id === id) || cuts.find(c => c.is_active) || cuts[0] || null
+      setSelectedId(target?.id ?? null)
+      if (target) {
+        const [inputs, pays] = await Promise.all([
+          loadCutoffBillingInputs(target, { tenants: allTenants, advData: adv }),
+          fetchPaymentsForCutoff(target.id),
+        ])
+        const result = computeCutoffBilling(target, inputs)
+        setBillingPerTenant(result.perTenant)
+        setCredits(result.credits)
+        setHasBill(inputs.bill.length > 0)
+        setCutoffPayments(pays)
+      } else {
+        setBillingPerTenant([]); setCredits(new Map()); setHasBill(false); setCutoffPayments([])
       }
     } catch(e) { show(e.message, 'error') }
     setLoading(false)
+    if (shared && refreshPastDue) loadPastDue(shared)
   }
 
-  const enriched = useMemo(() =>
-    tenants.filter(t => t.is_active).map(t => ({
-      ...t,
-      room_no:      t.beds?.rooms?.room_no   || '',
-      bed_letter:   t.beds?.bed_letter       || '',
-      bed_location: t.beds?.bed_location     || '',
-    }))
-  , [tenants])
+  async function loadPastDue({ cuts, tenants: allTenants, advData: adv }) {
+    setPastDue(prev => ({ ...prev, loading: true, error: null }))
+    try {
+      const items = await Promise.all(pickPastDueCandidates(cuts).map(async c => {
+        const [inputs, pays] = await Promise.all([
+          loadCutoffBillingInputs(c, { tenants: allTenants, advData: adv }),
+          fetchPaymentsForCutoff(c.id),
+        ])
+        const { perTenant, credits: cr } = computeCutoffBilling(c, inputs)
+        const rows = buildCollectionRows({ perTenant, tenants: allTenants, payments: pays, adjustments: amountsOf(cr), includeInactive: true })
+        return { cutoff: c, ...cutoffOutstanding(rows) }
+      }))
+      setPastDue({ loading: false, items: items.filter(i => i.total > 0), error: null })
+    } catch(e) {
+      setPastDue({ loading: false, items: [], error: e.message || String(e) })
+    }
+  }
 
+  function changeCutoff(id) {
+    if (saving || id === selectedId) return
+    setSelected(new Map())
+    load(id, { refreshPastDue: false })
+  }
+
+  const selectedCutoff = cutoffs.find(c => c.id === selectedId) || null
+  const isPast = !!selectedCutoff && !selectedCutoff.is_active
+
+  // Second-to-last-bill advance credit (credits) is an adjustment against rent, so the amount to collect is net of it.
   const collectionRows = useMemo(() =>
-    enriched.map(t => {
-      const tPays    = cutoffPayments.filter(p => p.tenant_id === t.id)
-      const rwPays   = tPays.filter(p => p.category === 'RENT_WATER')
-      const elecPays = tPays.filter(p => p.category === 'ELECTRICITY')
-      return { ...t, rwPays, elecPays }
+    buildCollectionRows({
+      perTenant: billingPerTenant, tenants, payments: cutoffPayments,
+      adjustments: amountsOf(credits), includeInactive: isPast,
     })
-  , [enriched, cutoffPayments])
-
-  // Second-to-last-bill advance credit: an adjustment against rent, so the amount to collect is net of it.
-  const adjustments = useMemo(() => {
-    if (!activeCutoff || !billingPerTenant.length) return new Map()
-    return advanceAdjustments({ tenants, cutoff: activeCutoff, perTenant: billingPerTenant, deposits: advData.deposits, stored: advData.stored })
-  }, [activeCutoff, billingPerTenant, tenants, advData])
-
-  const billingMap = useMemo(() => {
-    return new Map(billingPerTenant.map(t => [t.id, {
-      rw:   r2((t.rent || 0) + (t.water || 0) + (t.addonRentWater || 0) - (adjustments.get(t.id) || 0)),
-      elec: r2((t.elec  || 0) + (t.addonElectric || 0)),
-    }]))
-  }, [billingPerTenant, adjustments])
+  , [billingPerTenant, tenants, cutoffPayments, credits, isPast])
 
   function toggleCell(row, category, defaultAmount) {
     setSelected(prev => {
@@ -228,11 +226,11 @@ export default function Collections() {
       amount:       parseAmt(s.amount),
       paymentDate:  batchDate,
       notes:        batchNotes.trim() || null,
-      cutoffId:     activeCutoff?.id   || null,
+      cutoffId:     selectedCutoff?.id   || null,
       _tenantName:  s.tenant.name,
       _roomNo:      s.tenant.room_no,
       _bedLetter:   s.tenant.bed_letter,
-      _cutoffName:  activeCutoff?.name || null,
+      _cutoffName:  selectedCutoff?.name || null,
     }))
 
     setSaving(true)
@@ -271,17 +269,37 @@ export default function Collections() {
       {/* ── Header ── */}
       <div className="page-header">
         <div>
-          <h1 className="page-title">Collections <small>{activeCutoff?.name ?? ''}</small></h1>
-          {activeCutoff && (
+          <h1 className="page-title flex items-center gap-2 flex-wrap">
+            Collections <small>{selectedCutoff?.name ?? ''}</small>
+            {isPast && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-warning-bg text-warning-text border border-warning-border">
+                Past cutoff
+              </span>
+            )}
+          </h1>
+          {selectedCutoff && (
             <p className="page-sub text-[11px] flex items-center gap-1.5 flex-wrap">
               <Droplets size={11} className="text-blue-500 shrink-0" />
-              Water {fmtDate(activeCutoff.water_start)}–{fmtDate(windowLastDay(activeCutoff.water_end))}
+              Water {fmtDate(selectedCutoff.water_start)}–{fmtDate(windowLastDay(selectedCutoff.water_end))}
               {' · '}
               <Zap size={11} className="text-amber-500 shrink-0" />
-              Electric {fmtDate(activeCutoff.electric_start)}–{fmtDate(activeCutoff.electric_end)}
+              Electric {fmtDate(selectedCutoff.electric_start)}–{fmtDate(selectedCutoff.electric_end)}
             </p>
           )}
         </div>
+        {cutoffs.length > 0 && (
+          <select
+            value={selectedId ?? ''}
+            onChange={e => changeCutoff(Number(e.target.value))}
+            disabled={saving}
+            aria-label="Cutoff"
+            className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
+          >
+            {cutoffs.map(c => (
+              <option key={c.id} value={c.id}>{c.name}{c.is_active ? ' (active)' : ''}</option>
+            ))}
+          </select>
+        )}
       </div>
 
       {advData.error && (
@@ -290,7 +308,35 @@ export default function Collections() {
         </div>
       )}
 
-      {!activeCutoff ? (
+      {pastDue.error && (
+        <div className="mb-3 px-4 py-3 bg-danger-bg border border-danger-border rounded-xl text-[13px] text-danger-text">
+          Past-due check unavailable: {pastDue.error}
+        </div>
+      )}
+      {pastDue.items.some(i => i.cutoff.id !== selectedId) && (
+        <div className="mb-3 px-4 py-3 bg-warning-bg border border-warning-border rounded-xl text-[13px] text-warning-text">
+          <div className="flex items-center gap-1.5 font-semibold mb-1">
+            <AlertTriangle size={14} className="shrink-0 text-amber-500" /> Past due
+          </div>
+          <ul className="space-y-0.5">
+            {pastDue.items.filter(i => i.cutoff.id !== selectedId).map(i => (
+              <li key={i.cutoff.id}>
+                {i.cutoff.name}: {fmtPeso(i.total)} outstanding ({i.unpaidCount} {i.unpaidCount === 1 ? 'tenant' : 'tenants'})
+                {' · '}
+                <button
+                  onClick={() => changeCutoff(i.cutoff.id)}
+                  disabled={saving}
+                  className="underline font-semibold hover:text-navy-600 disabled:opacity-50"
+                >
+                  View
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {!selectedCutoff ? (
         <div className="card mt-4">
           <div className="empty">
             <Wallet size={32} className="mx-auto mb-3 text-ink-faint" />
@@ -324,7 +370,9 @@ export default function Collections() {
               </thead>
               <tbody>
                 {collectionRows.length === 0 ? (
-                  <tr><td colSpan={4}><div className="empty"><p>No active tenants.</p></div></td></tr>
+                  <tr><td colSpan={4}><div className="empty"><p>
+                    {!isPast ? 'No active tenants.' : hasBill ? 'No billed tenants for this cutoff.' : 'No billing data for this cutoff.'}
+                  </p></div></td></tr>
                 ) : collectionRows.map(r => (
                   <tr key={r.id}>
                     <td className="td-name">{r.name}</td>
@@ -335,14 +383,14 @@ export default function Collections() {
                     <td>
                       <PayCell
                         row={r} category="RENT_WATER" pays={r.rwPays}
-                        billed={billingMap.get(r.id)?.rw || 0}
+                        billed={r.billed.rw}
                         selected={selected} onToggle={toggleCell} onAmountChange={updateAmount}
                       />
                     </td>
                     <td>
                       <PayCell
                         row={r} category="ELECTRICITY" pays={r.elecPays}
-                        billed={billingMap.get(r.id)?.elec || 0}
+                        billed={r.billed.elec}
                         selected={selected} onToggle={toggleCell} onAmountChange={updateAmount}
                       />
                     </td>
@@ -359,6 +407,9 @@ export default function Collections() {
         <div className="sticky bottom-4 z-20 mt-4 bg-surface rounded-xl border border-navy-200 shadow-modal px-4 py-3 flex flex-wrap items-center gap-3">
           <span className="text-[13px] font-semibold text-ink-secondary shrink-0">
             {selectedList.length} selected · <span className="text-navy-600">{fmtPeso(selectedTotal)}</span>
+          </span>
+          <span className={`text-[12px] shrink-0 ${isPast ? 'font-semibold text-warning-text' : 'text-ink-muted'}`}>
+            Recording against {selectedCutoff?.name ?? '—'}
           </span>
           <input
             type="date"
