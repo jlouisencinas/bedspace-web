@@ -11,13 +11,14 @@
  *   kind 'credit'    advance / deposit applied (NEGATIVE amount)
  *   kind 'forfeit'   advance / deposit forfeited (amount 0, `original` = the forfeited amount)
  *   kind 'payment'   payments already recorded on the covered cutoffs, netted (NEGATIVE amount, `payment_ids`)
- * Rent / water / electricity lines carry `source` 'RENT' | 'WATER' | 'ELECTRIC' and `computed` (the amount the system
- * computed, so a staff edit can be flagged).
+ * Rent / stay extension / water / electricity lines carry `source` 'RENT' | 'EXTENSION' | 'WATER' | 'ELECTRIC' and `computed`
+ * (the amount the system computed, so a staff edit can be flagged).
  */
 import {
   dayNum, isoOfDay, addMonthsISO, classifyStay, appStart, computeCoverage, isCutoffClosed, cutoffForDate, windowOf, pricingInfoForDay, snapToMonthEnd, stayRent, prorateCents, coveredEntries, parseCovered,
 } from './stay'
 import { resolveStartReading, splitUtility, resolveRate, checkReadingOrder } from './utilityPieces'
+import { hasExtension, extensionLine, extensionDetails, nightsWarning, extensionNights, NOON_CHOICE_MISSING } from './stayExtension'
 
 export { addMonthsISO, cutoffForDate }
 
@@ -42,7 +43,9 @@ const dayMonth = (iso) => { const [, m, d] = iso.slice(0, 10).split('-'); return
  *   FINAL          move-out date inside this window
  *   SECOND_TO_LAST move-out date inside the NEXT window (water_end .. addMonths(water_end, 1))
  *                  and the tenant moved in before this window (a stay of only one or two billing
- *                  periods has no second-to-last bill: the advance is credited on the final bill)
+ *                  periods has no second-to-last bill: the advance is credited on the final bill).
+ *                  A move-out on the LAST day of that next window (a calendar month end) has none either:
+ *                  the final bill is then a full month, so the advance goes on the final bill only.
  *   STANDARD       anything else
  * The date is actual_move_out_date || move_out_date, so the position follows the date if it changes.
  */
@@ -53,6 +56,7 @@ export function billPosition(tenant, cutoff) {
   if (d >= s && d < e) return 'FINAL'
   const nextEnd = dayNum(addMonthsISO(cutoff.water_end, 1))
   if (d >= e && d < nextEnd) {
+    if (d === nextEnd - 1) return 'STANDARD'
     const moveIn = iso10(tenant.move_in_date)
     if (moveIn && dayNum(moveIn) >= s) return 'STANDARD'
     return 'SECOND_TO_LAST'
@@ -407,8 +411,8 @@ export const isSystemLine = (l) =>
   l?.source === 'ADVANCE_CLAWBACK' || l?.source === 'PAYMENT'
   || ((l?.kind === 'credit' || l?.kind === 'forfeit') && (l?.source === 'ADVANCE' || l?.source === 'DEPOSIT'))
 
-/** Rent / water / electricity lines computed by the system (the amount stays editable; the line cannot be deleted). */
-export const isComputedLine = (l) => l?.source === 'RENT' || l?.source === 'WATER' || l?.source === 'ELECTRIC'
+/** Rent / stay extension / water / electricity lines computed by the system (the amount stays editable; the line cannot be deleted). */
+export const isComputedLine = (l) => l?.source === 'RENT' || l?.source === 'EXTENSION' || l?.source === 'WATER' || l?.source === 'ELECTRIC'
 
 /**
  * The "Advance check": what the database says about the tenant's advance at this moment.
@@ -759,20 +763,27 @@ export function verifyBillAgainstDb({ bill, moveOut, tenant, deposits, storedCre
 const nonEmpty = (v) => v !== '' && v != null
 
 // The computed source of a request line; lines from an old modal carry no `source`, so they are recognised by their label.
-const computedSourceOf = (l) => {
-  if (l.source === 'RENT' || l.source === 'WATER' || l.source === 'ELECTRIC') return l.source
+export const computedSourceOf = (l) => {
+  if (l.source === 'RENT' || l.source === 'EXTENSION' || l.source === 'WATER' || l.source === 'ELECTRIC') return l.source
   if (l.source || l.kind !== 'charge') return null
   if (/^Rent\b/i.test(l.label || '')) return 'RENT'
   if (/^Add: Water/i.test(l.label || '')) return 'WATER'
   if (/^Add: Electric/i.test(l.label || '')) return 'ELECTRIC'
   return null
 }
-const SOURCE_TEXT = { RENT: 'Rent', WATER: 'Water', ELECTRIC: 'Electricity' }
+const SOURCE_TEXT = { RENT: 'Rent', EXTENSION: 'Stay extension', WATER: 'Water', ELECTRIC: 'Electricity' }
+
+/**
+ * A stay extension typed by staff before the computed EXTENSION line existed: a rent line relabelled "...extension..." (bill #26) or a
+ * typed "Unsettled" line mentioning an extension. Where the computed line is present it replaces these, so the nights are never charged twice.
+ */
+export const isTypedExtension = (l) => !!l && l.source !== 'EXTENSION' && /extension/i.test(l.label || '')
+  && ((l.kind === 'charge' && computedSourceOf(l) === 'RENT') || l.kind === 'unsettled')
 
 /**
  * Approval review / apply: the rent, water and electricity lines of a request were computed at SUBMIT time, each request
- * assuming the other leavers of the room are still present. `fresh` is the draft rebuilt from the database NOW (same date, readings
- * and start-reading overrides; beds already applied are ghosts). Per source (RENT, WATER, ELECTRIC):
+ * assuming the other leavers of the room are still present. `fresh` is the draft rebuilt from the database NOW (same date, readings,
+ * start-reading overrides and 12:00 PM choice; beds already applied are ghosts). Per source (RENT, EXTENSION, WATER, ELECTRIC):
  *  - UNEDITED lines (amount equals the line's own `computed`, or no `computed` marker exists: old requests) are replaced by the fresh
  *    lines, and any difference is listed in `diffs`;
  *  - lines STAFF EDITED (amount differs from their own `computed`) are kept as requested, with a warning.
@@ -783,7 +794,13 @@ export function mergeRecomputedLines({ lines, details = null, fresh }) {
   let out = [...lines]
   const nd = { ...(details || {}) }
   let replaced = false
-  for (const S of ['RENT', 'WATER', 'ELECTRIC']) {
+  // A hand-typed extension gives way to the computed EXTENSION line (else the nights would be charged twice).
+  const typedExtensions = fresh.lines.some(l => l.source === 'EXTENSION') ? out.filter(isTypedExtension) : []
+  if (typedExtensions.length) {
+    out = out.filter(l => !typedExtensions.includes(l))
+    for (const l of typedExtensions) diffs.push(`"${String(l.label).trim()}" (${pesoText(round2(l.amount))}, typed by staff) is replaced by the computed stay extension.`)
+  }
+  for (const S of ['RENT', 'EXTENSION', 'WATER', 'ELECTRIC']) {
     const idxs = out.map((l, i) => (computedSourceOf(l) === S ? i : -1)).filter(i => i >= 0)
     const req = idxs.map(i => out[i])
     const F = fresh.lines.filter(l => l.source === S)
@@ -798,15 +815,20 @@ export function mergeRecomputedLines({ lines, details = null, fresh }) {
       diffs.push(`${SOURCE_TEXT[S]}: requested ${pesoText(sum(reqC) / 100)}, will apply ${pesoText(sum(freshC) / 100)} (recomputed from the database now).`)
     }
     const without = out.filter((_, i) => !idxs.includes(i))
-    let at = idxs.length ? idxs[0] : without.findIndex(l => l.kind === 'unsettled' || l.kind === 'credit' || l.kind === 'forfeit' || l.kind === 'payment' || l.source === 'ADVANCE_CLAWBACK')
+    const afterRent = S === 'EXTENSION' ? without.map(l => computedSourceOf(l) === 'RENT').lastIndexOf(true) : -1
+    let at = idxs.length ? idxs[0] : afterRent >= 0 ? afterRent + 1 : without.findIndex(l => l.kind === 'unsettled' || l.kind === 'credit' || l.kind === 'forfeit' || l.kind === 'payment' || l.source === 'ADVANCE_CLAWBACK')
     if (at < 0) at = without.length
     out = [...without.slice(0, at), ...F, ...without.slice(at)]
     replaced = true
     if (S === 'WATER') nd.water = fresh.details.water
     if (S === 'ELECTRIC') nd.electric = fresh.details.electric
+    if (S === 'EXTENSION') {
+      if (fresh.details.extension) nd.extension = fresh.details.extension
+      else delete nd.extension
+    }
   }
   if (replaced) nd.stay = fresh.details.stay
-  return { lines: out, details: nd, diffs, warnings, replaced }
+  return { lines: out, details: nd, diffs, warnings, replaced, replacedTyped: typedExtensions.map(l => ({ label: String(l.label).trim(), amount: round2(l.amount) })) }
 }
 
 const uniq = (list) => [...new Set(list.filter(Boolean))]
@@ -830,6 +852,16 @@ export function combineBillsForPrint(items) {
   const take = (pred) => rows.filter(r => pred(r.l)).map(r => r.l)
   const rent = take(l => computedSourceOf(l) === 'RENT')
   if (rent.length) lines.push({ label: same(rent.map(l => l.label)) ?? 'Rent', mid: same(rent.map(l => l.mid)) ?? '', amount: sum(rent), kind: 'charge', source: 'RENT' })
+  const ext = take(l => computedSourceOf(l) === 'EXTENSION')
+  if (ext.length) {
+    const nights = ext.map(l => parseInt(String(l.mid ?? ''), 10))
+    const rate = same(ext.map(l => String(l.rate ?? '')))
+    lines.push({
+      label: same(ext.map(l => l.label)) ?? 'Stay extension',
+      mid: nights.every(Number.isFinite) ? `${nights.reduce((a, b) => a + b, 0)} nights` : '',
+      ...(rate != null && rate !== '' ? { rate: Number(rate) } : {}), amount: sum(ext), kind: 'charge', source: 'EXTENSION',
+    })
+  }
   for (const S of ['WATER', 'ELECTRIC']) {
     const all = take(l => computedSourceOf(l) === S)
     for (const r of uniq(all.map(l => String(l.rate ?? '')))) {
@@ -873,9 +905,9 @@ export function combineBillsForPrint(items) {
   const perBed = items.map(it => {
     const ls = normalizeLines(it.bill.lines || [])
     const of = (S) => ls.filter(l => computedSourceOf(l) === S).reduce((s, l) => s + toCents(l.amount), 0) / 100
-    return { bed: it.bed, rent: of('RENT'), water: of('WATER'), electric: of('ELECTRIC'), net: netOf(it) / 100 }
+    return { bed: it.bed, rent: of('RENT'), extension: of('EXTENSION'), water: of('WATER'), electric: of('ELECTRIC'), net: netOf(it) / 100 }
   })
-  const bedNote = perBed.map(b => `Bed ${b.bed}: rent ${pesoText(b.rent)}, water ${pesoText(b.water)}, electricity ${pesoText(b.electric)}, ${b.net < 0 ? `to return ${pesoText(-b.net)}` : `due ${pesoText(b.net)}`}`).join(' · ')
+  const bedNote = perBed.map(b => `Bed ${b.bed}: rent ${pesoText(b.rent)}${b.extension ? `, stay extension ${pesoText(b.extension)}` : ''}, water ${pesoText(b.water)}, electricity ${pesoText(b.electric)}, ${b.net < 0 ? `to return ${pesoText(-b.net)}` : `due ${pesoText(b.net)}`}`).join(' · ')
   const totals = computeTotals(lines)
   return {
     lines, details: { asOf: items[0]?.bill.details?.asOf ?? null, water: detail('water'), electric: detail('electric'), stay: items[0]?.bill.details?.stay ?? null },
@@ -1061,6 +1093,7 @@ const ROUNDING_RULE = 'Each reading-to-reading piece is rounded to the cent; the
 export function buildFinalBillDrafts({
   group, cutoffs = [], tenants = [], moveOutDate, readings: rawReadings = {}, bundle = {}, deposits = new Map(), storedCredits = [],
   payments = new Map(), plannedMoveOut = new Map(), waived = new Map(), siblingIds = new Map(), startOverrides = {}, isAdmin = false, now = new Date(),
+  vacatedAfterNoon = null,
 }) {
   const moveOut = iso10(moveOutDate)
   const moveNum = dayNum(moveOut)
@@ -1082,7 +1115,16 @@ export function buildFinalBillDrafts({
     const planned = iso10(getMap(plannedMoveOut, t.id, t.move_out_date))
     const cls = classifyStay({ moveIn: moveInISO, planned, actual: moveOut, appStartISO: appS })
     const cov = computeCoverage({ cutoffs, moveInISO, moveOutISO: moveOut, kind: cls.kind })
-    return { t, moveInISO, planned, cls, cov, warnings: [], errors: [], blocking: [], util: { WATER: null, ELECTRIC: null }, utilLines: { WATER: [], ELECTRIC: [] }, details: {}, notesRate: [] }
+    // Late move-out: rent runs to the contract date (its own rent rule); coverage and utilities keep the actual date.
+    const late = hasExtension({ contractISO: planned, actualISO: moveOut })
+    const toContract = late ? classifyStay({ moveIn: moveInISO, planned, actual: planned, appStartISO: appS }) : null
+    const rentCls = toContract && toContract.kind === cls.kind ? toContract : cls
+    const rentEnd = late ? planned : moveOut
+    const afterNoon = vacatedAfterNoon instanceof Map ? (vacatedAfterNoon.has(t.id) ? vacatedAfterNoon.get(t.id) : null) : vacatedAfterNoon
+    return {
+      t, moveInISO, planned, cls, cov, late, rentCls, rentEnd, afterNoon: afterNoon === true || afterNoon === false ? afterNoon : null,
+      warnings: [], errors: [], blocking: [], util: { WATER: null, ELECTRIC: null }, utilLines: { WATER: [], ELECTRIC: [] }, details: {}, notesRate: [],
+    }
   })
   const pushAll = (list, msg, key = 'warnings') => { for (const c of list) if (!c[key].includes(msg)) c[key].push(msg) }
 
@@ -1248,9 +1290,17 @@ export function buildFinalBillDrafts({
   const sameNameOthers = (t) => roomId != null && tenants.some(x => x.is_active && x.id !== t.id && !groupIds.includes(x.id) && roomOf(x) === roomId && norm(x.name) === norm(t.name))
   for (const c of ctxs) {
     const { t, cls, cov } = c
-    const rentRes = buildRentLines({ tenant: t, cls, cov, cutoffs, moveInISO: c.moveInISO, moveOutISO: moveOut })
+    const rentRes = buildRentLines({ tenant: t, cls: c.rentCls, cov, cutoffs, moveInISO: c.moveInISO, moveOutISO: c.rentEnd })
     for (const msg of rentRes.warnings) pushAll([c], msg)
     const lines = [...rentRes.lines]
+    let extension = null
+    if (c.late) {
+      const ext = { contractISO: c.planned, actualISO: moveOut, afterNoon: c.afterNoon }
+      const line = extensionLine(ext)
+      if (line) { lines.push(line); extension = extensionDetails(ext) } else pushAll([c], NOON_CHOICE_MISSING, 'blocking')
+      const warn = nightsWarning(extensionNights({ ...ext, afterNoon: c.afterNoon === true }))
+      if (warn) pushAll([c], warn)
+    }
     for (const u of ['WATER', 'ELECTRIC']) {
       const key = UTIL_KEY[u]
       if (c.utilLines[u].length) { lines.push(...c.utilLines[u]); continue }
@@ -1259,7 +1309,7 @@ export function buildFinalBillDrafts({
       lines.push({ label: UTIL_LABEL[u], mid: qtyText(0), rate: rr, amount: 0, kind: 'charge', source: u, cutoff_id: fin?.id ?? null, period: fin?.name ?? null, computed: 0 })
     }
 
-    if (cls.kind === 'STAY_BILLED' && cls.rentRule === 'PRORATE_ALL_TOUCHED') pushAll([c], 'The stay is not exactly one month (early or late move-out): the rent is prorated by days over every period the stay touched.')
+    if (cls.kind === 'STAY_BILLED' && c.rentCls.rentRule === 'PRORATE_ALL_TOUCHED') pushAll([c], 'The stay is not exactly one month (early or late move-out): the rent is prorated by days over every period the stay touched.')
     if (cls.kind === 'ODD' && c.moveInISO && appS && c.moveInISO < appS) pushAll([c], 'This stay began before the first cutoff of the app, so the rent is prorated by days over the covered periods instead of whole months.')
     if (sameNameOthers(t)) pushAll([c], 'Whole-room tenancy: another bed in this room is rented by the same name and is not leaving with this one. Each bed row is billed separately here; check the utility and credit lines.')
     if (t.transfer_date) {
@@ -1287,8 +1337,10 @@ export function buildFinalBillDrafts({
     const details = {
       asOf: moveOut, water: c.util.WATER && { prev: c.util.WATER.prev, curr: c.util.WATER.curr, roomCons: c.util.WATER.roomCons, personalCons: c.util.WATER.personalCons },
       electric: c.util.ELECTRIC && { prev: c.util.ELECTRIC.prev, curr: c.util.ELECTRIC.curr, roomCons: c.util.ELECTRIC.roomCons, personalCons: c.util.ELECTRIC.personalCons },
+      ...(extension ? { extension } : {}),
       stay: {
-        kind: cls.kind, months: rentRes.info.months ?? cls.months, rent_rule: cls.rentRule,
+        kind: cls.kind, months: rentRes.info.months ?? c.rentCls.months, rent_rule: c.rentCls.rentRule,
+        ...(c.rentEnd !== moveOut ? { rent_end: c.rentEnd } : {}),
         ...(rentRes.info.summary ? { rent_summary: rentRes.info.summary } : {}),
         start_readings: {
           water: startReadings.WATER && c.util.WATER ? { source: startReadings.WATER.source, date: startReadings.WATER.date, label: startReadings.WATER.label } : null,
@@ -1308,7 +1360,7 @@ export function buildFinalBillDrafts({
       earlyTermination, totals: computeTotals(stored), warnings: c.warnings, errors: c.errors, notes: credit.notes,
       prior, check: credit.check, blocking: [...c.blocking, ...(credit.problem ? [credit.problem.message] : [])],
       cutoff_id: cov.primaryCutoffId, covered_cutoffs: coveredEntries(cov),
-      stay: { kind: cls.kind, months: cls.months, rentRule: cls.rentRule },
+      stay: { kind: cls.kind, months: c.rentCls.months, rentRule: c.rentCls.rentRule }, extension,
       readingPlan: { water: { cutoff_id: cov.water.final?.id ?? null }, electric: { cutoff_id: cov.electric.final?.id ?? null } },
     })
   }
@@ -1318,4 +1370,112 @@ export function buildFinalBillDrafts({
 /** Single-tenant wrapper around buildFinalBillDrafts. */
 export function buildFinalBillDraft({ tenant, ...rest }) {
   return buildFinalBillDrafts({ group: [tenant], ...rest }).drafts.get(tenant.id)
+}
+
+// ── Void & re-issue of a final bill ───────────────────────────────────────────
+
+/** Why this bill cannot be re-issued (shown on the disabled button), or null. bill = final_bills row, tenant = its tenant row. */
+export function reissueBlocker({ bill, tenant, isAdmin }) {
+  if (!isAdmin) return 'Only an admin can void and re-issue a final bill.'
+  if (bill?.status !== 'FINAL') return 'Only a FINAL bill can be re-issued.'
+  if (bill.refund_status === 'PAID') return 'The refund of this bill is already paid: it cannot be re-issued.'
+  if (tenant?.is_active) return 'The tenant is active again: a final bill can only be re-issued for a tenant who has moved out.'
+  if ((bill.details?.stay?.group?.tenant_ids || []).length > 1) return 'Bills of several beds: re-issue is per bed and not supported yet.'
+  return null
+}
+
+/** The tenant's receipts with the ones the bill being re-issued settled (settled_note "Final bill #<id>: ...") treated as HELD again. */
+export function asHeldForReissue(deposits, billId) {
+  const prefix = `Final bill #${billId}:`
+  return (deposits || []).map(d => ((d.status === 'APPLIED' || d.status === 'FORFEITED') && String(d.settled_note || '').startsWith(prefix) ? { ...d, status: 'HELD' } : d))
+}
+
+/** The move-out readings of the bill: the saved move-out interim reading of that tenant and date, else the bill's own details. */
+export function reissueReadings({ bill, interims = [] }) {
+  const day = iso10(bill.move_out_date)
+  const pick = (u, k) => {
+    const row = (interims || []).filter(r => r.moving_out_tenant_id === bill.tenant_id && r.utility === u && iso10(r.reading_date) === day)
+      .sort((a, b) => (b.id ?? 0) - (a.id ?? 0))[0]
+    if (row) return { value: Number(row.reading_value), source: 'INTERIM' }
+    const v = bill.details?.[k]?.curr
+    return v != null ? { value: Number(v), source: 'BILL' } : { value: '', source: null }
+  }
+  const w = pick('WATER', 'water'), e = pick('ELECTRIC', 'electric')
+  return { water: w.value, electric: e.value, sources: { water: w.source, electric: e.source } }
+}
+
+/** The contract (planned) move-out date of a moved-out tenant: the bill's extension record, else the move-out request, else the tenant row. */
+export function reissuePlannedDate({ bill, request = null, tenant = null }) {
+  return iso10(bill?.details?.extension?.contract_date ?? request?.old_value?.move_out_date ?? tenant?.move_out_date) || null
+}
+
+/** Union of two covered_cutoffs lists, per component, in the stored form (plain id = water and electric). */
+export function mergeCoveredEntries(a, b) {
+  return parseCovered([...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])])
+    .map(e => (e.water && e.electric ? e.id : { id: e.id, water: e.water, electric: e.electric }))
+}
+
+
+/**
+ * Lines of the re-issued bill: rent, stay extension, water and electricity recomputed (`fresh` = the new draft's lines, so the bill matches
+ * the ghost share the room's statements use); keepUtilities keeps the old bill's water / electricity instead; typed lines carried over, typed extensions (isTypedExtension) dropped when the computed one exists, and the credit / forfeit /
+ * charge-back / payment lines from the fresh draft. Returns { lines, kept: { WATER, ELECTRIC }, dropped }.
+ */
+export function reissueLines({ oldLines, freshLines, keepUtilities = false }) {
+  const old = oldLines || [], fresh = freshLines || []
+  const dropped = fresh.some(l => l.source === 'EXTENSION') ? old.filter(isTypedExtension) : []
+  const of = (list, S) => list.filter(l => computedSourceOf(l) === S && !dropped.includes(l))
+  const kept = { WATER: false, ELECTRIC: false }
+  const util = (S) => {
+    const o = of(old, S)
+    if (keepUtilities && o.length) { kept[S] = true; return o }
+    return of(fresh, S)
+  }
+  const typed = old.filter(l => !dropped.includes(l) && !computedSourceOf(l) && !isSystemLine(l) && l.kind !== 'credit' && l.kind !== 'forfeit' && l.kind !== 'payment')
+  const tail = fresh.filter(l => l.source === 'ADVANCE_CLAWBACK' || l.kind === 'credit' || l.kind === 'forfeit')
+  const pay = fresh.filter(l => l.kind === 'payment')
+  const lines = [...of(fresh, 'RENT'), ...of(fresh, 'EXTENSION'), ...util('WATER'), ...util('ELECTRIC'), ...typed, ...tail, ...pay]
+  return { lines, kept, dropped }
+}
+
+const DIFF_KEYS = ['RENT', 'EXTENSION', 'WATER', 'ELECTRIC', 'OTHER', 'ADVANCE_CLAWBACK', 'ADVANCE', 'DEPOSIT', 'PAYMENT']
+const DIFF_LABEL = {
+  RENT: 'Rent', EXTENSION: 'Stay extension', WATER: 'Water', ELECTRIC: 'Electricity', OTHER: 'Other lines',
+  ADVANCE_CLAWBACK: 'Advance charged back', ADVANCE: 'Advance', DEPOSIT: 'Deposit', PAYMENT: 'Payments received',
+}
+const diffKeyOf = (l) => {
+  if (isTypedExtension(l)) return 'EXTENSION'
+  const cs = computedSourceOf(l)
+  if (cs) return cs
+  if (l.source === 'ADVANCE_CLAWBACK') return 'ADVANCE_CLAWBACK'
+  if ((l.kind === 'credit' || l.kind === 'forfeit') && (l.source === 'ADVANCE' || l.source === 'DEPOSIT')) return l.source
+  if (l.kind === 'payment') return 'PAYMENT'
+  return 'OTHER'
+}
+
+/**
+ * The review table of a re-issue: per line type the old bill's amount, the new bill's amount and the change (integer cents), plus the
+ * recomputed water / electricity from the database when `recomputed` (the fresh draft's lines) is given. `replaced` lists the old bill's
+ * typed extension lines that the computed EXTENSION line replaces. net = { old, new, change }.
+ */
+export function reissueDiff(oldBill, newBill, { recomputed = null } = {}) {
+  const sums = (lines) => {
+    const m = new Map()
+    for (const l of normalizeLines(lines || [])) m.set(diffKeyOf(l), (m.get(diffKeyOf(l)) || 0) + toCents(l.amount))
+    return m
+  }
+  const a = sums(oldBill?.lines), b = sums(newBill?.lines), r = recomputed ? sums(recomputed) : null
+  const rows = DIFF_KEYS.filter(k => a.has(k) || b.has(k)).map(k => {
+    const o = a.get(k) || 0, n = b.get(k) || 0
+    return {
+      key: k, label: DIFF_LABEL[k], old: o / 100, new: n / 100, change: (n - o) / 100,
+      ...(r && (k === 'WATER' || k === 'ELECTRIC') ? { recomputed: (r.get(k) || 0) / 100 } : {}),
+    }
+  })
+  const oNet = toCents(computeTotals(normalizeLines(oldBill?.lines || [])).net_amount)
+  const nNet = toCents(computeTotals(normalizeLines(newBill?.lines || [])).net_amount)
+  return {
+    rows, net: { old: oNet / 100, new: nNet / 100, change: (nNet - oNet) / 100 },
+    replaced: (oldBill?.lines || []).filter(isTypedExtension).map(l => ({ label: l.label, amount: round2(l.amount) })),
+  }
 }

@@ -6,19 +6,20 @@
  */
 import {
   supabase, fetchCutoffs, fetchTenants, fetchUtilityBill, fetchTenantDeposits, fetchStoredAdvanceCredits,
-  fetchAdvanceSiblingIds, fetchPayments, fetchRoomInterimReadings, fetchSplits,
+  fetchAdvanceSiblingIds, fetchPayments, fetchRoomInterimReadings, fetchSplits, fetchMoveOutRequestForBill,
 } from './supabase'
 import { classifyStay, computeCoverage, appStart, dayNum } from './stay'
-import { buildFinalBillDrafts } from './finalBill'
+import { buildFinalBillDrafts, asHeldForReissue, reissueReadings, reissuePlannedDate } from './finalBill'
 
 const iso10 = (v) => (v ? String(v).slice(0, 10) : null)
 
 /**
  * Rebuilds the drafts of a move-out REQUEST from the database as it is now (the same date, readings and start-reading overrides
  * the request used), for the beds that are still active. Beds already applied (inactive, final-billed) are ghosts in the split.
- * beds = [{ id, bill }] in bed order. Returns { drafts: Map(tenantId -> draft), tenants } (tenants = every tenant, fresh).
+ * beds = [{ id, bill }] in bed order; vacatedAfterNoon = the 12:00 PM choice of a late move-out (null = not made: the draft blocks).
+ * Returns { drafts: Map(tenantId -> draft), tenants } (tenants = every tenant, fresh).
  */
-export async function buildRequestFreshDrafts({ beds, moveOutDate, readings }) {
+export async function buildRequestFreshDrafts({ beds, moveOutDate, readings, vacatedAfterNoon = null }) {
   if (!beds.length) return { drafts: new Map(), tenants: [] }
   const b = await loadMoveOutBundle({ groupIds: beds.map(x => x.id), moveOutDate })
   const manual = (k) => {
@@ -31,9 +32,36 @@ export async function buildRequestFreshDrafts({ beds, moveOutDate, readings }) {
   const res = buildFinalBillDrafts({
     group: b.group, cutoffs: b.cutoffs, tenants: b.tenants, moveOutDate, readings, bundle: b.bundle,
     deposits: b.deposits, storedCredits: b.storedCredits, payments: b.payments, plannedMoveOut: b.plannedMoveOut,
-    siblingIds: b.siblingIds, startOverrides: { WATER: manual('water'), ELECTRIC: manual('electric') }, isAdmin: true,
+    siblingIds: b.siblingIds, startOverrides: { WATER: manual('water'), ELECTRIC: manual('electric') }, isAdmin: true, vacatedAfterNoon,
   })
   return { drafts: res.drafts, tenants: b.tenants }
+}
+
+const manualStart = (bill, k) => {
+  const sr = bill?.details?.stay?.start_readings?.[k]
+  return sr?.source === 'MANUAL' && bill.details[k]?.prev != null ? bill.details[k].prev : undefined
+}
+
+/**
+ * Inputs of the re-issue draft of a FINAL bill of a moved-out tenant: the bill's tenant only (inactive), the stamps without this bill (the
+ * tenant is not their own ghost), the receipts this bill settled treated as HELD, the contract date (reissuePlannedDate), the saved move-out
+ * readings (else the bill's own) and the bill's manual start readings. Returns loadMoveOutBundle()'s shape plus
+ * { tenant, readings, readingSources, planned, request, startOverrides }.
+ */
+export async function loadReissueBundle({ bill }) {
+  const b = await loadMoveOutBundle({ groupIds: [bill.tenant_id], moveOutDate: bill.move_out_date, excludeFinalBillId: bill.id })
+  const tenant = b.group[0]
+  let request = null
+  try { request = await fetchMoveOutRequestForBill(bill) } catch (e) { console.warn('move-out request lookup skipped:', e.message) }
+  const planned = reissuePlannedDate({ bill, request, tenant })
+  const r = reissueReadings({ bill, interims: b.bundle.interimsAll })
+  return {
+    ...b, tenant, request, planned,
+    deposits: new Map([[tenant.id, asHeldForReissue(b.deposits.get(tenant.id), bill.id)]]),
+    plannedMoveOut: new Map([[tenant.id, planned]]),
+    readings: { water: r.water, electric: r.electric }, readingSources: r.sources,
+    startOverrides: { WATER: manualStart(bill, 'water'), ELECTRIC: manualStart(bill, 'electric') },
+  }
 }
 
 const withRoom = (t) => ({
@@ -46,8 +74,8 @@ const withRoom = (t) => ({
  * where `bundle` = { rowsByCutoff, interimsAll, splitFlags, addonFlags } as expected by buildFinalBillDrafts. `group` keeps
  * the order of `groupIds` (callers pass bed order).
  */
-export async function loadMoveOutBundle({ groupIds, moveOutDate }) {
-  const [cutoffs, allTenants] = await Promise.all([fetchCutoffs(), fetchTenants()])
+export async function loadMoveOutBundle({ groupIds, moveOutDate, excludeFinalBillId = null }) {
+  const [cutoffs, allTenants] = await Promise.all([fetchCutoffs(), fetchTenants({ excludeFinalBillId })])
   const tenants = allTenants.map(withRoom)
   const group = groupIds.map(id => tenants.find(t => t.id === id)).filter(Boolean)
   if (group.length !== groupIds.length) throw new Error('A tenant of this move-out could not be found. Reload the page and try again.')

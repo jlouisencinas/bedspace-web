@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { notifyAsync } from './notify'
-import { normalizeLines, computeTotals, round2, assertCreditRows, verifyBillAgainstDb, vacatedRecord, normalizeReceiptRef, missingReceiptRefs, applyReceiptRefs, applyCheckRefs } from './finalBill'
+import { normalizeLines, computeTotals, round2, assertCreditRows, verifyBillAgainstDb, vacatedRecord, normalizeReceiptRef, missingReceiptRefs, applyReceiptRefs, applyCheckRefs, asHeldForReissue } from './finalBill'
 import { finalCutoffForUtility, newLeaseMoveOutProblem, finalBilledStamps, planReattachment, cutoffDeleteBlocker, readingOnFileFor } from './stay'
 import { parseMoney, moneyProblem, centsToNumber } from './receiptLines'
 import { deriveBedStatuses, activeTenantOnBedMessage, isActiveTenantPerBedViolation } from './bedEligibility'
@@ -80,7 +80,9 @@ export async function updateReservationTargetDate(bed, dateISO) {
 let coveredColumnMissingAt = 0
 const COVERED_RETRY_MS = 60000
 
-export async function fetchTenants() {
+// opts.excludeFinalBillId: that bill does not stamp its tenant (the re-issue draft of that bill).
+export async function fetchTenants(opts = {}) {
+  const excludeBillId = opts && typeof opts === 'object' ? opts.excludeFinalBillId ?? null : null
   const { data, error } = await supabase
     .from('tenants')
     .select(`*, beds!bed_id(bed_letter, bed_location, room_id, rooms(room_no, room_type))`)
@@ -96,17 +98,17 @@ export async function fetchTenants() {
     let skipCovered = coveredColumnMissingAt && Date.now() - coveredColumnMissingAt < COVERED_RETRY_MS
     if (!skipCovered) {
       ;({ data: bills, error: bErr } = await supabase
-        .from('final_bills').select('tenant_id, cutoff_id, covered_cutoffs, created_at').eq('status', 'FINAL'))
+        .from('final_bills').select('id, tenant_id, cutoff_id, covered_cutoffs, created_at').eq('status', 'FINAL'))
       if (bErr && /covered_cutoffs/i.test(bErr.message || '')) { coveredColumnMissingAt = Date.now(); skipCovered = true }
       else if (!bErr) coveredColumnMissingAt = 0
     }
     if (skipCovered || bErr) {
       ;({ data: bills, error: bErr } = await supabase
-        .from('final_bills').select('tenant_id, cutoff_id, created_at').eq('status', 'FINAL'))
+        .from('final_bills').select('id, tenant_id, cutoff_id, created_at').eq('status', 'FINAL'))
     }
     if (bErr) throw bErr
     // covered_cutoffs entries are a plain id (water and electric) or { id, water, electric }: stamp per component.
-    const byTenant = finalBilledStamps(bills)
+    const byTenant = finalBilledStamps(bills, { excludeBillId })
     return data.map(t => {
       const s = byTenant.get(t.id)
       return s ? { ...t, _finalBilled: true, _finalBilledCutoffs: s.both, _finalBilledWater: s.water, _finalBilledElectric: s.electric, _finalBilledAt: s.at } : t
@@ -901,7 +903,7 @@ export async function voidFinalBill(id, reason, actorId) {
   if (!String(reason ?? '').trim()) throw new Error('A reason is required to void a final bill.')
   const { data: bill, error: bErr } = await supabase
     .from('final_bills')
-    .update({ status: 'VOID', void_reason: reason.trim(), voided_at: new Date().toISOString() })
+    .update({ status: 'VOID', void_reason: reason.trim(), voided_at: new Date().toISOString(), voided_by: actorId || null })
     .eq('id', id)
     .eq('status', 'FINAL')
     .select()
@@ -927,6 +929,64 @@ export async function voidFinalBill(id, reason, actorId) {
     metadata:      { final_bill_id: id, net_amount: bill.net_amount },
   })
   return bill
+}
+
+// The move-out approval request of a bill: details.approval_request_id, else (bills saved without it) the tenant's latest approved
+// move-out request for the same date. null when there is none (an admin move-out) or it cannot be read.
+export async function fetchMoveOutRequestForBill(bill) {
+  const id = bill.details?.approval_request_id
+  let q = supabase.from('approval_requests').select('id, status, old_value, new_value, created_at')
+  q = id != null
+    ? q.eq('id', id)
+    : q.eq('entity_id', String(bill.tenant_id)).eq('field_name', 'move_out').eq('status', 'APPROVED').order('created_at', { ascending: false })
+  const { data, error } = await q
+  if (error) throw error
+  const day = String(bill.move_out_date).slice(0, 10)
+  const rows = (data || []).filter(r => id != null || String(r.new_value?.actual_move_out_date || r.new_value?.move_out_date || '').slice(0, 10) === day)
+  return rows[0] || null
+}
+
+/**
+ * verifyAdvanceFresh for a re-issue: the receipts the old bill settled count as HELD again, and the contract date is `planned` (the
+ * tenant row's move_out_date may have been changed at move-out). Returns verifyBillAgainstDb()'s verdict.
+ */
+export async function verifyReissueFresh(oldBill, planned, bill) {
+  const [tRes, deps, cutoffs, storedCredits, payments] = await Promise.all([
+    supabase.from('tenants').select('name, rate, move_in_date, move_out_date, is_active, beds!bed_id(room_id)').eq('id', oldBill.tenant_id).single(),
+    fetchTenantDeposits(oldBill.tenant_id), fetchCutoffs(), fetchStoredAdvanceCredits(), fetchPayments(oldBill.tenant_id),
+  ])
+  if (tRes.error) throw tRes.error
+  if (tRes.data.is_active) throw new Error('The tenant is active again: the bill cannot be re-issued. Nothing was changed.')
+  const deposits = asHeldForReissue(deps, oldBill.id)
+  const row = { ...tRes.data, id: oldBill.tenant_id, move_out_date: planned ?? tRes.data.move_out_date, room_id: tRes.data.beds?.room_id ?? null }
+  const siblingIds = await fetchAdvanceSiblingIds(row, deposits, storedCredits)
+  return verifyBillAgainstDb({ bill, moveOut: String(oldBill.move_out_date).slice(0, 10), tenant: row, deposits, storedCredits, cutoffs, waived: !!bill.forfeit_waived, siblingIds, payments })
+}
+
+const REISSUE_RPC_MISSING = 'The database update for re-issuing final bills has not been applied yet. Apply database/migrations/final_bill_reissue.sql first.'
+
+/**
+ * Admin: voids final bill `oldId` and issues `bill` in its place in ONE transaction (the reissue_final_bill RPC: void, receipts back to
+ * HELD, insert with the advance guard, link both bills, settle the receipts, two activity rows). Any error leaves everything as it was
+ * and is thrown with the database's message. Returns the new bill id.
+ */
+export async function reissueFinalBill(oldId, reason, bill) {
+  if (!String(reason ?? '').trim()) throw new Error('A reason is required to re-issue a final bill.')
+  const lines = normalizeLines(bill.lines)
+  const totals = computeTotals(lines)
+  const { data, error } = await supabase.rpc('reissue_final_bill', {
+    p_old_id: oldId, p_reason: String(reason).trim(),
+    p_bill: {
+      tenant_id: bill.tenant_id, cutoff_id: bill.cutoff_id ?? null, move_out_date: String(bill.move_out_date).slice(0, 10),
+      covered_cutoffs: Array.isArray(bill.covered_cutoffs) ? bill.covered_cutoffs : [],
+      early_termination: !!bill.early_termination, forfeit_waived: !!bill.forfeit_waived,
+      waived_reason: bill.forfeit_waived ? String(bill.waived_reason ?? '').trim() : null,
+      lines, details: bill.details ?? null, prepared_by: blankToNull(bill.prepared_by), ...totals,
+    },
+  })
+  if (error) throw isMissingRpc(error) ? new Error(REISSUE_RPC_MISSING) : new Error(`The final bill was NOT re-issued (nothing was changed): ${error.message}`)
+  if (data == null) throw new Error('The final bill re-issue returned no bill number. Reload the tenant profile and check the bills.')
+  return Number(data)
 }
 
 const settleNote = (billId, line) => {
@@ -1163,6 +1223,7 @@ export async function processMoveOutWithBill(tenant, moveOutData, bill, actorId,
   }
 
   const totals = computeTotals(normalizeLines(bill.lines))
+  const ext = bill.details?.extension || null
   await logActivity({
     activity_type:        'Move Out',
     tenant_id:            tenant.id,
@@ -1189,6 +1250,7 @@ export async function processMoveOutWithBill(tenant, moveOutData, bill, actorId,
     entity_type:   'TENANT',
     entity_id:     tenant.id,
     notes:         `Final bill #${saved.id}: ${totals.net_amount < 0 ? `refund due ${peso(-totals.net_amount)}` : `amount due ${peso(totals.net_amount)}`}`
+                   + (ext ? ` · stay extension ${ext.nights} night${ext.nights === 1 ? '' : 's'} ${peso(ext.amount)} (vacated ${ext.after_noon ? 'after' : 'by'} 12:00 PM)` : '')
                    + `${bill.early_termination ? (bill.forfeit_waived ? ' · early termination, forfeiture waived' : ' · early termination, advance/deposit forfeited') : ''}`,
     metadata:      { final_bill_id: saved.id, net_amount: totals.net_amount, early_termination: !!bill.early_termination, forfeit_waived: !!bill.forfeit_waived },
   })

@@ -226,6 +226,13 @@ describe('covered_cutoffs storage', () => {
     expect(m.get(8)).toEqual({ both: [2], water: [2, 3], electric: [2] })
   })
 
+  it('finalBilledStamps leaves out the bill being re-issued', () => {
+    const bills = [{ id: 26, tenant_id: 74, cutoff_id: 2, covered_cutoffs: [2] }]
+    expect(finalBilledStamps(bills, { excludeBillId: 26 }).has(74)).toBe(false)
+    expect(finalBilledStamps(bills).get(74)).toEqual({ both: [2], water: [2], electric: [2] })
+    expect(finalBilledStamps(bills, { excludeBillId: 27 }).has(74)).toBe(true)
+  })
+
   it('readingOnFileFor', () => {
     expect(readingOnFileFor([{ moving_out_tenant_id: 5 }], [4, 5])).toBe(true)
     expect(readingOnFileFor([{ moving_out_tenant_id: 9 }], [4, 5])).toBe(false)

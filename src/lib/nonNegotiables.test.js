@@ -7,12 +7,13 @@ import { buildPaymentMonitoring } from './collectionsSummary'
 import { allocateCents, splitUtility, centsOf, toHundredths } from './utilityPieces'
 import { computeTotals, toCents, buildFinalBillDraft, verifyBillAgainstDb } from './finalBill'
 import { parseMoney, centsToInput } from './receiptLines'
-import { prorateCents, dayNum } from './stay'
+import { prorateCents, dayNum, finalBilledStamps } from './stay'
+import { pickStatements, rentWaterRows, electricityRows } from './monthlyStatement'
 import { moveInEligibleBeds, deriveBedStatuses, isActiveTenantPerBedViolation } from './bedEligibility'
 import { OCT, CUTOFFS } from './__fixtures__/cutoffs'
 import { SCENARIOS, seeded } from './__fixtures__/scenarios'
-import { goldenWholeMonths, earlyWithPriorCredit, NOW } from './__fixtures__/finalBill'
-import { payment } from './__fixtures__/tenants'
+import { goldenWholeMonths, earlyWithPriorCredit, lateOneMonth, NOW } from './__fixtures__/finalBill'
+import { payment, tenant, billRow, interim } from './__fixtures__/tenants'
 
 const C = (n) => Math.round(n * 100)
 const run = (s) => computeBilling(OCT, s.billRows, s.interims || [], s.tenants, [], s.addons || [], [], s.transfers || [])
@@ -65,7 +66,7 @@ describe('1. a tenant\'s balance reconciles: billed = paid + adjustments + outst
   })
 
   it('a final bill\'s totals are the exact sum of its stored lines, and it verifies against the data it was built from', () => {
-    for (const f of [goldenWholeMonths(), earlyWithPriorCredit(), earlyWithPriorCredit({ waived: true })]) {
+    for (const f of [goldenWholeMonths(), earlyWithPriorCredit(), earlyWithPriorCredit({ waived: true }), lateOneMonth(), lateOneMonth({ afterNoon: false })]) {
       const d = buildFinalBillDraft(f)
       const sum = (pred) => d.lines.filter(pred).reduce((s, l) => s + toCents(l.amount), 0)
       expect(toCents(d.totals.net_amount)).toBe(sum(() => true))
@@ -145,6 +146,40 @@ describe('2. a room\'s metered consumption equals the total billed across its te
       const billed = [...res.byTenant.values()].reduce((a, t) => a + t.cents, 0)
       expect(billed + res.unbilledCents).toBe(res.roomCents)
     }
+  })
+})
+
+describe('2b. printing a selection or re-issuing a final bill never moves a roommate figure', () => {
+  // A leaver (id 1) final-billed for Oct, two roommates. Stamps come from the final bills, as fetchTenants() builds them.
+  const billRows = [billRow({ water_prev: 100, water_curr: 131, elec_prev: 6240, elec_curr: 6280 })]
+  const interims = [interim({ utility: 'ELECTRIC', date: '2026-10-22', value: 6250 }), interim({ utility: 'WATER', date: '2026-10-22', value: 120 })]
+  const people = () => [tenant({ id: 1, is_active: false, actual_move_out_date: '2026-10-22' }), tenant({ id: 2, bed: 'B' }), tenant({ id: 3, bed: 'C' })]
+  const stamped = (bills, opts) => {
+    const m = finalBilledStamps(bills, opts)
+    return people().map(t => { const x = m.get(t.id); return x ? { ...t, _finalBilled: true, _finalBilledCutoffs: x.both, _finalBilledWater: x.water, _finalBilledElectric: x.electric } : t })
+  }
+  const compute = (tenants) => computeBilling(OCT, billRows, interims, tenants, [], [], [], [])
+  const old = { id: 26, tenant_id: 1, status: 'FINAL', cutoff_id: OCT.id, covered_cutoffs: [OCT.id] }
+  const neu = { id: 31, tenant_id: 1, status: 'FINAL', cutoff_id: OCT.id, covered_cutoffs: [OCT.id] }
+
+  it('a held statement (?skip=) leaves the others and the room reconciliation exactly as computed', () => {
+    const { perTenant, perRoom } = compute(stamped([old]))
+    for (const rows of [rentWaterRows(perTenant), electricityRows(perTenant)]) {
+      const picked = pickStatements(rows, { skip: [2] })
+      expect(picked.map(x => x.t.id)).toEqual(rows.filter(r => r.id !== 2).map(r => r.id))
+      for (const { t, pos } of picked) expect(rows[pos]).toBe(t)
+    }
+    expect(perRoom[0].water.ok && perRoom[0].electric.ok).toBe(true)
+  })
+
+  it('swapping the final bill for its re-issue (same coverage) keeps the roommate amounts and the room sums', () => {
+    const before = compute(stamped([old]))
+    const after = compute(stamped([{ ...old, status: 'VOID' }, neu].filter(b => b.status === 'FINAL')))
+    const pick = (r) => r.perTenant.map(t => [t.id, C(t.rent), C(t.water), C(t.elec)])
+    expect(pick(after)).toEqual(pick(before))
+    expect(after.perRoom.map(r => [C(r.water.sum), C(r.electric.sum), r.water.ok, r.electric.ok])).toEqual(before.perRoom.map(r => [C(r.water.sum), C(r.electric.sum), r.water.ok, r.electric.ok]))
+    // While the new draft is built the old bill is left out of the stamps, so the leaver is no ghost there; the saved state never is.
+    expect(pick(compute(stamped([old], { excludeBillId: 26 })))).not.toEqual(pick(before))
   })
 })
 

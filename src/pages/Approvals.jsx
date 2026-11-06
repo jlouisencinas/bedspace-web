@@ -6,6 +6,7 @@ import { reconcileBill, toCents, mergeRecomputedLines, computeTotals, normalizeL
 import ReceiptRefInputs from '../components/ReceiptRefInputs'
 import { buildRequestFreshDrafts } from '../lib/moveOutData'
 import { parseCovered } from '../lib/stay'
+import { hasExtension, NOON_CHOICE_MISSING } from '../lib/stayExtension'
 import { applyTenantProfileChange, PROFILE_FIELD_LABELS } from '../lib/tenantProfile'
 import { notifyAsync } from '../lib/notify'
 import { FIELD_LABELS } from '../../supabase/functions/_shared/approval-labels.ts'
@@ -340,6 +341,12 @@ function MoveOutBillBlock({ b, multi, rec, ctx, waived, onWaive, waiveReason, on
           {rec.diffs.map((x, i) => <div key={i}>{x}</div>)}
         </div>
       )}
+      {rec?.replacedTyped?.length > 0 && (
+        <div className="bg-info-bg border border-info-border rounded-lg px-3 py-2 text-info-text space-y-1">
+          <div className="font-semibold">Typed stay extension replaced</div>
+          {rec.replacedTyped.map((x, i) => <div key={i}>"{x.label}" ({pesoText(x.amount)}) was typed by staff; it is removed and the computed stay extension line below is charged instead, so the nights are not charged twice.</div>)}
+        </div>
+      )}
       {rec && rec.warnings.length > 0 && (
         <div className="bg-warning-bg border border-warning-border rounded-lg px-3 py-2 text-warning-text space-y-1">
           {rec.warnings.map((x, i) => <div key={i}>{x}</div>)}
@@ -462,9 +469,13 @@ function DecideModal({ request, onClose, onDone }) {
   const [ctx, setCtx] = useState(null)
   const [refEdits, setRefEdits] = useState({})
   const [refIndex, setRefIndex] = useState([])
+  // The 12:00 PM choice of a late move-out: from the request (older requests have none: the admin chooses here).
+  const requestNoon = nvReq._vacated_after_noon === true || nvReq._vacated_after_noon === false ? nvReq._vacated_after_noon
+    : (typeof nvReq._bill?.details?.extension?.after_noon === 'boolean' ? nvReq._bill.details.extension.after_noon : null)
+  const [afterNoon, setAfterNoon] = useState(requestNoon)
   const bedLabel = (b) => `Bed ${b.bed || '?'}${b.name ? ` (${b.name})` : ''}`
 
-  async function loadMoveOutCtx() {
+  async function loadMoveOutCtx(noon = afterNoon) {
     for (const b of reqBeds) {
       if (!b.id || isNaN(b.id)) throw new Error(`Invalid tenant ID in the request: "${b.id}"`)
       if (!b.bill || !Array.isArray(b.bill.lines)) throw new Error(`${bedLabel(b)} has no final bill in the request.`)
@@ -489,7 +500,7 @@ function DecideModal({ request, onClose, onDone }) {
       const out = await buildRequestFreshDrafts({
         beds: reqBeds.filter(b => beds[b.id].tenant.is_active).map(b => ({ id: b.id, bill: b.bill })),
         moveOutDate: (nvReq.actual_move_out_date || nvReq.move_out_date || '').slice(0, 10),
-        readings: { water: nvReq.water_reading, electric: nvReq.electric_reading },
+        readings: { water: nvReq.water_reading, electric: nvReq.electric_reading }, vacatedAfterNoon: noon,
       })
       fresh = out.drafts; roomTenants = out.tenants
     } catch (e) { freshError = e.message }
@@ -521,11 +532,13 @@ function DecideModal({ request, onClose, onDone }) {
     if (c.freshError) return { ...r, errors: [...r.errors, `Could not recompute the rent and utilities from the database: ${c.freshError}`] }
     const f = c.fresh.get(id)
     if (!f) return r
-    const bad = [...f.errors, ...f.blocking.filter(m => !r.errors.includes(m))]
-    if (bad.length) return { ...r, errors: [...r.errors, ...bad] }
+    const needsNoon = f.blocking.includes(NOON_CHOICE_MISSING)
+    const bad = [...f.errors, ...f.blocking.filter(m => !r.errors.includes(m) && m !== NOON_CHOICE_MISSING)]
+    if (bad.length) return { ...r, needsNoon, errors: [...r.errors, ...bad] }
+    if (needsNoon) return { ...r, needsNoon }
     const m = mergeRecomputedLines({ lines: r.lines, details: rb.bill.details, fresh: f })
     return {
-      ...r, lines: m.lines, details: m.details, totals: computeTotals(normalizeLines(m.lines)),
+      ...r, lines: m.lines, details: m.details, totals: computeTotals(normalizeLines(m.lines)), replacedTyped: m.replacedTyped,
       diffs: [...r.diffs, ...m.diffs], warnings: [...new Set([...r.warnings, ...m.warnings, ...f.warnings])],
     }
   }
@@ -551,6 +564,15 @@ function DecideModal({ request, onClose, onDone }) {
     }).catch(e => setError(`Could not load the tenant's current data: ${e.message}`))
     fetchReceiptRefIndex().then(setRefIndex).catch(e => console.warn('duplicate receipt number check skipped:', e.message))
   }, [])
+
+  async function chooseNoon(v) {
+    setAfterNoon(v); setError('')
+    try { setCtx(await loadMoveOutCtx(v)) } catch (e) { setError(`Could not rebuild the bill: ${e.message}`) }
+  }
+  const lateMoveOut = !!ctx && reqBeds.some(b => {
+    const t = ctx.beds[b.id]?.tenant
+    return t?.is_active && hasExtension({ contractISO: t.move_out_date, actualISO: moveOutDay })
+  })
 
   // What will actually be applied per bed: credit/forfeit/payment lines, covered periods and early termination are recomputed from the DB.
   const recs = useMemo(() => {
@@ -585,6 +607,7 @@ function DecideModal({ request, onClose, onDone }) {
     return { beds: out, flow }
   }, [ctx, recs, refEdits])
   const refsMissing = !!refView && Object.values(refView.beds).some(v => v.missing.length > 0)
+  const noonMissing = !!recs && Object.values(recs).some(r => r.needsNoon)
   // The normalized numbers to write for one bed (locked reservation T.R# and invalid values are left out).
   const receiptRefsFor = (lines, deposits) => {
     const out = {}
@@ -695,6 +718,7 @@ function DecideModal({ request, onClose, onDone }) {
       }
       const r = reconcile(c, b.id, !!waivedMap[b.id])
       if (r.errors.length) throw new Error(`The request cannot be applied (${bedLabel(b)}): ${r.errors.join(' ')}`)
+      if (r.needsNoon) throw new Error(`${NOON_CHOICE_MISSING} Nothing was changed.`)
       if (r.forfeit_waived && !(waiveReasons[b.id] || '').trim()) throw new Error(`Enter the reason management approved waiving the forfeiture (${bedLabel(b)}).`)
       const missing = missingReceiptRefs(r.lines, c.beds[b.id].deposits, refEdits)
       if (missing.length) throw new Error(`Enter the S.I#/T.R# numbers (${bedLabel(b)}): ${missing.join(' ')} Nothing was changed.`)
@@ -935,6 +959,21 @@ function DecideModal({ request, onClose, onDone }) {
                   bed: b.bed, bill: { lines: recs[b.id].lines, details: recs[b.id].details || b.bill.details, net_amount: recs[b.id].totals.net_amount },
                 }))} />
               )}
+              {lateMoveOut && (
+                <div className="bg-info-bg border border-info-border rounded-xl px-3 py-2.5 text-[12px] text-info-text space-y-1.5">
+                  <div className="font-semibold">Stay extension: the move-out ({moveOutDay}) is after the contract move-out date. Rent stops on the contract date; the nights after it are ₱500.00 each.</div>
+                  <div className="text-ink-muted">{requestNoon == null ? 'This request does not say when the tenant vacated: choose it before approving.' : `The request says: vacated ${requestNoon ? 'after' : 'by'} 12:00 PM.`}</div>
+                  <div className="flex gap-4 flex-wrap text-ink">
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input type="radio" name="approve-noon" disabled={busy} checked={afterNoon === false} onChange={() => chooseNoon(false)} /> Vacated by 12:00 PM
+                    </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input type="radio" name="approve-noon" disabled={busy} checked={afterNoon === true} onChange={() => chooseNoon(true)} /> Vacated after 12:00 PM
+                    </label>
+                  </div>
+                  {noonMissing && <div className="text-danger-text">Approve stays disabled until you choose.</div>}
+                </div>
+              )}
               {reqBeds.map(b => (
                 <MoveOutBillBlock key={b.id} b={b} multi={reqBeds.length > 1} rec={recs?.[b.id]} ctx={ctx}
                   waived={!!waivedMap[b.id]} onWaive={v => setWaivedMap(m => ({ ...m, [b.id]: v }))}
@@ -989,7 +1028,7 @@ function DecideModal({ request, onClose, onDone }) {
           {partialApplied && (
             <button className="btn secondary" onClick={markApplied} disabled={busy}>Mark approved (already applied)</button>
           )}
-          <button className="btn primary" onClick={() => decide('APPROVED')} disabled={busy || partialApplied || (!!moveOutBill && (!vacated || !recs || refsMissing || Object.values(recs).some(r => r.errors.length > 0)))}>
+          <button className="btn primary" onClick={() => decide('APPROVED')} disabled={busy || partialApplied || (!!moveOutBill && (!vacated || !recs || refsMissing || noonMissing || Object.values(recs).some(r => r.errors.length > 0)))}>
             <CheckCircle size={14} />
             {busy && decision === 'APPROVED' ? 'Approving…' : 'Approve'}
           </button>

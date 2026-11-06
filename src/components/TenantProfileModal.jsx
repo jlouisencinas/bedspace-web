@@ -8,6 +8,7 @@ import {
 } from '../lib/supabase'
 import { fetchTenantTransfers, fetchVisitsForTenant, CATEGORY_LABEL } from '../lib/tenantHistory'
 import BillsTab from './tenantProfile/BillsTab'
+import ReissueFinalBillModal from './ReissueFinalBillModal'
 import StayTimeline from './tenantProfile/StayTimeline'
 import MaintenanceTab from './tenantProfile/MaintenanceTab'
 import VisitorsTab from './tenantProfile/VisitorsTab'
@@ -117,6 +118,7 @@ export default function TenantProfileModal({ tenant, siblingIds = [tenant.id], o
   const [voidId,        setVoidId]        = useState(null)
   const [voidReason,    setVoidReason]    = useState('')
   const [billBusy,      setBillBusy]      = useState(false)
+  const [reissueBill,   setReissueBill]   = useState(null)
   const [depLoadError,  setDepLoadError]  = useState('')
   const [depEditId,     setDepEditId]     = useState(null)
   const [depForm,       setDepForm]       = useState(null)
@@ -674,6 +676,7 @@ export default function TenantProfileModal({ tenant, siblingIds = [tenant.id], o
               onVoidReason={setVoidReason}
               onConfirmVoid={doVoidBill}
               onCancelVoid={() => setVoidId(null)}
+              onReissue={b => setReissueBill(b)}
               onGoToAdvance={() => setProfileTab('advance')}
             />
           )}
@@ -979,6 +982,16 @@ export default function TenantProfileModal({ tenant, siblingIds = [tenant.id], o
           )}
         </div>
       </div>
+      {reissueBill && (
+        <ReissueFinalBillModal bill={reissueBill} tenant={tenant} onClose={() => setReissueBill(null)}
+          onDone={async (newId) => {
+            show(`Final bill #${reissueBill.id} voided and re-issued as #${newId}.`, 'success')
+            try {
+              const [bills, deps] = await Promise.all([fetchFinalBills(tenant.id), fetchTenantDeposits(tenant.id)])
+              setDetailBills(bills); setDetailDeposits(deps)
+            } catch (err) { show(`Re-issued, but reloading the bills failed: ${err.message}`, 'error') }
+          }} />
+      )}
       {ToastEl}
     </div>
   )

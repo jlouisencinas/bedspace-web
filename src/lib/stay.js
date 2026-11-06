@@ -273,10 +273,12 @@ export function coveredEntries(cov) {
 /**
  * Per-tenant stamps from the non-void final bills ({ tenant_id, cutoff_id, covered_cutoffs }): Map(tenantId -> { both, water,
  * electric }) of cutoff id arrays. A bill with no entries (bill #7, legacy) falls back to its cutoff_id as water AND electric.
+ * excludeBillId: leave that bill out (the bill being re-issued: its tenant is not their own ghost while the new draft is built).
  */
-export function finalBilledStamps(bills) {
+export function finalBilledStamps(bills, { excludeBillId = null } = {}) {
   const byTenant = new Map()
   for (const b of bills || []) {
+    if (excludeBillId != null && b.id === excludeBillId) continue
     let entries = parseCovered(b.covered_cutoffs)
     if (b.cutoff_id != null && !entries.some(e => e.id === b.cutoff_id)) entries = parseCovered([...entries, b.cutoff_id])
     if (!entries.length) continue

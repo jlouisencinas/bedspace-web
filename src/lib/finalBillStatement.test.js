@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { peso, addDays, buildPrintUnits, statementProps, DRAFT_BANNER } from './finalBillStatement'
+import { peso, addDays, buildPrintUnits, statementProps, voidTextOf, DRAFT_BANNER } from './finalBillStatement'
 
 const NBSP = ' '
 const t = (name, bed) => ({ name, beds: { bed_letter: bed, rooms: { room_no: '101' } } })
@@ -69,5 +69,26 @@ describe('statementProps', () => {
     expect(p.total).toBe(6381.61)
     expect(p.totalLabel).toBe('Amount to be returned:')
     expect(p.due).toBe('')
+  })
+})
+
+describe('stay extension and re-issue on the printed bill', () => {
+  const ext = { contract_date: '2026-11-02', actual_date: '2026-11-05', after_noon: true, nights: 4, rate: 500, amount: 2000 }
+  const lines = [
+    { label: 'Rent (1 month, flat)', amount: 10000, kind: 'charge', source: 'RENT' },
+    { label: 'Stay extension (4 nights x ₱500.00, 03 Nov - 05 Nov, vacated after 12:00 PM)', mid: '4 nights', rate: 500, amount: 2000, kind: 'charge', source: 'EXTENSION' },
+  ]
+  it('details.extension -> a foot note and the rate ₱500.00; details.reissue.of -> the "Replaces" note', () => {
+    const u = buildPrintUnits([{ bill: bill(31, lines, { details: { extension: ext, reissue: { of: 26, at: '2026-11-06T02:00:00Z' } } }), tenant: t('Tenant Late', 'A') }])[0]
+    const p = statementProps(u, { copyLabel: 'x' })
+    expect(p.billNo).toBe('FINAL-101-0031')
+    expect(p.charges[1].rateText).toBe('₱500.00')
+    expect(p.footNotes[0]).toMatch(/^Stay extension: 4 nights after the contract move-out date 2-Nov-2026/)
+    expect(p.footNotes[1]).toBe('Replaces FINAL-101-0026 (voided 6-Nov-2026).')
+  })
+  it('a VOID bill replaced by another prints "Replaced by FINAL-<room>-<n>"', () => {
+    const u = buildPrintUnits([{ bill: bill(26, lines, { status: 'VOID', void_reason: 'Re-issued: new rule', replaced_by_bill_id: 31 }), tenant: t('Tenant Late', 'A') }])[0]
+    expect(voidTextOf(u)).toBe('VOID — Re-issued: new rule · Replaced by FINAL-101-0031')
+    expect(voidTextOf(buildPrintUnits([{ bill: bill(31, lines), tenant: t('Tenant Late', 'A') }])[0])).toBe('')
   })
 })

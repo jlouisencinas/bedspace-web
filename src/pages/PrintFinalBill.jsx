@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { fetchFinalBill, fetchFinalBillGroup, fetchTenantDeposits, correctReceiptRef, DEPOSIT_REF_LABEL, DEPOSIT_KIND_LABEL, supabase } from '../lib/supabase'
 import { receiptRefsNeeded } from '../lib/finalBill'
-import { buildPrintUnits, statementProps, peso } from '../lib/finalBillStatement'
+import { buildPrintUnits, statementProps, voidTextOf, peso } from '../lib/finalBillStatement'
 import { useAuth } from '../lib/auth'
 import FinalBillPages from '../components/FinalBillPages'
 
@@ -171,7 +171,7 @@ export default function PrintFinalBill() {
 
       {units.map(u => (
         <FinalBillPages key={u.key} propsFor={copyLabel => statementProps(u, { copyLabel, series: series[u.key], preparedBy: prepared[u.key], billingDate })}
-          voidText={u.view.status === 'VOID' ? `VOID${u.view.void_reason ? ` — ${u.view.void_reason}` : ''}` : ''} />
+          voidText={voidTextOf(u)} />
       ))}
     </div>
   )
