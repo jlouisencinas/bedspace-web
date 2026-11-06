@@ -1,13 +1,10 @@
 import { useState, useEffect, useMemo } from 'react'
 import {
   fetchCutoffs, fetchTenants,
-  fetchPaymentsForCutoff, fetchUtilityBill, fetchInterimReadings,
-  fetchSplits, fetchAddons, fetchAreaReadings, fetchAdvanceCreditData,
+  fetchPaymentsForCutoff, fetchAdvanceCreditData,
 } from '../lib/supabase'
-import { computeBilling } from '../lib/billing'
-import { getCachedBilling, cacheBilling } from '../lib/billingCache'
+import { loadCutoffBillingInputs, computeCutoffBilling } from '../lib/cutoffBilling'
 import { buildPaymentMonitoring } from '../lib/collectionsSummary'
-import { advanceAdjustments } from '../lib/finalBill'
 import { useToast } from '../components/Toast'
 import SearchInput from '../components/SearchInput'
 import { TrendingUp, AlertTriangle, Wallet } from 'lucide-react'
@@ -26,6 +23,7 @@ export default function PaymentMonitoring() {
   const [tenants,   setTenants]   = useState([])
   const [billingPerTenant, setBillingPerTenant] = useState([])
   const [cutoffPayments,   setCutoffPayments]   = useState([])
+  const [credits,          setCredits]          = useState(new Map())
   const [advData,   setAdvData]   = useState({ deposits: [], finalBills: [], stored: [], error: null })
   const [loading,   setLoading]   = useState(true)
   const [search,    setSearch]    = useState('')
@@ -57,27 +55,12 @@ export default function PaymentMonitoring() {
 
       const cutoffPays = await fetchPaymentsForCutoff(id)
       setCutoffPayments(cutoffPays)
-      setAdvData(await fetchAdvanceCreditData())
+      const adv = await fetchAdvanceCreditData()
+      setAdvData(adv)
 
-      const cached = getCachedBilling(id)
-      if (cached) {
-        setBillingPerTenant(cached)
-      } else {
-        const [bill, ir, sp, ad, ar] = await Promise.all([
-          fetchUtilityBill(id),
-          fetchInterimReadings(id),
-          fetchSplits(id),
-          fetchAddons(id),
-          fetchAreaReadings(id),
-        ])
-        if (bill.length) {
-          const { perTenant } = computeBilling(cutoff, bill, ir, allTenants, sp, ad, ar)
-          cacheBilling(id, perTenant)
-          setBillingPerTenant(perTenant)
-        } else {
-          setBillingPerTenant([])
-        }
-      }
+      const result = computeCutoffBilling(cutoff, await loadCutoffBillingInputs(cutoff, { tenants: allTenants, advData: adv }))
+      setBillingPerTenant(result.perTenant)
+      setCredits(result.credits)
     } catch(e) { show(e.message, 'error') }
     setLoading(false)
   }
@@ -87,10 +70,7 @@ export default function PaymentMonitoring() {
   const isHistorical   = selectedCutoff && !selectedCutoff.is_active
 
   // Second-to-last-bill advance credit: counted as an adjustment against what is owed, never as cash paid.
-  const adjustments = useMemo(() => {
-    if (!selectedCutoff || !billingPerTenant.length) return new Map()
-    return advanceAdjustments({ tenants, cutoff: selectedCutoff, perTenant: billingPerTenant, deposits: advData.deposits, stored: advData.stored })
-  }, [selectedCutoff, tenants, billingPerTenant, advData])
+  const adjustments = useMemo(() => new Map([...credits].map(([id, c]) => [id, c.amount])), [credits])
 
   const rows = useMemo(() =>
     buildPaymentMonitoring(selectedCutoff, tenants, billingPerTenant, cutoffPayments, adjustments)

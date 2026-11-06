@@ -213,6 +213,7 @@ export async function recordPayment(tenantId, paymentData) {
       .from('tenants')
       .update({ [col]: raw.payment_date })
       .eq('id', tenantId)
+      .or(`${col}.is.null,${col}.lt.${raw.payment_date}`)
     if (tErr) throw tErr
   }
 
@@ -276,7 +277,7 @@ export async function recordPaymentsBatch(entries) {
   await Promise.all(
     Array.from(latestByKey.entries()).map(async ([key, date]) => {
       const [tenantId, col] = key.split(':')
-      const { error } = await supabase.from('tenants').update({ [col]: date }).eq('id', tenantId)
+      const { error } = await supabase.from('tenants').update({ [col]: date }).eq('id', tenantId).or(`${col}.is.null,${col}.lt.${date}`)
       if (error) throw error
     })
   )

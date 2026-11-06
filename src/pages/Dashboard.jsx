@@ -2,16 +2,12 @@ import { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import DrillDownModal from '../components/DrillDownModal'
 import {
-  fetchBeds, fetchActivityLog, fetchCutoffs, fetchUtilityBill,
-  fetchInterimReadings, fetchTenants, fetchAreaReadings,
-  fetchMonthlyReports, fetchActivityLogByType, fetchSplits, fetchAddons,
-  fetchPaymentsForCutoff, fetchAdvanceCreditData,
+  fetchBeds, fetchActivityLog, fetchCutoffs, fetchTenants,
+  fetchMonthlyReports, fetchActivityLogByType, fetchPaymentsForCutoff,
 } from '../lib/supabase'
 import { computePnL } from '../lib/pnl'
-import { computeBilling } from '../lib/billing'
-import { getCachedBilling, cacheBilling } from '../lib/billingCache'
+import { loadCutoffBillingInputs, computeCutoffBilling } from '../lib/cutoffBilling'
 import { buildPaymentMonitoring, summarizeCollections } from '../lib/collectionsSummary'
-import { advanceAdjustments } from '../lib/finalBill'
 import { useAuth } from '../lib/auth'
 import { localToday } from '../lib/stay'
 import { targetDateState } from '../lib/reservation'
@@ -128,7 +124,7 @@ export default function Dashboard() {
   const [activeCutoff,     setActiveCutoff]     = useState(null)
   const [billingPerTenant, setBillingPerTenant] = useState([])
   const [cutoffPayments,   setCutoffPayments]   = useState([])
-  const [advData,          setAdvData]          = useState({ deposits: [], finalBills: [], stored: [] })
+  const [credits,          setCredits]          = useState(new Map())
   const [loading, setLoading] = useState(true)
   const [drillDown, setDrillDown] = useState(null)
 
@@ -149,25 +145,16 @@ export default function Dashboard() {
       const active = cutoffs.find(c => c.is_active) || cutoffs[0]
       setActiveCutoff(active || null)
       if (active) {
-        const [bill, interims, areas, splits, addons, cutoffPays] = await Promise.all([
-          fetchUtilityBill(active.id), fetchInterimReadings(active.id), fetchAreaReadings(active.id),
-          fetchSplits(active.id), fetchAddons(active.id), fetchPaymentsForCutoff(active.id),
+        const [inputs, cutoffPays] = await Promise.all([
+          loadCutoffBillingInputs(active, { tenants: allTenants }), fetchPaymentsForCutoff(active.id),
         ])
-        const areaArr = areas.map(a => ({ ...a, consumption: (Number(a.current_reading)||0) - (Number(a.previous_reading)||0) }))
-        setPnl(computePnL(active, bill, interims, allTenants, areaArr))
+        const areaArr = inputs.areas.map(a => ({ ...a, consumption: (Number(a.current_reading)||0) - (Number(a.previous_reading)||0) }))
+        setPnl(computePnL(active, inputs.bill, inputs.interims, allTenants, areaArr))
         setPnlCut(active.name)
         setCutoffPayments(cutoffPays)
-        setAdvData(await fetchAdvanceCreditData())
-        if (bill.length) {
-          const cached = getCachedBilling(active.id)
-          if (cached) {
-            setBillingPerTenant(cached)
-          } else {
-            const { perTenant } = computeBilling(active, bill, interims, allTenants, splits, addons, areaArr)
-            cacheBilling(active.id, perTenant)
-            setBillingPerTenant(perTenant)
-          }
-        }
+        const result = computeCutoffBilling(active, inputs)
+        setBillingPerTenant(result.perTenant)
+        setCredits(result.credits)
       }
     } catch { /* best-effort */ }
   }
@@ -176,10 +163,10 @@ export default function Dashboard() {
 
   const collectionsSummary = useMemo(() => {
     if (!activeCutoff || billingPerTenant.length === 0) return null
-    const adjustments = advanceAdjustments({ tenants, cutoff: activeCutoff, perTenant: billingPerTenant, deposits: advData.deposits, stored: advData.stored })
+    const adjustments = new Map([...credits].map(([id, c]) => [id, c.amount]))
     const rows = buildPaymentMonitoring(activeCutoff, tenants, billingPerTenant, cutoffPayments, adjustments)
     return summarizeCollections(rows)
-  }, [activeCutoff, tenants, billingPerTenant, cutoffPayments, advData])
+  }, [activeCutoff, tenants, billingPerTenant, cutoffPayments, credits])
 
   // Average beds occupied per day over the CALENDAR month so far (1st of this month through today),
   // not the active cutoff: a cutoff stays active after month-end until the next one is opened, so it
