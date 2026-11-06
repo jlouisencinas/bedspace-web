@@ -4,7 +4,7 @@ import {
   setRoomSplit, saveAddon, deleteAddon,
 } from '../lib/supabase'
 import { loadCutoffBillingInputs, computeCutoffBilling } from '../lib/cutoffBilling'
-import { rentWaterRows, electricityRows } from '../lib/monthlyStatement'
+import { rentWaterRows, electricityRows, proratedNote } from '../lib/monthlyStatement'
 import { billPosition, advanceConsumed } from '../lib/finalBill'
 import { cacheBilling } from '../lib/billingCache'
 import { useToast } from '../components/Toast'
@@ -262,7 +262,7 @@ export default function Billing() {
                       {billCat === 'RENT_WATER' && !t.special && cutoff && (cutoff.is_active
                         ? billPosition(tenantById.get(t.id), cutoff) === 'SECOND_TO_LAST'
                         : advData.stored.some(s => s.tenant_id === t.id && s.cutoff_id === cutoff.id)) && (
-                        <span className="badge leased ml-1.5" title="Move-out falls in the next period: the advance is credited against this period's rent automatically">2nd-to-last bill</span>
+                        <span className="badge leased ml-1.5" title="Move-out falls in the next period: the advance, pro-rated by the days of the stay in that period, is credited against this period's rent automatically">2nd-to-last bill</span>
                       )}
                       {consumed.has(t.id) && (
                         <div className="text-[10px] font-normal text-ink-muted mt-0.5">Advance already credited in {consumed.get(t.id)}</div>
@@ -306,8 +306,8 @@ export default function Billing() {
                           {peso(rwTotal)}
                           {credits.has(t.id) && (
                             <div className="text-[10px] font-normal text-success-text leading-[1.3] mt-0.5 tabular-nums"
-                              title={[credits.get(t.id).ref, `credited ${peso(credits.get(t.id).amount)} on this bill`, `remaining ${peso(credits.get(t.id).remaining)} for the final bill`].filter(Boolean).join(' · ')}>
-                              Less advance -{peso(credits.get(t.id).amount)}<br />Net {peso(rwTotal - credits.get(t.id).amount)}
+                              title={[credits.get(t.id).ref, `credited ${peso(credits.get(t.id).amount)} on this bill${proratedNote(credits.get(t.id))}`, `remaining ${peso(credits.get(t.id).remaining)} for the final bill`].filter(Boolean).join(' · ')}>
+                              Less advance{proratedNote(credits.get(t.id))} -{peso(credits.get(t.id).amount)}<br />Net {peso(rwTotal - credits.get(t.id).amount)}
                               <br />remaining {peso(credits.get(t.id).remaining)} for the final bill
                             </div>
                           )}

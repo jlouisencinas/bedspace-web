@@ -4,6 +4,7 @@
  * Pure props for one printed monthly Statement of Account (Rent + Water or Electricity), from a computeCutoffBilling
  * perTenant row. Shared by the print pages and the tenant profile's statement preview, so a reprint is identical.
  */
+import { prorateCents } from './stay'
 
 export const COMPANY = {
   address:    'JP Rizal ext., Cor Lapu-Lapu street, Brgy. West Rembo, Taguig City',
@@ -66,6 +67,17 @@ export const electricityDefaultBillingDate = (cutoff) => cutoff.electric_end   /
 export const REPRINT_BANNER = (dateIso) =>
   [`REPRINT - recalculated ${fmt(dateIso)} from current data;`, 'may differ from the statement originally issued']
 
+const cents = (v) => Math.round((Number(v) || 0) * 100)
+
+// " (pro-rated D of W days)" only when advance x D / W reproduces the credit; a credit capped at the rent says " (pro-rated)";
+// a credit without a day count (stored before pro-rating, or its move-out date moved since) gets no note.
+export function proratedNote(credit) {
+  const { days, windowDays } = credit || {}
+  if (!(days > 0 && windowDays > 0)) return ''
+  const advC = cents(credit.amount) + cents(credit.remaining)
+  return prorateCents(advC, days, windowDays) === cents(credit.amount) ? ` (pro-rated ${days} of ${windowDays} days)` : ' (pro-rated)'
+}
+
 export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, copyLabel, billingDate, preparedBy, banner }) {
   const asOf   = addDays(cutoff.water_end, -1)
   const due    = billingDate ? addDays(billingDate, 7) : ''
@@ -78,7 +90,7 @@ export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, cop
     charges.push({ label: `Add: ${a.label}${a.recurring ? '' : ' · one-time'}`, mid: '', amount: Number(a.amount) }))
   if (credit) charges.push({
     label: 'Less: Advanced Payment',
-    mid: [credit.ref, `credited ${peso(credit.amount)} on this bill`, `remaining ${peso(credit.remaining)} for the final bill`].filter(Boolean).join(' · '),
+    mid: [credit.ref, `credited ${peso(credit.amount)} on this bill${proratedNote(credit)}`, `remaining ${peso(credit.remaining)} for the final bill`].filter(Boolean).join(' · '),
     amount: -credit.amount, amountText: '-' + peso(credit.amount),
   })
   return {
