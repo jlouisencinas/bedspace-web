@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './lib/auth'
 import BrandIcon      from './components/BrandIcon'
 import { AlertTriangle } from 'lucide-react'
 import Sidebar        from './components/Sidebar'
+import UpdateBanner   from './components/UpdateBanner'
 import Login          from './pages/Login'
 import Dashboard      from './pages/Dashboard'
 import BedMap         from './pages/BedMap'
@@ -55,6 +56,7 @@ function Layout() {
       {/* Offset for mobile top bar */}
       <main className="main-content pt-0 lg:pt-0">
         <div className="pt-13 lg:pt-0">
+          <UpdateBanner />
           <Routes>
             {/* All roles */}
             <Route path="/"        element={<Dashboard />} />

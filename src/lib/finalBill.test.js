@@ -4,7 +4,7 @@ import {
   missingReceiptRefs, applyReceiptRefs, spliceRefSegment, advanceCredits, creditsToStore, assertCreditRows, priorCredits,
   advanceCheck, buildCreditLines, rebuildCreditLines, nettablePayments, paymentLines, siblingGroup, siblingMismatch,
   reconcileBill, verifyBillAgainstDb, combineBillsForPrint, groupBillsForPrint, vacatedRecord, figuresChangedMessage,
-  pendingMoveOutFor, mergeRecomputedLines, buildFinalBillDraft, bedRequestState, wholeRoomGroup,
+  pendingMoveOutFor, mergeRecomputedLines, buildFinalBillDraft, bedRequestState, wholeRoomGroup, finalBillShapeProblem,
 } from './finalBill'
 import { SEP, OCT, NOV, CUTOFFS, OCT_ACTIVE } from './__fixtures__/cutoffs'
 import { tenant, deposit, payment } from './__fixtures__/tenants'
@@ -421,5 +421,53 @@ describe('print combination', () => {
       { name: 'Tenant Pair', room: '101', bed: 'C', bill: bill(14, [], { status: 'VOID' }) },
     ])
     expect(g.map(u => [u.combined, u.items.map(i => i.bill.id)])).toEqual([[true, [12, 13]], [false, [14]]])
+  })
+})
+
+// Mirror of DB trigger G4 (database/migrations/final_bill_shape_guard.sql): the shape an outdated client wrote (bill 26).
+describe('finalBillShapeProblem', () => {
+  const complete = {
+    cutoff_id: OCT.id, covered_cutoffs: [OCT.id], move_out_date: '2026-11-05',
+    details: { advance_check: { ok: true }, vacated: { confirmed: true, by: 'staff@example.test' } },
+  }
+  const staleShape = { cutoff_id: null, covered_cutoffs: [], move_out_date: '2026-11-05', details: {} }
+
+  it('flags the stale-client shape: no cutoff although the move-out date has one (after the latest window)', () => {
+    expect(finalBillShapeProblem(staleShape, { cutoffs: [SEP, OCT] })).toMatch(/no cutoff is set.*reload the page.*Nothing was changed./)
+    expect(finalBillShapeProblem({ ...complete, cutoff_id: null }, { cutoffs: [SEP, OCT] })).toMatch(/no cutoff is set/)
+    expect(finalBillShapeProblem({ ...complete, cutoff_id: null, move_out_date: '2026-10-20' }, { cutoffs: CUTOFFS })).toMatch(/no cutoff is set/)
+  })
+
+  it('with no cutoff at all a null cutoff is allowed, but the missing advance check / vacated are still flagged', () => {
+    expect(finalBillShapeProblem(staleShape, { cutoffs: [] })).toMatch(/advance check is missing/)
+    expect(finalBillShapeProblem({ ...staleShape, details: { advance_check: {} } }, { cutoffs: [] })).toMatch(/vacated confirmation is missing/)
+    expect(finalBillShapeProblem({ ...complete, cutoff_id: null }, { cutoffs: [] })).toBeNull()
+  })
+
+  it('a move-out date in a gap between water windows keeps a null cutoff (admin keys the lines by hand)', () => {
+    expect(finalBillShapeProblem({ ...complete, cutoff_id: null, move_out_date: '2026-10-15' }, { cutoffs: [SEP, NOV] })).toBeNull()
+  })
+
+  it('returns null for a complete bill', () => {
+    expect(finalBillShapeProblem(complete, { cutoffs: CUTOFFS })).toBeNull()
+  })
+
+  it('a re-issue may lack vacated, never the advance check', () => {
+    const noVacated = { ...complete, details: { advance_check: { ok: true } } }
+    expect(finalBillShapeProblem(noVacated, { cutoffs: CUTOFFS, isReissue: true })).toBeNull()
+    expect(finalBillShapeProblem(noVacated, { cutoffs: CUTOFFS })).toMatch(/vacated confirmation is missing/)
+    expect(finalBillShapeProblem({ ...complete, details: {} }, { cutoffs: CUTOFFS, isReissue: true })).toMatch(/advance check is missing/)
+  })
+
+  it('advance_check / vacated must be objects', () => {
+    expect(finalBillShapeProblem({ ...complete, details: { ...complete.details, advance_check: [] } }, { cutoffs: CUTOFFS })).toMatch(/advance check/)
+    expect(finalBillShapeProblem({ ...complete, details: { ...complete.details, vacated: true } }, { cutoffs: CUTOFFS })).toMatch(/vacated/)
+    expect(finalBillShapeProblem({ ...complete, details: null }, { cutoffs: CUTOFFS })).toMatch(/advance check/)
+  })
+
+  // Deviation from the plan: an empty covered_cutoffs with a cutoff set is a legitimate shape (see stay.test.js
+  // "a stay that began after the latest window"), so it is not flagged.
+  it('does not flag an empty covered_cutoffs with a cutoff set', () => {
+    expect(finalBillShapeProblem({ ...complete, covered_cutoffs: [] }, { cutoffs: CUTOFFS })).toBeNull()
   })
 })
