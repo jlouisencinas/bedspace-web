@@ -13,6 +13,8 @@ import { getCachedBilling, cacheBilling } from '../lib/billingCache'
 import { buildPaymentMonitoring, summarizeCollections } from '../lib/collectionsSummary'
 import { advanceAdjustments } from '../lib/finalBill'
 import { useAuth } from '../lib/auth'
+import { localToday } from '../lib/stay'
+import { targetDateState } from '../lib/reservation'
 import RoomMaintenancePanel  from '../components/RoomMaintenancePanel'
 import OccupancyYtdChart     from '../components/OccupancyYtdChart'
 import { occupancyTileFigures, formatPct1, formatNum1 } from '../lib/occupancyMtd'
@@ -345,6 +347,11 @@ export default function Dashboard() {
       columns: [
         { key: 'room_bed', label: 'Room · Bed', render: roomBed },
         { key: 'reserved_name', label: 'Reserved for', render: b => <span className="max-w-[160px] truncate inline-block align-bottom">{b.reserved_name || '—'}</span> },
+        { key: 'reserved_move_in_date', label: 'Target move-in', render: b => {
+          if (!b.reserved_move_in_date) return <span className="text-warning-text">No target date</span>
+          const overdue = targetDateState(b.reserved_move_in_date, localToday()).state === 'OVERDUE'
+          return <span className={overdue ? 'text-danger-text font-semibold' : ''}>{fmtDate(b.reserved_move_in_date)}{overdue ? ' · overdue' : ''}</span>
+        } },
         { key: 'rate', label: 'Rate', align: 'right', render: b => `₱${fmt(Number(b.default_rate) || 0)}` },
       ],
       onRowClick: b => navigate('/property', { state: { tab: 'rates', focusRoomId: b.room_id } }),

@@ -37,12 +37,12 @@ npm run build     # -> dist/
   PaymentMonitoring, Maintenance, Approvals, Reports, Occupancy, OccupancySimulator, Property, Activity, Users,
   NotificationSettings, VisitorLog, Login, PrintElectricity, PrintRentWater, PrintFinalBill.
   Property.jsx: "Reconfigure" (bed count/rates) is in the Bed Rates tab; "+ Add Room" / "Retire" in the Room Config tab.
-- `src/components/` shared UI (MoveInModal, MoveOutModal, TransferModal, Statement, DrillDownModal, ReceiptLinesInput,
+- `src/components/` shared UI (MoveInFlow (the one Move In path: Tenants + Bed Map), MoveInModal, MoveOutModal, TransferModal, Statement, DrillDownModal, ReceiptLinesInput,
   ReservationLedgerModal, RoomReconfigureModal, AddRoomModal, RetireRoomModal, MonthlyStatementPreview, Guard*/Visitor* …);
   `tenantProfile/` holds the TenantProfileModal tabs (BillsTab, StatementHistory, StayTimeline, MaintenanceTab, VisitorsTab).
 - `src/lib/` data layer: `supabase.js` (queries + move-out/receipt writes), `billing.js`, `cutoffBilling.js` (the one
   loader + compute for a cutoff's statements: Billing, print pages, profile history), `monthlyStatement.js` (printed
-  statement props), `tenantStatements.js` (profile statement history), `finalBill.js`, `stay.js`,
+  statement props), `tenantStatements.js` (profile statement history), `finalBill.js`, `reservation.js` (reservation target date, Move In defaults), `stay.js`,
   `utilityPieces.js`, `receiptLines.js`, `moveOutData.js`, `maintenanceTickets.js` (ticket target/place helpers), `pnl.js`,
   `snapshot.js`, `occupancyMtd.js` (Dashboard Occupancy tile: Manila month-to-date window + MTD average / today figures),
   `auth.jsx`, `approvals.js`,

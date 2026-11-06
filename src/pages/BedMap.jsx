@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import {
-  fetchBeds, updateBedStatus, logBedStatusChange,
+  fetchBeds, updateBedStatus, logBedStatusChange, updateReservationTargetDate,
   fetchReservationPayments, fetchAllReservationPayments, addReservationPayment, updateReservationPayment,
   voidReservationPayment, PAYMENT_MODES, PAYMENT_MODE_LABEL,
 } from '../lib/supabase'
@@ -8,8 +8,11 @@ import { useToast } from '../components/Toast'
 import { useAuth } from '../lib/auth'
 import SearchInput from '../components/SearchInput'
 import ReservationLedgerModal from '../components/ReservationLedgerModal'
+import MoveInFlow from '../components/MoveInFlow'
 import { parseMoney, moneyProblem, dbToCents, fmtCents, centsToInput } from '../lib/receiptLines'
-import { SearchX, X } from 'lucide-react'
+import { localToday } from '../lib/stay'
+import { targetDateProblem, targetDateState, fmtTargetDate } from '../lib/reservation'
+import { SearchX, X, LogIn } from 'lucide-react'
 
 function todayISO() { return new Date().toISOString().slice(0, 10) }
 
@@ -108,6 +111,35 @@ function BedStatusBadge({ status }) {
   )
 }
 
+const TARGET_CLS = {
+  NONE:     'bg-warning-bg text-warning-text border border-warning-border',
+  OVERDUE:  'bg-danger-bg text-danger-text border border-danger-border',
+  TODAY:    'bg-success-bg text-success-text border border-success-border',
+  UPCOMING: 'bg-surface-3 text-ink-muted border border-line',
+}
+
+function targetChipLabel({ state, days }) {
+  if (state === 'NONE')    return 'not set'
+  if (state === 'TODAY')   return 'today'
+  if (state === 'OVERDUE') return `overdue ${-days} day${days === -1 ? '' : 's'}`
+  return `in ${days} day${days === 1 ? '' : 's'}`
+}
+
+// Card line: "Target Nov 20" (year only when it is not this year).
+function TargetDateLine({ date }) {
+  const today = localToday()
+  const st = targetDateState(date, today)
+  if (st.state === 'NONE') {
+    return <div className="text-[10px] font-semibold text-warning-text">No target date</div>
+  }
+  const label = date.slice(0, 4) === today.slice(0, 4) ? fmtTargetDate(date).replace(/, \d{4}$/, '') : fmtTargetDate(date)
+  return (
+    <div className={`text-[10px] font-semibold ${st.state === 'OVERDUE' ? 'text-danger-text' : 'text-ink-muted'}`}>
+      Target {label}{st.state === 'OVERDUE' ? ' · overdue' : ''}
+    </div>
+  )
+}
+
 // ── Status Change Modal ────────────────────────────────────────────────────────
 
 const STATUS_ACTIONS = {
@@ -116,12 +148,19 @@ const STATUS_ACTIONS = {
   'OUT OF ORDER': [{ to: 'VACANT',  label: 'Mark Vacant' }, { to: 'RESERVED', label: 'Reserve' }],
 }
 
-function BedStatusModal({ bed, onClose, onSaved, onPaymentsChanged }) {
+function BedStatusModal({ bed, onClose, onSaved, onPaymentsChanged, onTargetDateChanged, onMoveIn }) {
   const { isAdmin, user } = useAuth()
   const [pending,  setPending]  = useState(null)
   const [name,     setName]     = useState(bed.reserved_name || '')
+  const [targetDate, setTargetDate] = useState('')
   const [saving,   setSaving]   = useState(false)
   const [error,    setError]    = useState('')
+  // Target date of the current reservation as saved; editable inline while the bed is RESERVED.
+  const [savedTarget, setSavedTarget] = useState(bed.reserved_move_in_date || null)
+  const [dateEdit,    setDateEdit]    = useState(null)
+  const [dateBusy,    setDateBusy]    = useState(false)
+  const [dateError,   setDateError]   = useState('')
+  const today = localToday()
 
   const current  = (bed.status || 'VACANT').toUpperCase()
   const actions  = STATUS_ACTIONS[current] || STATUS_ACTIONS.VACANT
@@ -157,6 +196,10 @@ function BedStatusModal({ bed, onClose, onSaved, onPaymentsChanged }) {
   async function handleConfirm() {
     if (!pending) return
     if (needName && !name.trim()) { setError('Please enter the name of the person reserving this bed.'); return }
+    if (needName) {
+      const msg = targetDateProblem(targetDate, localToday())
+      if (msg) { setError(msg); return }
+    }
     if (needName && recordNow) {
       const msg = payFormError(reserveForm)
       if (msg) { setError(msg); return }
@@ -165,8 +208,9 @@ function BedStatusModal({ bed, onClose, onSaved, onPaymentsChanged }) {
     setError('')
     try {
       const resolvedName = needName ? name.trim() : null
-      await updateBedStatus(bed.bed_id, pending, resolvedName)
-      logBedStatusChange(bed, pending, resolvedName).catch(() => {})
+      const resolvedDate = needName ? targetDate : null
+      await updateBedStatus(bed.bed_id, pending, resolvedName, resolvedDate, { requireRow: true })
+      logBedStatusChange(bed, pending, resolvedName, resolvedDate).catch(() => {})
 
       if (needName && recordNow) {
         try {
@@ -175,14 +219,14 @@ function BedStatusModal({ bed, onClose, onSaved, onPaymentsChanged }) {
             paymentMode: reserveForm.mode, receivedDate: reserveForm.date, notes: reserveForm.notes,
           }, user?.id)
         } catch (pe) {
-          onSaved(bed.bed_id, pending, resolvedName, { error: `Bed reserved, but the payment was NOT recorded: ${pe.message}. Record it from the bed.` })
+          onSaved(bed.bed_id, pending, resolvedName, { error: `Bed reserved, but the payment was NOT recorded: ${pe.message}. Record it from the bed.` }, resolvedDate)
           onClose()
           setSaving(false)
           return
         }
       }
 
-      onSaved(bed.bed_id, pending, resolvedName, leaving && heldCents > 0 ? { forfeitedCents: heldCents } : undefined)
+      onSaved(bed.bed_id, pending, resolvedName, leaving && heldCents > 0 ? { forfeitedCents: heldCents } : undefined, resolvedDate)
       onClose()
     } catch(e) { setError(e.message) }
     setSaving(false)
@@ -233,6 +277,19 @@ function BedStatusModal({ bed, onClose, onSaved, onPaymentsChanged }) {
     setPayBusy(false)
   }
 
+  async function saveTargetDate() {
+    const msg = targetDateProblem(dateEdit, localToday())
+    if (msg) { setDateError(msg); return }
+    setDateBusy(true); setDateError('')
+    try {
+      await updateReservationTargetDate({ ...bed, reserved_move_in_date: savedTarget }, dateEdit)
+      setSavedTarget(dateEdit)
+      setDateEdit(null)
+      onTargetDateChanged(bed.bed_id, dateEdit)
+    } catch (e) { setDateError(e.message) }
+    setDateBusy(false)
+  }
+
   function startEdit(p) {
     setPayError(''); setVoiding(null)
     setEditing({
@@ -260,6 +317,47 @@ function BedStatusModal({ bed, onClose, onSaved, onPaymentsChanged }) {
               <span className="text-[13px] text-ink-secondary font-medium">— {bed.reserved_name}</span>
             )}
           </div>
+
+          {current === 'RESERVED' && (() => {
+            const st = targetDateState(savedTarget, today)
+            return (
+              <div className="mb-4 -mt-2">
+                <div className="flex flex-wrap items-center gap-2 text-[13px]">
+                  <span className="text-ink-muted">Target move-in:</span>
+                  <span className="font-medium text-ink-secondary">{savedTarget ? fmtTargetDate(savedTarget) : 'No target date'}</span>
+                  <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full ${TARGET_CLS[st.state]}`}>
+                    {targetChipLabel(st)}
+                  </span>
+                  {dateEdit == null && (
+                    <button type="button" className="btn-xs gray" onClick={() => { setDateError(''); setDateEdit(savedTarget && savedTarget >= today ? savedTarget : '') }}>
+                      {savedTarget ? 'Edit' : 'Set date'}
+                    </button>
+                  )}
+                </div>
+                {dateEdit != null && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <input
+                      type="date" min={today} className={`${FIELD} max-w-[180px]`}
+                      value={dateEdit} onChange={e => { setDateEdit(e.target.value); setDateError('') }}
+                    />
+                    <button type="button" className="btn-xs gray" onClick={() => { setDateEdit(null); setDateError('') }}>Cancel</button>
+                    <button type="button" className="btn-xs green" disabled={dateBusy} onClick={saveTargetDate}>{dateBusy ? 'Saving…' : 'Save'}</button>
+                  </div>
+                )}
+                {dateError && <p className="mt-1.5 text-[12px] text-danger-text">{dateError}</p>}
+              </div>
+            )
+          })()}
+
+          {current === 'RESERVED' && (
+            <button
+              type="button"
+              className="btn primary w-full justify-center mb-4"
+              onClick={() => onMoveIn({ ...bed, reserved_move_in_date: savedTarget })}
+            >
+              <LogIn size={14} /> Move In {bed.reserved_name || 'tenant'}
+            </button>
+          )}
 
           {current === 'RESERVED' && (
             <div className="mb-4 rounded-xl border border-line p-3">
@@ -377,6 +475,17 @@ function BedStatusModal({ bed, onClose, onSaved, onPaymentsChanged }) {
                 className="w-full px-3 py-2 text-[13px] rounded-lg border border-line focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
               />
 
+              <label className="block text-[12px] font-semibold text-ink-secondary mt-3 mb-1.5">
+                Target move-in date *
+              </label>
+              <input
+                type="date"
+                min={today}
+                value={targetDate}
+                onChange={e => { setTargetDate(e.target.value); setError('') }}
+                className="w-full px-3 py-2 text-[13px] rounded-lg border border-line bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
+              />
+
               <label className="flex items-center gap-2 mt-3 text-[12px] text-ink-secondary cursor-pointer">
                 <input type="checkbox" checked={recordNow} onChange={e => { setRecordNow(e.target.checked); setError('') }} />
                 Record reservation payment now (optional)
@@ -434,6 +543,7 @@ export default function BedMap() {
   const [statusModal, setStatusModal] = useState(null)
   const [ledgerOpen,  setLedgerOpen]  = useState(false)
   const [heldByBed,   setHeldByBed]   = useState({})
+  const [moveInBed,   setMoveInBed]   = useState(null)
   const { show, ToastEl } = useToast()
   const { isViewer } = useAuth()
 
@@ -456,10 +566,20 @@ export default function BedMap() {
   }
   useEffect(() => { load() }, [isViewer])
 
-  function handleSaved(bedId, newStatus, newName, extra) {
+  // After Move In: reload without the loading screen so the Move In toast stays visible.
+  async function refresh() {
+    try { setBeds(await fetchBeds()) } catch (e) { show(`The Bed Map could not reload: ${e.message}. Refresh the page.`, 'error', { duration: 20000 }) }
+    await loadHeld()
+  }
+
+  function handleSaved(bedId, newStatus, newName, extra, newDate = null) {
     setBeds(prev => prev.map(b =>
       b.bed_id === bedId
-        ? { ...b, status: newStatus, reserved_name: newStatus === 'RESERVED' ? newName : null }
+        ? {
+            ...b, status: newStatus,
+            reserved_name:         newStatus === 'RESERVED' ? newName : null,
+            reserved_move_in_date: newStatus === 'RESERVED' ? newDate : null,
+          }
         : b
     ))
     loadHeld()
@@ -467,6 +587,11 @@ export default function BedMap() {
     if (extra?.forfeitedCents) { show(`Reservation removed. ${fmtCents(extra.forfeitedCents)} forfeited.`, 'success'); return }
     const label = newStatus === 'OUT OF ORDER' ? 'Out of Order' : newStatus.charAt(0) + newStatus.slice(1).toLowerCase()
     show(`Bed updated to ${label}.`, 'success')
+  }
+
+  function handleTargetDateChanged(bedId, date) {
+    setBeds(prev => prev.map(b => (b.bed_id === bedId ? { ...b, reserved_move_in_date: date } : b)))
+    show('Target move-in date updated.', 'success')
   }
 
   const roomTypes = useMemo(() =>
@@ -610,6 +735,7 @@ export default function BedMap() {
                           ) : b.status === 'RESERVED' && b.reserved_name ? (
                             <div className="bed-name text-navy-600">{b.reserved_name}</div>
                           ) : null}
+                          {b.status === 'RESERVED' && <TargetDateLine date={b.reserved_move_in_date} />}
                           {!isViewer && b.status === 'RESERVED' && heldByBed[b.bed_id] > 0 && (
                             <div className="text-[10px] font-semibold text-warning-text bg-warning-bg border border-warning-border rounded-full px-1.5 py-px w-fit">
                               {chipAmount(heldByBed[b.bed_id])} held
@@ -638,6 +764,16 @@ export default function BedMap() {
           onClose={() => setStatusModal(null)}
           onSaved={handleSaved}
           onPaymentsChanged={loadHeld}
+          onTargetDateChanged={handleTargetDateChanged}
+          onMoveIn={b => { setStatusModal(null); setMoveInBed(b) }}
+        />
+      )}
+      {moveInBed && (
+        <MoveInFlow
+          bed={moveInBed}
+          onClose={() => setMoveInBed(null)}
+          onDone={refresh}
+          show={show}
         />
       )}
       {ledgerOpen && <ReservationLedgerModal onClose={() => setLedgerOpen(false)} />}

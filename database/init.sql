@@ -86,6 +86,11 @@ alter table rooms add column if not exists room_status        text not null defa
   check (room_status in ('ACTIVE','CONVERTED','MAINTENANCE','RESERVED'));
 alter table rooms add column if not exists is_management      boolean not null default false;
 
+-- Beds: target move-in date of the current reservation (reservation_target_date.sql)
+alter table public.beds add column if not exists reserved_move_in_date date;
+comment on column public.beds.reserved_move_in_date is
+  'Target move-in date of the current reservation. Only set while status = RESERVED; cleared by trigger otherwise.';
+
 -- Beds: soft-delete support (idempotent: only replaces if REMOVED is not already there)
 do $$
 declare c text;
@@ -1682,8 +1687,9 @@ begin
   if v_role = 'admin' then
     return new;
   end if;
-  if (to_jsonb(new) - 'status' - 'reserved_name')
-     is distinct from (to_jsonb(old) - 'status' - 'reserved_name') then
+  -- staff may change status, reserved_name and the reservation target date (rate etc. stay admin-only)
+  if (to_jsonb(new) - 'status' - 'reserved_name' - 'reserved_move_in_date')
+     is distinct from (to_jsonb(old) - 'status' - 'reserved_name' - 'reserved_move_in_date') then
     raise exception 'Only admin can change bed rate or other protected fields directly. Submit via the approval workflow.';
   end if;
   if new.status = 'REMOVED' or old.status = 'REMOVED' then
@@ -1696,6 +1702,27 @@ drop trigger if exists trg_guard_beds on public.beds;
 create trigger trg_guard_beds
   before update on public.beds
   for each row execute function public.guard_beds_protected_fields();
+
+-- The target move-in date only lives while the bed is RESERVED (cleared on move-in, transfer, retire, reconfigure,
+-- Remove Reservation). Entering RESERVED without a date, or clearing it on a RESERVED bed, fails; legacy RESERVED
+-- rows with a null date stay updatable. INSERT is not enforced (the seed below inserts RESERVED rows).
+-- reservation_target_date.sql + reservation_target_date_enforce.sql
+create or replace function public.beds_reservation_date() returns trigger
+language plpgsql as $$
+begin
+  if new.status is distinct from 'RESERVED' then
+    new.reserved_move_in_date := null;
+    return new;
+  end if;
+  if tg_op = 'UPDATE' and new.reserved_move_in_date is null
+     and (old.status is distinct from 'RESERVED' or old.reserved_move_in_date is not null) then
+    raise exception 'A reservation needs a target move-in date.';
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_beds_reservation_date on public.beds;
+create trigger trg_beds_reservation_date before insert or update on public.beds
+  for each row execute function public.beds_reservation_date();
 
 -- ── payments ──────────────────────────────────────────────────────────────
 -- Non-negotiable: never delete/alter billing records. No UPDATE/DELETE

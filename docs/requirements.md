@@ -75,6 +75,18 @@ requests, and owner-facing occupancy/collections/P&L reporting.
   follows the tenant to a different bed). If the typed name differs from the name the payment was
   recorded under, an explicit confirmation tick is required. Reservation payments can also be typed
   at Move In itself, for any VACANT or RESERVED bed (§5).
+- **Move In from the Bed Map (reserved bed):** a RESERVED bed's status modal has a **Move In <name>**
+  button (admin + user). It opens the same Move In modal, locked to that bed (read-only "Selected Bed",
+  so its reservation money can never be applied to another bed), with Full Name = the reserved name and
+  every normal required field and receipt rule. Tenants page and Bed Map share one Move In path
+  (`src/components/MoveInFlow.jsx`: HELD payments, `addTenant`, `record_move_in_receipts`, contacts,
+  emails, documents), so the result is identical. On any RESERVED bed (either entry point) **Move In
+  Date defaults to the reservation's target move-in date** (today when the reservation has none) and
+  shows "Target move-in from the reservation: <date>"; an amber, non-blocking notice appears whenever
+  the Move In Date is not today ("N days after/before today: rent starts on this date") or differs from
+  the target. Staff change the date as needed; rent is prorated from it. The `Move In` activity row
+  stores `metadata.from_reservation` (reserved name + target date) for audit. Rules in
+  `src/lib/reservation.js`.
 - Billing starts immediately at move-in, prorated against the rent/water cutoff window (see §5)
   — day-exact proration, confirmed correct as currently implemented.
 
@@ -277,6 +289,18 @@ its own "Could not load …: <message>" if its read fails (the other tabs still 
 ## 4. Bed / property inventory
 - Bed/room states: **Vacant, Leased, Reserved, Out-of-Order, Removed** (soft-delete). No other
   states needed.
+- **Reserved state:** a reservation carries `beds.reserved_name` and a required target move-in date
+  `beds.reserved_move_in_date` (migration `reservation_target_date.sql`). Reserving from the Bed Map
+  (from Vacant or Out of Order) cannot be confirmed without a valid date that is **today or later**;
+  no upper limit. Admin and user can set/change it from the bed's status modal (Edit / Set date, today
+  or later; logged as `Reservation Target Date Changed`, old → new); viewers see it, guards cannot read
+  beds. A trigger clears the date whenever the bed leaves RESERVED (move-in, Remove Reservation, Out of
+  Order, transfer, retire, reconfigure). The Bed Map card shows "Target <date>" ("· overdue" in red when
+  past), the status modal a state chip (in N days / today / overdue N days / not set). Legacy
+  reservations made before the date existed show "No target date" and keep working (Move In, remove,
+  Set date); no backfill. Nothing automatic happens when a target date passes (no forfeit, no email).
+  After deploy, `reservation_target_date_enforce.sql` makes the DB reject entering RESERVED without a
+  date or clearing the date of a RESERVED bed (legacy null-date rows stay updatable).
 - Room types differ only in **size and bed capacity** — not rate. No per-room-type utility rate
   differentiation is needed (confirms §6 — flat water rate applies to every room, including Solo
   Rooms).
@@ -418,6 +442,9 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       reservation holding money is removed. A mistaken forfeiture is irreversible in the app
       (workaround: record a new reservation payment referencing the forfeited TR#). Non-admins can
       remove a reservation (as before); the tick and the activity entry are the control.
+      RESERVED → LEASED (Move In, from the Tenants page or the Bed Map's Move In button, §3) never
+      forfeits: both entry points use the same `record_move_in_receipts` path, so HELD payments become
+      APPLIED with one DEPOSIT row each and the cashier collects only the shortfall.
     - **Split lines:** an advance or a deposit can have several receipt lines (e.g. 4,000 BANK + 2,000
       CASH), each = one `tenant_deposits` row with `payment_mode` (BANK/CASH, null on legacy rows,
       shown "mode not recorded") and `bank_ref`. Their sum must equal the due amount exactly in
@@ -832,6 +859,10 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   requires the approval workflow (current scope: move-out, transfer, room config, bed rate
   changes, bed removal — see `.claude/agents/`). Room reconfiguration (§4) is deliberately
   admin-only instead, not approval-gated.
+- **Beds (column split):** `beds_update` RLS lets admin and user update a bed row; the
+  `guard_beds_protected_fields` trigger then lets a non-admin change only `status`, `reserved_name` and
+  `reserved_move_in_date` (reserve, remove a reservation, set the target move-in date, Move In). Bed rate
+  and every other column stay admin-only, and REMOVED transitions need admin approval.
 - **Tenants / Current Tenants / profile history:** both pages are admin and user (viewer is redirected
   to `/`, guard never reaches them). `user` sees every tenant, past and present, and every profile tab
   (bills, payments, final bills, receipts, transfers, activity, maintenance, visitors; RLS allows the
@@ -1222,7 +1253,8 @@ in another module.**
   Occupied Beds footer is "Open full list in Current Tenants →"); Month detail and Move-ins This Month
   go to `/tenants` because those tenants may already have moved out;
   Vacant/Reserved navigate to `/property`'s Bed Rates tab with the room auto-expanded and scrolled
-  into view. Monthly Revenue's rows are aggregate (by room type) and not clickable. **Viewer
+  into view. The Reserved table has a **Target move-in** column (the reservation's date, "No target date" when
+  none, red "· overdue" when past); the Reserved KPI count is unchanged. Monthly Revenue's rows are aggregate (by room type) and not clickable. **Viewer
   role:** every drill-down still opens with full, correct data — only row-click navigation and the
   footer link are hidden (routes `/tenants`/`/current-tenants`/`/property` are admin/user only, same `canAct` gate as
   the Room Maintenance panel above). The month occupancy no longer depends on an active cutoff.
@@ -1479,6 +1511,10 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       tenants prints 33.33 x 3 = 99.99; a room with a final-billed ghost shows 73.33 + 403.33 + 403.33 = 879.99 for 880.00); (b) a
       statement's rounded lines can differ from its rounded total (4,838.71 + 10.65 printed, total due 4,849.35). The final
       bill (`utilityPieces.js`) already does this exactly with integer-cent largest-remainder allocation.
+- [x] (2026-11-05) Bed Map reservations require a target move-in date (today or later) and a RESERVED bed has a
+      **Move In** action using the shared Move In flow (§3, §4, §5). `reservation_target_date.sql` is applied before merge;
+      **`reservation_target_date_enforce.sql` must be applied after the new frontend is live** (it rejects reserving
+      without a date).
 - [ ] `finalBill.js` `toCents` (low): an x.xx5 float half is not always rounded up (1.005 -> 1.00, 0.285 -> 0.28; 2.675 -> 2.68 is fine) because
       it multiplies by 100 before rounding. Stored 2-decimal amounts are unaffected; only computed floats are.
 - [ ] (2026-11-05) The Occupancy page (`Occupancy.jsx`) takes "today" from the browser's local date (`localISO`), the
