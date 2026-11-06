@@ -3,6 +3,7 @@ import { useSearchParams, useNavigate, Link } from 'react-router-dom'
 import { fetchCutoffs } from '../lib/supabase'
 import { loadCutoffBillingInputs, computeCutoffBilling, NO_ADVANCE_DATA } from '../lib/cutoffBilling'
 import { rentWaterRows, rentWaterProps, rentWaterDefaultBillingDate, REPRINT_BANNER, pickStatements, parseIdList } from '../lib/monthlyStatement'
+import { monthlyBillNo } from '../lib/billNumber'
 import Statement from '../components/Statement'
 
 const todayIso = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
@@ -15,7 +16,7 @@ export default function PrintRentWater() {
   const cutoffId = Number(params.get('cutoff'))
   // ?tenant=<id>: reprint of one tenant's statement (from the tenant profile)
   const tenantId = params.get('tenant') ? Number(params.get('tenant')) : null
-  // ?only=<ids> / ?skip=<ids>: a selection from Billing (held tenants print later). Bill numbers stay those of the full list.
+  // ?only=<ids> / ?skip=<ids>: a selection from Billing (held tenants print later).
   const onlyKey = params.get('only') || '', skipKey = params.get('skip') || ''
   const only = useMemo(() => parseIdList(onlyKey), [onlyKey])
   const skip = useMemo(() => parseIdList(skipKey), [skipKey])
@@ -27,7 +28,6 @@ export default function PrintRentWater() {
   const [loadError, setLoadError] = useState('')
 
   const [billingDate, setBillingDate] = useState('')
-  const [billStart, setBillStart]     = useState(null)
   const [preparedBy, setPreparedBy]   = useState('')
   const [showReprint, setShowReprint] = useState(true)
 
@@ -53,7 +53,6 @@ export default function PrintRentWater() {
   }, [inputs.bill])
 
   const allStatements = useMemo(() => rentWaterRows(perTenant), [perTenant])
-  // Bill numbers keep their position in the full print, so a single reprint gets the same default number.
   const statements = useMemo(() => pickStatements(allStatements, { tenant: tenantId, only, skip }), [allStatements, tenantId, only, skip])
   const skippedNames = useMemo(() => {
     const shown = new Set(statements.map(x => x.t.id))
@@ -64,8 +63,6 @@ export default function PrintRentWater() {
   if (!cutoff) return <div className="page"><p>{loadError ? `Could not load this cutoff: ${loadError}` : 'Cutoff not found.'} <Link to="/billing">Back</Link></p></div>
 
   const advData = inputs.advData
-  const startNo = billStart ?? (tenantId != null && statements.length ? statements[0].pos + 1 : 1)
-  const billNoOf = (pos, i) => String(selection ? startNo + pos : startNo + i).padStart(4, '0')
   const banner = tenantId != null && showReprint ? REPRINT_BANNER(todayIso()) : undefined
 
   const propsFor = (t, billNo, copyLabel) => rentWaterProps({
@@ -81,8 +78,6 @@ export default function PrintRentWater() {
           : <Link to="/billing" className="btn secondary">← Back</Link>}
         <div className="fg" style={{ maxWidth: 150 }}><label>Billing Date</label>
           <input type="date" value={billingDate} onChange={e => setBillingDate(e.target.value)} /></div>
-        <div className="fg" style={{ maxWidth: 110 }}><label>{tenantId != null ? 'Bill No.' : 'Start Bill No.'}</label>
-          <input type="number" value={startNo} onChange={e => setBillStart(Number(e.target.value) || 1)} /></div>
         <div className="fg" style={{ maxWidth: 180 }}><label>Prepared by</label>
           <input type="text" value={preparedBy} onChange={e => setPreparedBy(e.target.value)} placeholder="Name" /></div>
         {tenantId != null && (
@@ -117,8 +112,8 @@ export default function PrintRentWater() {
         </div>
       )}
 
-      {statements.map(({ t, pos }, i) => {
-        const billNo = billNoOf(pos, i)
+      {statements.map(({ t }) => {
+        const billNo = monthlyBillNo(t.room_no, cutoff) ?? ''
         return (
           <div className="a4page" key={t.id}>
             <Statement {...propsFor(t, billNo, "Tenant's Copy")} />

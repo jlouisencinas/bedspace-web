@@ -49,7 +49,7 @@ export function parseIdList(v) {
 }
 
 /**
- * The statements to print, numbered by their position in the FULL list (so a held tenant printed later keeps the same Bill No.):
+ * The statements to print, each with its position in the FULL list (the Billing No. itself comes from billNumber.js):
  * `tenant` (one reprint) wins, else `only`, else every row minus `skip`. Unknown ids are ignored. Returns [{ t, pos }].
  */
 export function pickStatements(rows, { only = null, skip = null, tenant = null } = {}) {

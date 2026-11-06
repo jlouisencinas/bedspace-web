@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import Statement from './Statement'
 import {
-  rentWaterRows, electricityRows, rentWaterProps, electricityProps,
+  rentWaterProps, electricityProps,
   rentWaterDefaultBillingDate, electricityDefaultBillingDate, REPRINT_BANNER,
 } from '../lib/monthlyStatement'
+import { monthlyBillNo } from '../lib/billNumber'
 
 const todayIso = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
 
@@ -14,13 +15,7 @@ const todayIso = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila
 // result / inputs = computeCutoffBilling result and its loadCutoffBillingInputs inputs for the cutoff.
 export default function MonthlyStatementPreview({ component, cutoff, row, result, inputs, onClose }) {
   const isRW = component === 'RW'
-  const defaultNo = useMemo(() => {
-    const list = isRW ? rentWaterRows(result.perTenant) : electricityRows(result.perTenant)
-    const i = list.findIndex(t => t.id === row.id)
-    return i >= 0 ? i + 1 : 1
-  }, [isRW, result, row])
   const [billingDate, setBillingDate] = useState(() => isRW ? rentWaterDefaultBillingDate(cutoff) : electricityDefaultBillingDate(cutoff))
-  const [billNo, setBillNo] = useState(defaultNo)
   const [preparedBy, setPreparedBy] = useState('')
   const [showReprint, setShowReprint] = useState(true)
 
@@ -32,7 +27,7 @@ export default function MonthlyStatementPreview({ component, cutoff, row, result
 
   const roomRow = inputs.bill.find(b => b.room_id === row.room_id)
   const banner = showReprint ? REPRINT_BANNER(todayIso()) : undefined
-  const no = String(billNo).padStart(4, '0')
+  const no = monthlyBillNo(row.room_no, cutoff) ?? ''
   const propsFor = (copyLabel) => isRW
     ? rentWaterProps({ t: row, cutoff, roomRow, splits: inputs.splits, credit: result.credits.get(row.id), billNo: no, copyLabel, billingDate, preparedBy, banner })
     : electricityProps({ t: row, cutoff, roomRow, splits: inputs.splits, billNo: no, copyLabel, billingDate, preparedBy, banner })
@@ -43,8 +38,6 @@ export default function MonthlyStatementPreview({ component, cutoff, row, result
         <button type="button" className="btn secondary" onClick={onClose}><X size={14} /> Close preview</button>
         <div className="fg" style={{ maxWidth: 150 }}><label>Billing Date</label>
           <input type="date" value={billingDate} onChange={e => setBillingDate(e.target.value)} /></div>
-        <div className="fg" style={{ maxWidth: 110 }}><label>Bill No.</label>
-          <input type="number" value={billNo} onChange={e => setBillNo(Number(e.target.value) || 1)} /></div>
         <div className="fg" style={{ maxWidth: 180 }}><label>Prepared by</label>
           <input type="text" value={preparedBy} onChange={e => setPreparedBy(e.target.value)} placeholder="Name" /></div>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#334155' }}>
