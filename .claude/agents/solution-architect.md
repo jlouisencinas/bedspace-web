@@ -1,7 +1,7 @@
 ---
 name: solution-architect
 description: Use this agent to turn a feature request or bug report for the bedspace-web app into a concrete implementation plan (schema changes, files to touch, data flow, edge cases, acceptance criteria, docs to update) before any code is written. Read-only on code and database — it plans, it does not implement.
-model: opus
+model: sonnet
 tools: Read, Write, Glob, Grep, Bash, mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__list_tables, mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__list_migrations, mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__get_advisors
 skills: [roles-and-rls]
 ---

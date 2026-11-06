@@ -1,7 +1,7 @@
 ---
 name: database-admin
 description: Use this agent for direct work on the live bedspace-web Supabase project (production, the only database) — applying a reviewed migration by the db-migrations procedure, investigating a production error (logs, data, RLS), or verifying as each role that RLS enforces the role model. Has full read-write access via the Supabase MCP server — its actions are immediate and live, not a dry run.
-model: opus
+model: sonnet
 skills: [db-migrations, roles-and-rls]
 ---
 

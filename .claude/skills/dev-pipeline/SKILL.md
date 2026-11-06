@@ -43,14 +43,14 @@ file path." Never paste whole plans or diffs into prompts; pass paths. Wait for 
 | Migrate (L, if a migration exists) | `database-admin` | plan.md, the migration file | db.md |
 | Test | `tester` | plan.md acceptance criteria, impl.md "How to verify" | test-<n>.md |
 
-Models are set in each agent file (architect/engineer/QA/database-admin: opus; tester: sonnet). Override with the Agent
+Models are set in each agent file (engineer: opus; architect/QA/database-admin/tester: sonnet). Override with the Agent
 tool's `model` only for tier S QA (`sonnet`).
 
-## 3. Fix loop (cap: 3 revision rounds)
+## 3. Fix loop (cap: 2 revision rounds)
 - QA FAIL or tester FAIL → send the blocking items **to the same engineer** with `SendMessage` (keeps its context; do not
   start a new engineer), then QA again, then tester again.
 - Tester BLOCKED (`NEEDS SIGN-IN: <role>`) → ask the user to sign in as that role in the Browser pane; not a revision round.
-- After 3 rounds without both passing: stop, report what was tried, what still fails, your recommendation. Leave the
+- After 2 rounds without both passing: stop, report what was tried, what still fails, your recommendation. Leave the
   branch pushed and open the PR as a **draft** (`gh pr create --draft`) so the work isn't lost.
 
 ## 4. Database (tier L)

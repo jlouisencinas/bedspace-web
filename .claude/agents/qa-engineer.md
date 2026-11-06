@@ -1,7 +1,7 @@
 ---
 name: qa-engineer
 description: Use this agent to statically review a code change in bedspace-web against the implementation plan's acceptance criteria — correctness, money exactness, security (RLS, injection, role bypass), non-negotiables, unit tests, docs and consistency with existing patterns — before it goes to functional testing. Read-only; reports findings, never fixes them.
-model: opus
+model: sonnet
 tools: Read, Write, Glob, Grep, Bash, mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__list_tables, mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__list_migrations, mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__get_advisors
 skills: [roles-and-rls]
 ---
