@@ -129,15 +129,16 @@ describe('second-to-last-bill advance credit', () => {
   const t = tenant({ id: 1, rate: 6000, move_in_date: '2026-08-01', move_out_date: '2026-11-15' })
   const adv = (id, amount, extra = {}) => deposit({ id, tenant_id: 1, kind: 'ADVANCE', amount, ref_no: String(5000 + id), ...extra })
 
-  it('credits min(advance, that period\'s rent) on the active cutoff', () => {
+  it('credits min(advance x 15/31 days, that period\'s rent) on the active cutoff', () => {
     const m = advanceCredits({ tenants: [t], cutoff: OCT_ACTIVE, perTenant: [{ id: 1, rent: 6000 }], deposits: [adv(11, 6000)] })
-    expect(m.get(1)).toEqual({ amount: 6000, ref: 'S.I# 5011', allocations: [{ deposit_id: 11, amount: 6000 }], onFile: 6000, remaining: 0 })
-    const part = advanceCredits({ tenants: [t], cutoff: OCT_ACTIVE, perTenant: [{ id: 1, rent: 3000.004 }], deposits: [adv(11, 6000)] })
-    expect(part.get(1)).toMatchObject({ amount: 3000, remaining: 3000 })
+    expect(m.get(1)).toEqual({ amount: 2903.23, ref: 'S.I# 5011', allocations: [{ deposit_id: 11, amount: 2903.23 }], onFile: 6000, remaining: 3096.77, days: 15, windowDays: 31 })
+    const part = advanceCredits({ tenants: [t], cutoff: OCT_ACTIVE, perTenant: [{ id: 1, rent: 2000.004 }], deposits: [adv(11, 6000)] })
+    expect(part.get(1)).toMatchObject({ amount: 2000, remaining: 4000 })
   })
 
   it('allocates across receipts in id order', () => {
-    const m = advanceCredits({ tenants: [t], cutoff: OCT_ACTIVE, perTenant: [{ id: 1, rent: 5000 }], deposits: [adv(12, 2000), adv(11, 4000)] })
+    const late = { ...t, move_out_date: '2026-11-29' }
+    const m = advanceCredits({ tenants: [late], cutoff: OCT_ACTIVE, perTenant: [{ id: 1, rent: 5000 }], deposits: [adv(12, 2000), adv(11, 4000)] })
     expect(m.get(1).allocations).toEqual([{ deposit_id: 11, amount: 4000 }, { deposit_id: 12, amount: 1000 }])
     expect(m.get(1).ref).toBe('S.I# 5012 & S.I# 5011')
   })
@@ -153,7 +154,7 @@ describe('second-to-last-bill advance credit', () => {
 
   it('creditsToStore: HELD receipts only, skips final-billed tenants, allocations add up', () => {
     const rows = creditsToStore({ tenants: [t], cutoff: OCT, perTenant: [{ id: 1, rent: 6000 }], deposits: [adv(11, 4000), adv(12, 2000, { status: 'APPLIED' })] })
-    expect(rows).toEqual([{ tenant_id: 1, cutoff_id: OCT.id, amount: 4000, ref_text: 'S.I# 5011', allocations: [{ deposit_id: 11, amount: 4000 }] }])
+    expect(rows).toEqual([{ tenant_id: 1, cutoff_id: OCT.id, amount: 1935.48, ref_text: 'S.I# 5011', allocations: [{ deposit_id: 11, amount: 1935.48 }] }])
     expect(creditsToStore({ tenants: [t], cutoff: OCT, perTenant: [{ id: 1, rent: 6000 }], deposits: [adv(11, 4000)], finalBills: [{ tenant_id: 1, status: 'FINAL' }] })).toEqual([])
   })
 
