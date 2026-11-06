@@ -367,7 +367,9 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   `pickStatements` in `monthlyStatement.js`): the Bill No. of every statement stays its position in the FULL list (a held
   tenant printed later gets the number it would have had), the header reads "n of M bills · skipped: <names>", and `?only=`
   prints without the reprint notice. Nothing is recomputed per selection: every amount, the roommates' utility shares, the
-  Per Room reconciliation and Collections are exactly the same whether a tenant is held or not.
+  Per Room reconciliation and Collections are exactly the same whether a tenant is held or not. In print, every print page
+  lets the app shell grow to its full height, so every selected statement prints on its own A4 page; before 2026-11-06 the
+  app shell's one-screen height clipped the print to the first page.
 - **Proration:** mid-cycle move-in/move-out/transfer prorates by exact day count against the
   rent/water cutoff window (not a calendar month) — confirmed correct as implemented.
 - **Due-date labels must be dynamic, not hardcoded.** Today `Collections.jsx` shows fixed strings
