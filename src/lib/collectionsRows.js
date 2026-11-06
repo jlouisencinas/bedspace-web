@@ -74,3 +74,48 @@ export function pickPastDueCandidates(cutoffs, lookback = 3) {
     .sort((a, b) => (a.water_start < b.water_start ? 1 : a.water_start > b.water_start ? -1 : 0))
     .slice(0, lookback)
 }
+
+const byWaterStartDesc = (a, b) => (a.water_start ?? '') < (b.water_start ?? '') ? 1 : (a.water_start ?? '') > (b.water_start ?? '') ? -1 : b.id - a.id
+
+/** The cutoff Collections opens: the ?cutoff= id when it is a known cutoff, else the active one, else the newest by water_start. */
+export function resolveCutoffId(cutoffs, param) {
+  const list = cutoffs || []
+  if (list.length === 0) return null
+  const s = param == null ? '' : String(param).trim()
+  const id = /^\d+$/.test(s) ? Number(s) : NaN
+  const known = list.find(c => c.id === id)
+  if (known) return known.id
+  const active = list.find(c => c.is_active)
+  if (active) return active.id
+  return [...list].sort(byWaterStartDesc)[0].id
+}
+
+/** The neighbouring cutoff by water_start ('older' | 'newer'), or null at either end / for an unknown id. */
+export function adjacentCutoffId(cutoffs, id, direction) {
+  const sorted = [...(cutoffs || [])].sort(byWaterStartDesc)
+  const i = sorted.findIndex(c => c.id === id)
+  if (i < 0) return null
+  const j = direction === 'older' ? i + 1 : direction === 'newer' ? i - 1 : -1
+  return j >= 0 && j < sorted.length ? sorted[j].id : null
+}
+
+/**
+ * Past-due banner refresh state, independent of the viewed cutoff. A refresh stays wanted until one run finishes
+ * successfully, so a page load that is superseded (StrictMode double effect, a quick cutoff switch) cannot lose it.
+ * start() -> token; finish(token, ok) -> true when that run is the latest one (no newer start/request) and its result may be shown.
+ */
+export function createPastDueRefresh() {
+  let wanted = true
+  let seq = 0
+  return {
+    // Invalidates a run already in flight: it read data from before the change that asked for this refresh.
+    request() { wanted = true; seq++ },
+    shouldRun() { return wanted },
+    start() { return ++seq },
+    finish(token, ok) {
+      if (token !== seq) return false
+      if (ok) wanted = false
+      return true
+    },
+  }
+}

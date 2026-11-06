@@ -33,6 +33,6 @@ export function deposit({ id, tenant_id, kind, amount, status = 'HELD', ref_no =
   return { id, tenant_id, kind, amount, status, ref_no, received_date: '2026-08-01', payment_mode: 'CASH', reservation_payment_id: null, ...rest }
 }
 
-export function payment({ id, tenant_id, cutoff_id, category, amount, payment_date = '2026-10-20', pay_type = 'PAYMENT' }) {
-  return { id, tenant_id, cutoff_id, category, amount, payment_date, pay_type }
+export function payment({ id, tenant_id, cutoff_id, category, amount, payment_date = '2026-10-20', pay_type = 'PAYMENT', ...rest }) {
+  return { id, tenant_id, cutoff_id, category, amount, payment_date, pay_type, ...rest }
 }

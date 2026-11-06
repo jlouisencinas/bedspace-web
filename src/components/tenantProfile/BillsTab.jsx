@@ -3,6 +3,7 @@ import { CreditCard } from 'lucide-react'
 import { dbToCents } from '../../lib/receiptLines'
 import { groupPaymentsByCutoff, centsToPeso } from '../../lib/tenantHistory'
 import { reissueBlocker } from '../../lib/finalBill'
+import { formatPaymentRefs } from '../../lib/paymentRefs'
 import StatementHistory from './StatementHistory'
 
 const CATEGORY_LABEL = { RENT_WATER: 'Rent & Water', ELECTRICITY: 'Electricity', OTHER: 'Other' }
@@ -136,7 +137,7 @@ export default function BillsTab({
                     <span className="font-semibold text-ink">{centsToPeso(g.totalCents)}</span>
                   </div>
                   <table className="payments-table">
-                    <thead><tr><th>Date</th><th>Category</th><th>Type</th><th>Amount</th><th>Notes</th></tr></thead>
+                    <thead><tr><th>Date</th><th>Category</th><th>Type</th><th>Amount</th><th>S.I# / T.R#</th><th>Notes</th></tr></thead>
                     <tbody>
                       {g.rows.map(p => (
                         <tr key={p.id}>
@@ -152,6 +153,7 @@ export default function BillsTab({
                             )}
                           </td>
                           <td className={dbToCents(p.amount) < 0 ? 'text-danger-text' : ''}>{centsToPeso(dbToCents(p.amount))}</td>
+                          <td className="text-ink-muted">{formatPaymentRefs(p) || '—'}</td>
                           <td className="text-ink-muted">{p.notes || '—'}</td>
                         </tr>
                       ))}
