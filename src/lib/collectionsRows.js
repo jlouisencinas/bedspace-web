@@ -9,6 +9,35 @@
 const cents = n => Math.round((Number(n) || 0) * 100)
 
 /**
+ * One Collections cell (Rent+Water or Electricity) from billed vs. net paid, compared in integer cents.
+ * state: 'none' (nothing billed, nothing paid) | 'unpaid' (net paid <= 0) | 'partial' (0 < paid < billed)
+ *        | 'paid' (paid == billed) | 'over' (paid > billed, incl. an advance paid before any bill).
+ */
+export function cellStatus({ billed, paid }) {
+  const bC = cents(billed), pC = cents(paid)
+  let state
+  if (pC <= 0) state = bC > 0 ? 'unpaid' : 'none'
+  else if (pC < bC) state = 'partial'
+  else if (pC === bC) state = 'paid'
+  else state = 'over'
+  return {
+    state,
+    billed: bC / 100,
+    paid: pC / 100,
+    remaining: Math.max(bC - pC, 0) / 100,
+    over: (pC > 0 ? Math.max(pC - bC, 0) : 0) / 100,
+  }
+}
+
+/** Cells of one component ('rw' | 'elec') that are fully paid (paid or overpaid); partial payers are not counted. */
+export function countFullyPaid(rows, comp) {
+  return (rows || []).filter(r => {
+    const st = r.status?.[comp]?.state ?? cellStatus({ billed: r.billed?.[comp], paid: r.paid?.[comp] }).state
+    return st === 'paid' || st === 'over'
+  }).length
+}
+
+/**
  * perTenant:       computeCutoffBilling(...).perTenant
  * tenants:         fetchTenants() rows (display fields: name, beds.rooms.room_no, beds.bed_letter, beds.bed_location)
  * payments:        fetchPaymentsForCutoff(cutoffId), VOID rows included (negative amounts lower paid)
@@ -52,6 +81,10 @@ export function buildCollectionRows({ perTenant = [], tenants = [], payments = [
       billed: { rw: billedRwC / 100, elec: billedElC / 100 },
       paid: { rw: paidRwC / 100, elec: paidElC / 100 },
       remaining: { rw: Math.max(billedRwC - paidRwC, 0) / 100, elec: Math.max(billedElC - paidElC, 0) / 100 },
+      status: {
+        rw: cellStatus({ billed: billedRwC / 100, paid: paidRwC / 100 }),
+        elec: cellStatus({ billed: billedElC / 100, paid: paidElC / 100 }),
+      },
     }
   })
 }
