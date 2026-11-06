@@ -1383,6 +1383,8 @@ for monitoring rent collection status across all tenants at once.
 - **Late payments (2026-11-06):** a payment recorded in Collections against a past cutoff (§12) carries that cutoff's id,
   so it lowers that cutoff's outstanding here. Billed figures come from the shared loader `src/lib/cutoffBilling.js`
   (same as Billing and Collections, mid-period transfers included).
+- **S.I# / T.R# (2026-11-06):** payment numbers recorded in Collections (§12) appear in the tenant profile Bills tab; they
+  carry no amount, so no figure here changes.
 - **Feeds the Dashboard's projected-vs-actual summary widget (§10)** — the two share one
   calculation (`src/lib/collectionsSummary.js`), so there's no room for the numbers to drift apart.
   This must continue to hold once payments are recorded via the new multi-select/batch-save flow
@@ -1446,6 +1448,31 @@ Tenants module.
   - **Figures:** billed amounts come from the shared loader `src/lib/cutoffBilling.js` (same as Billing, so mid-period
     transfers are included), net of the second-to-last-bill advance credit; row logic in `src/lib/collectionsRows.js`.
   - A late payment never moves `tenants.last_pay_eom` / `last_pay_10th` back to an earlier date than they hold.
+  - **Picker (2026-11-06):** the cutoff dropdown sits next to the "Collections" title with older/newer arrow buttons
+    (neighbours by `water_start`; `resolveCutoffId` / `adjacentCutoffId` in `collectionsRows.js`). The viewed cutoff is
+    in the URL (`/collections?cutoff=<id>`), so a reload or a shared link reopens it; an unknown id and the bare
+    `/collections` open the active cutoff (else the newest). Every figure on the page, the save bar's "Recording against"
+    cutoff and the past-due "View" links follow the viewed cutoff. A payment of a past-due bill is recorded while viewing
+    that bill's cutoff and attaches to it (`payments.cutoff_id`), never to the active one: that cutoff's outstanding and
+    banner total drop by the amount, the active cutoff and the Dashboard are unchanged.
+- **S.I# / T.R# per payment — DONE (2026-11-06).** Every staged Rent + Water / Electricity cell has two optional inputs,
+  "S.I#" (service invoice) and "T.R#" (temporary receipt). They are stored bare (prefix stripped: "S.I# 123", "SI No. 77",
+  "#9" -> the number) on that payment row, `payments.si_no` / `payments.tr_no` (`database/migrations/payments_receipt_refs.sql`),
+  blank = null. Rules (`src/lib/paymentRefs.js`, same as the advance/deposit receipt numbers of §5): max 30 characters, at
+  least one digit, no '·' or control characters, a T.R# typed in the S.I# box (or the reverse) is refused. One invalid
+  number blocks the whole batch before anything is written; the message names the tenant, category and field. The same
+  number may repeat across tenants/categories (one invoice can cover several). The activity note of the payment includes
+  them.
+  - **Display:** under "✓ Paid" each payment still in force (void rows and undone payments hidden) is listed as
+    "₱amount · date · S.I# x · T.R# y", or "no S.I#/T.R# yet". The tenant profile Bills tab shows an "S.I# / T.R#" column.
+  - **Correcting later:** "Edit" / "+ add numbers" on a listed payment calls the RPC `set_payment_receipt_refs`. Staff
+    (`user`) may fill an empty number only; changing or clearing a recorded number is admin-only. Void rows, undone
+    payments and non-positive amounts cannot be edited. It is compare-and-set (someone else's change in between ->
+    "reload"). Each change writes a `Payment Ref Corrected` activity row with the old and new numbers; a no-op writes
+    nothing. `payments` still has no UPDATE policy; the trigger `trg_payments_refs_only_update` refuses any update that
+    touches another column (§14).
+  - The live `payments` table also has two older columns, `method` and `reference_no` (not in `init.sql`); the app does
+    not use them.
 
 ## 13. UI/UX & theming
 - **Dark / Light theme toggle.** Confirmed requirement: the app gets a theme toggle (dark and
@@ -1489,7 +1516,9 @@ Tenants module.
   cannot violate this — reducing bed count below currently-occupied beds is hard-blocked.
 - Never delete billing/payment records — void/adjust only, for audit trail. **This directly
   governs the new Collections undo feature (§12)** — undo must be a void/compensating entry, never
-  a `DELETE`.
+  a `DELETE`. The S.I#/T.R# numbers of a payment (§12) are the only thing that can change on a saved payment row
+  (RPC `set_payment_receipt_refs`); the `trg_payments_refs_only_update` trigger refuses any change to the amount, date,
+  category, cutoff or void link, for every role.
 
 ## 15. Confirmed implementation backlog
 Concrete follow-up work items surfaced by this requirements pass, for the dev pipeline to pick up:

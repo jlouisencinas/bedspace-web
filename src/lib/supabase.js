@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import { notifyAsync } from './notify'
 import { normalizeLines, computeTotals, round2, assertCreditRows, verifyBillAgainstDb, vacatedRecord, normalizeReceiptRef, missingReceiptRefs, applyReceiptRefs, applyCheckRefs, asHeldForReissue, finalBillShapeProblem } from './finalBill'
 import { assertAppCurrent } from './appVersionCheck'
+import { formatPaymentRefs } from './paymentRefs'
 import { finalCutoffForUtility, newLeaseMoveOutProblem, finalBilledStamps, planReattachment, cutoffDeleteBlocker, readingOnFileFor } from './stay'
 import { parseMoney, moneyProblem, centsToNumber } from './receiptLines'
 import { deriveBedStatuses, activeTenantOnBedMessage, isActiveTenantPerBedViolation } from './bedEligibility'
@@ -258,6 +259,8 @@ export async function recordPaymentsBatch(entries) {
     cutoff_id:    e.cutoffId ?? null,
     pay_type:     e.payType || payTypeFor(e.category),
     notes:        e.notes || null,
+    si_no:        e.siNo ?? null,
+    tr_no:        e.trNo ?? null,
   }))
 
   const { data: inserted, error: pErr } = await supabase
@@ -289,7 +292,7 @@ export async function recordPaymentsBatch(entries) {
     const catLabel = e.category === 'ELECTRICITY' ? 'Electricity'
                    : e.category === 'RENT_WATER'  ? 'Rent + Water'
                    : 'Other'
-    const noteParts = [e._cutoffName, e.notes].filter(Boolean)
+    const noteParts = [e._cutoffName, formatPaymentRefs({ si_no: e.siNo, tr_no: e.trNo }), e.notes].filter(Boolean)
     return {
       activity_type: `Payment - ${catLabel}`,
       tenant_id:     e.tenantId,
@@ -345,6 +348,20 @@ export async function voidPayments(paymentRows) {
   if (aErr) throw aErr
 
   return inserted
+}
+
+const PAYMENT_REFS_RPC_MISSING = 'The database update for S.I#/T.R# numbers on payments has not been applied yet. Apply database/migrations/payments_receipt_refs.sql first.'
+
+// S.I#/T.R# of a saved payment (values already normalised by paymentRefs.js). Compare-and-set on the numbers the screen showed;
+// the RPC refuses viewers/guards, a staff change of an existing number, void/voided rows, and any non-number column change.
+export async function setPaymentReceiptRefs({ paymentId, expectedSi, expectedTr, si, tr }) {
+  await assertAppCurrent()
+  const { data, error } = await supabase.rpc('set_payment_receipt_refs', {
+    p_payment_id: paymentId, p_expected_si: expectedSi ?? null, p_expected_tr: expectedTr ?? null, p_si: si ?? null, p_tr: tr ?? null,
+  })
+  if (error) throw isMissingRpc(error) ? new Error(PAYMENT_REFS_RPC_MISSING) : error
+  if (!data) throw new Error('The S.I#/T.R# numbers were not saved (not permitted for your role). Reload the page and try again.')
+  return data
 }
 
 export async function fetchPayments(tenantId) {

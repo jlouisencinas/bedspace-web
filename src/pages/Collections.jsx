@@ -1,12 +1,15 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   fetchCutoffs, fetchTenants, recordPaymentsBatch, voidPayments,
-  fetchPaymentsForCutoff, fetchAdvanceCreditData,
+  fetchPaymentsForCutoff, fetchAdvanceCreditData, setPaymentReceiptRefs,
 } from '../lib/supabase'
 import { loadCutoffBillingInputs, computeCutoffBilling } from '../lib/cutoffBilling'
-import { buildCollectionRows, cutoffOutstanding, pickPastDueCandidates } from '../lib/collectionsRows'
+import { buildCollectionRows, cutoffOutstanding, pickPastDueCandidates, resolveCutoffId, adjacentCutoffId, createPastDueRefresh } from '../lib/collectionsRows'
+import { normalizePaymentRef, formatPaymentRefs, effectivePaymentLines, canEditPaymentRef, validateStagedRefs } from '../lib/paymentRefs'
+import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
-import { Droplets, Zap, Wallet, AlertTriangle } from 'lucide-react'
+import { Droplets, Zap, Wallet, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react'
 import { windowLastDay } from '../lib/cutoffDates'
 
 const r2 = n => Math.round((Number(n) || 0) * 100) / 100
@@ -28,7 +31,77 @@ function lastPaymentDate(pays) {
 
 // ── Select-then-batch pay cell ─────────────────────────────────────────────────
 
-function PayCell({ row, category, pays, billed, selected, onToggle, onAmountChange }) {
+const refInputCls = 'w-32 px-2.5 py-1.5 text-[12px] rounded-lg bg-surface disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-navy-500/25 transition-colors'
+
+function StagedRefInputs({ row, category, staged, onRefChange }) {
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <input
+        type="text" aria-label="S.I#" value={staged.siNo} maxLength={60}
+        onChange={e => onRefChange(row, category, 'siNo', e.target.value)}
+        placeholder="S.I# (optional)" className={refInputCls} style={{ border: '1px solid var(--border)' }}
+      />
+      <input
+        type="text" aria-label="T.R#" value={staged.trNo} maxLength={60}
+        onChange={e => onRefChange(row, category, 'trNo', e.target.value)}
+        placeholder="T.R# (optional)" className={refInputCls} style={{ border: '1px solid var(--border)' }}
+      />
+    </div>
+  )
+}
+
+function PaymentLines({ pays, refEdit }) {
+  const lines = effectivePaymentLines(pays)
+  if (lines.length === 0) return null
+  const { role, editing, saving } = refEdit
+  return (
+    <div className="space-y-1">
+      {lines.map(l => {
+        const refs = formatPaymentRefs(l)
+        const perm = canEditPaymentRef({ role, payment: l })
+        const isEditing = editing?.paymentId === l.id
+        const fieldOk = f => { const p = canEditPaymentRef({ role, payment: l, field: f }); return p.canFill || p.canChange }
+        return (
+          <div key={l.id} className="space-y-1">
+            <div className="text-[11px] text-ink-muted flex items-center gap-1.5 flex-wrap">
+              <span>{fmtPeso(l.amount)} · {fmtDate(l.payment_date)}</span>
+              {refs ? <span>· {refs}</span> : <span className="text-ink-faint italic">· no S.I#/T.R# yet</span>}
+              {!isEditing && (perm.canFill || perm.canChange) && (
+                <button
+                  onClick={() => refEdit.start(l)}
+                  disabled={saving}
+                  className="text-[11px] text-ink-faint hover:text-navy-600 underline transition-colors disabled:opacity-50"
+                >
+                  {refs ? 'Edit' : '+ add numbers'}
+                </button>
+              )}
+            </div>
+            {isEditing && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <input
+                  type="text" aria-label="S.I#" value={editing.si} maxLength={60} disabled={saving || !fieldOk('si')}
+                  onChange={e => refEdit.change('si', e.target.value)}
+                  placeholder="S.I# (optional)" className={refInputCls} style={{ border: '1px solid var(--border)' }}
+                />
+                <input
+                  type="text" aria-label="T.R#" value={editing.tr} maxLength={60} disabled={saving || !fieldOk('tr')}
+                  onChange={e => refEdit.change('tr', e.target.value)}
+                  placeholder="T.R# (optional)" className={refInputCls} style={{ border: '1px solid var(--border)' }}
+                />
+                <button onClick={refEdit.save} disabled={saving} className="btn primary text-[12px] disabled:opacity-50">
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+                <button onClick={refEdit.cancel} disabled={saving} className="btn secondary text-[12px] disabled:opacity-50">Cancel</button>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function PayCell({ row, category, pays, billed, selected, onToggle, onAmountChange, onRefChange, refEdit }) {
   const netPaid = r2(pays.reduce((s, p) => s + Number(p.amount || 0), 0))
   const key     = `${row.id}:${category}`
   const staged  = selected.get(key)
@@ -50,15 +123,19 @@ function PayCell({ row, category, pays, billed, selected, onToggle, onAmountChan
             {staged ? 'cancel' : '+ add'}
           </button>
         </div>
+        <PaymentLines pays={pays} refEdit={refEdit} />
         {staged && (
-          <input
-            type="text"
-            value={staged.amount}
-            onChange={e => onAmountChange(row, category, e.target.value)}
-            placeholder="₱ 0.00"
-            className="w-32 px-2.5 py-1.5 text-[13px] rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-navy-500/25 transition-colors"
-            style={{ border: '1px solid var(--border)' }}
-          />
+          <>
+            <input
+              type="text"
+              value={staged.amount}
+              onChange={e => onAmountChange(row, category, e.target.value)}
+              placeholder="₱ 0.00"
+              className="w-32 px-2.5 py-1.5 text-[13px] rounded-lg bg-surface focus:outline-none focus:ring-2 focus:ring-navy-500/25 transition-colors"
+              style={{ border: '1px solid var(--border)' }}
+            />
+            <StagedRefInputs row={row} category={category} staged={staged} onRefChange={onRefChange} />
+          </>
         )}
       </div>
     )
@@ -84,6 +161,7 @@ function PayCell({ row, category, pays, billed, selected, onToggle, onAmountChan
           style={{ border: '1px solid var(--border)' }}
         />
       </label>
+      {staged && <StagedRefInputs row={row} category={category} staged={staged} onRefChange={onRefChange} />}
     </div>
   )
 }
@@ -106,41 +184,63 @@ export default function Collections() {
   const [batchDate,  setBatchDate]  = useState(todayStr())
   const [batchNotes, setBatchNotes] = useState('')
   const [saving,     setSaving]     = useState(false)
+  const [refEditing, setRefEditing] = useState(null)
+  const [refSaving,  setRefSaving]  = useState(false)
 
+  const { role } = useAuth()
   const { show, ToastEl } = useToast()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const cutoffParam = searchParams.get('cutoff')
+  const loadSeq = useRef(0)
+  const pastDueRefresh = useRef(null)
+  if (!pastDueRefresh.current) pastDueRefresh.current = createPastDueRefresh()
 
-  useEffect(() => { load(null) }, [])
+  // The URL is the source of the viewed cutoff: the picker writes ?cutoff=<id>, a bare /collections opens the active cutoff.
+  useEffect(() => {
+    setSelected(new Map())
+    setRefEditing(null)
+    load(cutoffParam, { refreshPastDue: false })
+  }, [cutoffParam])
 
   // refreshPastDue is false when only the picker changed: the banner is cached for the page session, saves/undos refresh it.
+  // The banner is cutoff-independent, so it still refreshes from a load that a newer cutoff load superseded.
   async function load(id = selectedId, { refreshPastDue = true } = {}) {
+    if (refreshPastDue) pastDueRefresh.current.request()
+    const seq = ++loadSeq.current
+    const fresh = () => seq === loadSeq.current
     setLoading(true)
     let shared = null
     try {
       const [cuts, allTenants, adv] = await Promise.all([fetchCutoffs(), fetchTenants(), fetchAdvanceCreditData()])
-      setCutoffs(cuts); setTenants(allTenants); setAdvData(adv)
       shared = { cuts, tenants: allTenants, advData: adv }
-
-      const target = cuts.find(c => c.id === id) || cuts.find(c => c.is_active) || cuts[0] || null
-      setSelectedId(target?.id ?? null)
-      if (target) {
-        const [inputs, pays] = await Promise.all([
-          loadCutoffBillingInputs(target, { tenants: allTenants, advData: adv }),
-          fetchPaymentsForCutoff(target.id),
-        ])
-        const result = computeCutoffBilling(target, inputs)
-        setBillingPerTenant(result.perTenant)
-        setCredits(result.credits)
-        setHasBill(inputs.bill.length > 0)
-        setCutoffPayments(pays)
-      } else {
-        setBillingPerTenant([]); setCredits(new Map()); setHasBill(false); setCutoffPayments([])
+      if (fresh()) {
+        setCutoffs(cuts); setTenants(allTenants); setAdvData(adv)
+        const targetId = resolveCutoffId(cuts, id)
+        const target = cuts.find(c => c.id === targetId) || null
+        setSelectedId(target?.id ?? null)
+        if (target) {
+          const [inputs, pays] = await Promise.all([
+            loadCutoffBillingInputs(target, { tenants: allTenants, advData: adv }),
+            fetchPaymentsForCutoff(target.id),
+          ])
+          if (fresh()) {
+            const result = computeCutoffBilling(target, inputs)
+            setBillingPerTenant(result.perTenant)
+            setCredits(result.credits)
+            setHasBill(inputs.bill.length > 0)
+            setCutoffPayments(pays)
+          }
+        } else {
+          setBillingPerTenant([]); setCredits(new Map()); setHasBill(false); setCutoffPayments([])
+        }
       }
-    } catch(e) { show(e.message, 'error') }
-    setLoading(false)
-    if (shared && refreshPastDue) loadPastDue(shared)
+    } catch(e) { if (fresh()) show(e.message, 'error') }
+    if (fresh()) setLoading(false)
+    if (shared && pastDueRefresh.current.shouldRun()) loadPastDue(shared)
   }
 
   async function loadPastDue({ cuts, tenants: allTenants, advData: adv }) {
+    const token = pastDueRefresh.current.start()
     setPastDue(prev => ({ ...prev, loading: true, error: null }))
     try {
       const items = await Promise.all(pickPastDueCandidates(cuts).map(async c => {
@@ -152,20 +252,22 @@ export default function Collections() {
         const rows = buildCollectionRows({ perTenant, tenants: allTenants, payments: pays, adjustments: amountsOf(cr), includeInactive: true })
         return { cutoff: c, ...cutoffOutstanding(rows) }
       }))
-      setPastDue({ loading: false, items: items.filter(i => i.total > 0), error: null })
+      if (pastDueRefresh.current.finish(token, true)) setPastDue({ loading: false, items: items.filter(i => i.total > 0), error: null })
     } catch(e) {
-      setPastDue({ loading: false, items: [], error: e.message || String(e) })
+      if (pastDueRefresh.current.finish(token, false)) setPastDue({ loading: false, items: [], error: e.message || String(e) })
     }
   }
 
   function changeCutoff(id) {
-    if (saving || id === selectedId) return
-    setSelected(new Map())
-    load(id, { refreshPastDue: false })
+    if (saving || refSaving || id == null || id === selectedId) return
+    setSearchParams(prev => { const next = new URLSearchParams(prev); next.set('cutoff', String(id)); return next }, { replace: true })
   }
 
   const selectedCutoff = cutoffs.find(c => c.id === selectedId) || null
   const isPast = !!selectedCutoff && !selectedCutoff.is_active
+  const olderId = adjacentCutoffId(cutoffs, selectedId, 'older')
+  const newerId = adjacentCutoffId(cutoffs, selectedId, 'newer')
+  const pickerLocked = saving || refSaving
 
   // Second-to-last-bill advance credit (credits) is an adjustment against rent, so the amount to collect is net of it.
   const collectionRows = useMemo(() =>
@@ -182,7 +284,7 @@ export default function Collections() {
       if (next.has(key)) {
         next.delete(key)
       } else {
-        next.set(key, { amount: defaultAmount > 0 ? String(defaultAmount) : '', tenant: row, category })
+        next.set(key, { key, amount: defaultAmount > 0 ? String(defaultAmount) : '', siNo: '', trNo: '', tenant: row, category })
       }
       return next
     })
@@ -198,7 +300,49 @@ export default function Collections() {
     })
   }
 
+  function updateRef(row, category, field, rawValue) {
+    setSelected(prev => {
+      const key = `${row.id}:${category}`
+      if (!prev.has(key)) return prev
+      const next = new Map(prev)
+      next.set(key, { ...prev.get(key), [field]: rawValue })
+      return next
+    })
+  }
+
   function clearSelection() { setSelected(new Map()) }
+
+  const refEdit = {
+    role,
+    editing: refEditing,
+    saving: refSaving || saving,
+    start: line => setRefEditing({ paymentId: line.id, si: line.si_no ?? '', tr: line.tr_no ?? '', expectedSi: line.si_no ?? null, expectedTr: line.tr_no ?? null }),
+    change: (field, value) => setRefEditing(prev => (prev ? { ...prev, [field]: value } : prev)),
+    cancel: () => setRefEditing(null),
+    save: handleSaveRefs,
+  }
+
+  async function handleSaveRefs() {
+    if (!refEditing || refSaving) return
+    const si = normalizePaymentRef('SI', refEditing.si)
+    const tr = normalizePaymentRef('TR', refEditing.tr)
+    if (si.error || tr.error) {
+      show(si.error ? `S.I#: ${si.error}` : `T.R#: ${tr.error}`, 'error')
+      return
+    }
+    setRefSaving(true)
+    try {
+      const res = await setPaymentReceiptRefs({
+        paymentId: refEditing.paymentId, expectedSi: refEditing.expectedSi, expectedTr: refEditing.expectedTr, si: si.value, tr: tr.value,
+      })
+      setRefEditing(null)
+      await load()
+      show(res?.changed === false ? 'No change.' : 'S.I#/T.R# saved.', 'success')
+    } catch(e) {
+      show(e.message, 'error')
+    }
+    setRefSaving(false)
+  }
 
   async function handleUndo(insertedRows) {
     try {
@@ -219,6 +363,11 @@ export default function Collections() {
       show('Every selected amount must be greater than ₱0.', 'error')
       return
     }
+    const refErrors = validateStagedRefs(staged)
+    if (refErrors.length > 0) {
+      show(refErrors[0].message + (refErrors.length > 1 ? ` (+${refErrors.length - 1} more)` : '') + ' Nothing was saved.', 'error')
+      return
+    }
 
     const entries = staged.map(s => ({
       tenantId:     s.tenant.id,
@@ -226,6 +375,8 @@ export default function Collections() {
       amount:       parseAmt(s.amount),
       paymentDate:  batchDate,
       notes:        batchNotes.trim() || null,
+      siNo:         normalizePaymentRef('SI', s.siNo).value,
+      trNo:         normalizePaymentRef('TR', s.trNo).value,
       cutoffId:     selectedCutoff?.id   || null,
       _tenantName:  s.tenant.name,
       _roomNo:      s.tenant.room_no,
@@ -270,7 +421,37 @@ export default function Collections() {
       <div className="page-header">
         <div>
           <h1 className="page-title flex items-center gap-2 flex-wrap">
-            Collections <small>{selectedCutoff?.name ?? ''}</small>
+            Collections
+            {cutoffs.length > 0 ? (
+              <span className="inline-flex items-center rounded-lg border border-line bg-surface overflow-hidden">
+                <button
+                  type="button" aria-label="Older cutoff" title="Older cutoff"
+                  onClick={() => changeCutoff(olderId)} disabled={pickerLocked || olderId == null}
+                  className="px-1.5 py-1.5 text-ink-muted hover:text-navy-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <select
+                  value={selectedId ?? ''}
+                  onChange={e => changeCutoff(Number(e.target.value))}
+                  disabled={pickerLocked}
+                  aria-label="Cutoff"
+                  className="px-2 py-1 text-[14px] font-semibold bg-surface text-ink border-x border-line disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-navy-700/25 transition-colors"
+                  style={{ backgroundColor: 'var(--surface)', color: 'var(--text-primary)', borderColor: 'var(--border)' }}
+                >
+                  {cutoffs.map(c => (
+                    <option key={c.id} value={c.id}>{c.name}{c.is_active ? ' (active)' : ''}</option>
+                  ))}
+                </select>
+                <button
+                  type="button" aria-label="Newer cutoff" title="Newer cutoff"
+                  onClick={() => changeCutoff(newerId)} disabled={pickerLocked || newerId == null}
+                  className="px-1.5 py-1.5 text-ink-muted hover:text-navy-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </span>
+            ) : <small>{selectedCutoff?.name ?? ''}</small>}
             {isPast && (
               <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-warning-bg text-warning-text border border-warning-border">
                 Past cutoff
@@ -287,19 +468,6 @@ export default function Collections() {
             </p>
           )}
         </div>
-        {cutoffs.length > 0 && (
-          <select
-            value={selectedId ?? ''}
-            onChange={e => changeCutoff(Number(e.target.value))}
-            disabled={saving}
-            aria-label="Cutoff"
-            className="px-3 py-2 border border-line rounded-lg text-[13px] bg-surface disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-navy-700/25 focus:border-navy-600 transition-colors"
-          >
-            {cutoffs.map(c => (
-              <option key={c.id} value={c.id}>{c.name}{c.is_active ? ' (active)' : ''}</option>
-            ))}
-          </select>
-        )}
       </div>
 
       {advData.error && (
@@ -325,7 +493,7 @@ export default function Collections() {
                 {' · '}
                 <button
                   onClick={() => changeCutoff(i.cutoff.id)}
-                  disabled={saving}
+                  disabled={pickerLocked}
                   className="underline font-semibold hover:text-navy-600 disabled:opacity-50"
                 >
                   View
@@ -385,6 +553,7 @@ export default function Collections() {
                         row={r} category="RENT_WATER" pays={r.rwPays}
                         billed={r.billed.rw}
                         selected={selected} onToggle={toggleCell} onAmountChange={updateAmount}
+                        onRefChange={updateRef} refEdit={refEdit}
                       />
                     </td>
                     <td>
@@ -392,6 +561,7 @@ export default function Collections() {
                         row={r} category="ELECTRICITY" pays={r.elecPays}
                         billed={r.billed.elec}
                         selected={selected} onToggle={toggleCell} onAmountChange={updateAmount}
+                        onRefChange={updateRef} refEdit={refEdit}
                       />
                     </td>
                   </tr>
