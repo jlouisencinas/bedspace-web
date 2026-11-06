@@ -233,16 +233,30 @@ const advanceReceipts = (deposits, tenantIds, statuses) =>
   deposits.filter(d => tenantIds.has(d.tenant_id) && d.kind === 'ADVANCE' && statuses.includes(d.status))
 
 /**
+ * Pro-rated second-to-last-bill advance credit, integer cents.
+ * windowDays W = days of the second-to-last window (water_end exclusive); days D = days of the stay in the next window
+ * up to and including the move-out day (capped at W). credit = min(half-up advance x D / W, rent); the rest of the
+ * advance (advanceCents - creditCents, exact) is left for the final bill.
+ */
+export function proratedAdvanceCents({ advanceCents, rentCents, waterStart, waterEnd, moveOut }) {
+  const windowDays = dayNum(iso10(waterEnd)) - dayNum(iso10(waterStart))
+  const days = Math.min(Math.max(dayNum(iso10(moveOut)) - dayNum(iso10(waterEnd)) + 1, 0), Math.max(windowDays, 0))
+  const prorated = windowDays > 0 && days > 0 && advanceCents > 0 ? prorateCents(advanceCents, days, windowDays) : 0
+  const creditCents = rentCents == null ? prorated : Math.max(Math.min(prorated, rentCents), 0)
+  return { creditCents, days, windowDays }
+}
+
+/**
  * Second-to-last-bill advance credit for the tenants billed in `cutoff`.
- * Credit = min(advance on file, that period's rent): an adjustment, never cash.
+ * Credit = min(advance on file x D / W, that period's rent) (proratedAdvanceCents): an adjustment, never cash.
  *  - A stored `advance_credits` row for (tenant, cutoff) always wins and is immutable.
  *  - A CLOSED cutoff with no stored row has no credit.
  *  - The ACTIVE cutoff (or `live: true`) is detected live from the move-out date, but a tenant whose
  *    advance was already credited in another cutoff (stored row) gets nothing: the advance is consumed.
  * Whole-room tenancies sum the advance of every same-name bed against the combined rent.
- * Returns Map(tenantId -> { amount, ref, allocations, onFile, remaining }) where onFile is the advance on file
- * (receipts the credit drew on plus the tenant's other advance receipts) and remaining = onFile - amount, the
- * part that is left for the final bill.
+ * Returns Map(tenantId -> { amount, ref, allocations, onFile, remaining, days?, windowDays? }) where onFile is the advance
+ * on file (receipts the credit drew on plus the tenant's other advance receipts) and remaining = onFile - amount, the
+ * part that is left for the final bill. days / windowDays (the pro-ration) are set on live credits only.
  */
 export function advanceCredits({ tenants, cutoff, perTenant, deposits, stored = [], live = null, receiptStatuses = ['HELD', 'APPLIED'] }) {
   const out = new Map()
@@ -260,9 +274,15 @@ export function advanceCredits({ tenants, cutoff, perTenant, deposits, stored = 
         .filter(d => d.kind === 'ADVANCE' && (allocIds.has(d.id) || (group.some(g => g.id === d.tenant_id) && receiptStatuses.includes(d.status))))
         .reduce((s, d) => s + toCents(d.amount), 0)
       const amountC = toCents(mine.amount)
+      // The day count is printed only while the current date still reproduces the frozen amount (never for pre-pro-rating rows).
+      const pro = billPosition(t, cutoff) === 'SECOND_TO_LAST' ? proratedAdvanceCents({
+        advanceCents: onFileC, rentCents: toCents(row.rent),
+        waterStart: cutoff.water_start, waterEnd: cutoff.water_end, moveOut: t.actual_move_out_date || t.move_out_date,
+      }) : null
       out.set(t.id, {
         amount: amountC / 100, ref: mine.ref_text || '', allocations: mine.allocations || [],
         onFile: Math.max(onFileC, amountC) / 100, remaining: Math.max(onFileC - amountC, 0) / 100,
+        ...(pro && pro.creditCents === amountC ? { days: pro.days, windowDays: pro.windowDays } : {}),
       })
       continue
     }
@@ -272,7 +292,11 @@ export function advanceCredits({ tenants, cutoff, perTenant, deposits, stored = 
     const receiptIds = new Set(receipts.map(r => r.id))
     if (stored.some(s => s.tenant_id === t.id || (s.allocations || []).some(a => receiptIds.has(a.deposit_id)))) continue
     const totalC = receipts.reduce((s, r) => s + toCents(r.amount), 0)
-    const alloc = allocate(receipts, Math.min(totalC, toCents(row.rent)))
+    const pro = proratedAdvanceCents({
+      advanceCents: totalC, rentCents: toCents(row.rent),
+      waterStart: cutoff.water_start, waterEnd: cutoff.water_end, moveOut: t.actual_move_out_date || t.move_out_date,
+    })
+    const alloc = allocate(receipts, pro.creditCents)
     const cents = alloc.reduce((s, a) => s + a.cents, 0)
     if (cents > 0) {
       out.set(t.id, {
@@ -280,6 +304,7 @@ export function advanceCredits({ tenants, cutoff, perTenant, deposits, stored = 
         ref: refText('ADVANCE', receipts.filter(r => alloc.some(a => a.id === r.id))),
         allocations: alloc.map(a => ({ deposit_id: a.id, amount: a.cents / 100 })),
         onFile: totalC / 100, remaining: (totalC - cents) / 100,
+        days: pro.days, windowDays: pro.windowDays,
       })
     }
   }

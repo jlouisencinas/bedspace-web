@@ -6,12 +6,14 @@
  *   Provider cost     = master-line bill (Manila Water / MERALCO)
  *   Standard rate     = bill ÷ consumption
  *   Bedspace rate     = standard × (1 + markup%)   (or manual override)
- *   Room collections  = Σ billed room amounts (Method B) — ties to room billing
+ *   Room collections  = Σ billed room amounts (Method B, submeters × bedspace rate). This is the amount
+ *                       TO BE COLLECTED, not payments received: tenants pay late, so payments are never used.
  *   Overhead          = unbilled rooms (e.g. 702 mgmt, 706) consumption × standard
  *                       + common areas (Lobby/2nd Floor/Roof Deck) × standard
  *   Commercial        = commercial area consumption × bedspace. WATER is billed to the commercial
  *                       tenant and counted as a collection; ELECTRIC is still pending (not counted)
- *   Variance          = (Room collections + commercial water) − Provider cost   (− = shortfall)
+ *   To be collected   = Room collections + commercial water   (`toCollect`; `collections` is the same value)
+ *   Variance          = To be collected − Provider cost   (− = shortfall, + = surplus)
  */
 import { computeBilling } from './billing'
 
@@ -53,10 +55,11 @@ export function computePnL(cutoff, billRows, interims, tenants, areaReadings, sp
     // Commercial WATER is billed to the commercial tenant (see billing.js special tenants), so it
     // counts as a collection. Commercial ELECTRIC is still pending and stays out of variance.
     const commercialCollected = util === 'WATER' ? commercial : 0
-    const collections = roomCollections + commercialCollected
-    const variance = collections - cost
+    const toCollect = roomCollections + commercialCollected
+    const collections = toCollect
+    const variance = toCollect - cost
 
-    out[util] = { cost, standard, bedspace, mainCons, roomCollections, commercialCollected, collections, overhead, commercial, variance }
+    out[util] = { cost, standard, bedspace, mainCons, roomCollections, commercialCollected, toCollect, collections, overhead, commercial, variance }
   }
   out.totalVariance = out.WATER.variance + out.ELECTRIC.variance
   return out

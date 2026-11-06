@@ -473,12 +473,18 @@ function Spin({ h }) { return <div className="loading-screen" style={h ? { heigh
 // ── P&L card ──────────────────────────────────────────────────────────────────
 function PnLCard({ pnl, utility }) {
   const isShortfall = pnl.variance < 0
-  const Row = ({ label, val, cls }) => (
-    <div className="flex justify-between py-1 text-[13px]">
-      <span className="text-ink-muted">{label}</span>
-      <span className={`font-semibold ${cls || 'text-ink'}`}>{val}</span>
+  const Row = ({ label, val, cls, hint }) => (
+    <div className="flex justify-between gap-2 py-1 text-[13px]">
+      <span className="text-ink-muted">
+        {label}
+        {hint && <span className="block text-[10px] text-ink-faint leading-tight">{hint}</span>}
+      </span>
+      <span className={`font-semibold whitespace-nowrap ${cls || 'text-ink'}`}>{val}</span>
     </div>
   )
+  const formula = utility === 'WATER'
+    ? `To be collected ${peso(pnl.toCollect)} (rooms ${peso(pnl.roomCollections)} + commercial ${peso(pnl.commercialCollected)}) − Provider cost ${peso(pnl.cost)}`
+    : `To be collected ${peso(pnl.toCollect)} − Provider cost ${peso(pnl.cost)} (commercial electric pending, not included)`
   return (
     <div className={`card p-4 mb-4 border-t-[3px] ${isShortfall ? 'border-t-red-600' : 'border-t-emerald-600'}`}>
       <div className="text-[10px] font-extrabold text-ink-faint uppercase tracking-widest mb-3 flex items-center gap-1">
@@ -487,7 +493,7 @@ function PnLCard({ pnl, utility }) {
       <div className="grid grid-cols-2 gap-x-7">
         <div>
           <Row label="Provider cost" val={peso(pnl.cost)} cls="text-danger-text" />
-          <Row label="Room collections" val={peso(pnl.roomCollections)} cls="text-success-text" />
+          <Row label="To be collected (submeters)" hint="billed to tenants, not payments received" val={peso(pnl.roomCollections)} cls="text-success-text" />
         </div>
         <div>
           <Row label="Overhead (standard)" val={peso(pnl.overhead)} />
@@ -502,6 +508,7 @@ function PnLCard({ pnl, utility }) {
           {isShortfall ? '−' : '+'}{peso(Math.abs(pnl.variance))} {isShortfall ? 'Shortfall' : 'Surplus'}
         </span>
       </div>
+      <div className="text-[11px] text-ink-faint mt-1 text-right">{formula}</div>
     </div>
   )
 }
