@@ -889,8 +889,8 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   cadence as regular bedspace tenants**. **Commercial WATER — done:** the Commercial area reading is
   linked (`area_readings.tenant_id`) to the single active `COMMERCIAL` tenant when saved from
   `Utilities.jsx`; `billing.js` then bills that tenant `consumption × bedspace rate`, and the utility
-  P&L counts it as a collection, so water variance = (room collections + commercial water) − provider
-  cost. The commercial tenant's `rate` stays a separate fixed monthly charge. **Commercial ELECTRIC is
+  P&L counts it as part of the amount to be collected, so water variance = (rooms to be collected +
+  commercial water) − provider cost. The commercial tenant's `rate` stays a separate fixed monthly charge. **Commercial ELECTRIC is
   still pending** (not linked, not in variance). Actual collections for a cutoff = bedspace tenants +
   the commercial tenant.
 - **Final-bill utilities vs the cutoff statement.** A leaver's final bill is stay-anchored (reading-to-reading, split by days
@@ -904,6 +904,14 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
 - **Judgment-laden "losing"/"earning" wording removed from the utility P&L variance display —
   DONE.** `Utilities.jsx` now renders the room-collections-vs-provider-cost variance as
   "Shortfall" / "Surplus" instead of "losing" / "earning."
+- **Utility P&L variance = amount to be collected − provider cost (since 2026-11-06).** The P&L uses the
+  amount **billed** to tenants per the bedspace submeters (Method B, submeters × bedspace rate), never
+  payments received: tenants pay late, so payments would understate a cutoff. On the Utilities P&L card
+  the row is "To be collected (submeters)" (hint: billed to tenants, not payments received; it was
+  "Room collections"), and a formula line under VARIANCE shows the parts: Water "To be collected ₱A
+  (rooms ₱R + commercial ₱C) − Provider cost ₱P", Electric "To be collected ₱R − Provider cost ₱P"
+  (commercial electric pending, not included). Sign unchanged: negative = Shortfall, positive = Surplus;
+  the variance values stored in snapshots and shown on Dashboard/Reports are unchanged.
 - **Deleting a "Move-out readings this cutoff" entry (Billing) needs a confirmation step and
   proper approval.** These are the interim meter readings captured at a tenant's move-out for the
   active cutoff. Today's delete button removes one with no confirmation. Confirmed requirement:

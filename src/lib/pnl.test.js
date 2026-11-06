@@ -50,4 +50,30 @@ describe('computePnL', () => {
     expect(pnl.ELECTRIC.variance).toBeCloseTo(2200 - 3000, 9)
     expect(pnl.totalVariance).toBeCloseTo(pnl.WATER.variance + pnl.ELECTRIC.variance, 9)
   })
+
+  it('variance = amount to be collected per the submeters − provider cost, never payments', () => {
+    const { perRoom } = computeBilling(cutoff, billRows, [], tenants)
+    const billedWater = perRoom.reduce((s, r) => s + (r.water?.sum || 0), 0)
+    const billedElec = perRoom.reduce((s, r) => s + (r.electric?.sum || 0), 0)
+
+    expect(pnl.WATER.toCollect).toBeCloseTo(billedWater + pnl.WATER.commercialCollected, 9)
+    expect(pnl.WATER.toCollect).toBeCloseTo(pnl.WATER.roomCollections + 110, 9)
+    expect(pnl.ELECTRIC.toCollect).toBeCloseTo(billedElec, 9)
+    expect(pnl.ELECTRIC.toCollect).toBe(pnl.ELECTRIC.roomCollections)
+    expect(pnl.WATER.variance).toBe(pnl.WATER.toCollect - pnl.WATER.cost)
+    expect(pnl.ELECTRIC.variance).toBe(pnl.ELECTRIC.toCollect - pnl.ELECTRIC.cost)
+    expect(pnl.WATER.collections).toBe(pnl.WATER.toCollect)
+
+    // Tenants who have paid nothing vs. paid in full: the P&L is the same (it takes no payments input).
+    const paidTenants = tenants.map(t => ({ ...t, amount_paid: 99999, payments: [{ amount: 99999 }], balance: 0 }))
+    const unpaidTenants = tenants.map(t => ({ ...t, amount_paid: 0, payments: [], balance: 5000 }))
+    const paid = computePnL(cutoff, billRows, [], paidTenants, areas)
+    const unpaid = computePnL(cutoff, billRows, [], unpaidTenants, areas)
+    for (const u of ['WATER', 'ELECTRIC']) {
+      expect(paid[u].toCollect).toBe(pnl[u].toCollect)
+      expect(unpaid[u].toCollect).toBe(pnl[u].toCollect)
+      expect(paid[u].variance).toBe(pnl[u].variance)
+      expect(unpaid[u].variance).toBe(pnl[u].variance)
+    }
+  })
 })
