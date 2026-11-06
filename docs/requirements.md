@@ -256,7 +256,7 @@ its own "Could not load …: <message>" if its read fails (the other tabs still 
     one-month stay ("billed on the final bill"); no row ("no charge computed"). A warning shows when the Billing page places the
     tenant in their current room for a period they spent in another room (transfer in an earlier cutoff), and "Check readings
     for Room X" when that room does not reconcile. Preview (admin and user) opens the printed statement, identical to the
-    print page, with Billing Date / Bill No. / Prepared by and the REPRINT notice (on by default); admin also gets Print
+    print page, with Billing Date / Prepared by and the REPRINT notice (on by default); admin also gets Print
     (`/print/rent-water` or `/print/electricity` `?cutoff=&tenant=`). Preview and Print are offered only when the component
     is over ₱0.01 (the print filter), and not for Rent + Water while advance credits failed to load. Nothing is written or
     cached for the Billing page.
@@ -353,8 +353,13 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   pages and the profile preview. Since 2026-11-05 the print pages include mid-period transfers like the Billing page (before,
   they left them out: a transferred tenant's printout showed different amounts than the screen, or no statement at all).
 - **Single-tenant reprint.** `/print/rent-water?cutoff=X&tenant=ID` (and `/print/electricity`) prints one tenant's statement
-  (for a whole-room rental, the primary bed's id). The Bill No. defaults to that statement's position in the full print, stays
-  editable, and the header reads "1 bill · … · reprint". A "Show reprint notice" checkbox (on by default) prints
+  (for a whole-room rental, the primary bed's id). The header reads "1 bill · … · reprint". **Billing No. (2026-11-06):**
+  every monthly statement (Rent + Water and Electricity, print pages and profile preview) carries
+  `<room_no>-<YYYY>-<MM>`, e.g. `301-2026-09`, built by `monthlyBillNo` in `src/lib/billNumber.js`: the statement row's room
+  (trimmed, as stored) and the cutoff's billing month = the month of `water_start` (fallback `electric_start`; blank if
+  neither is set), so the Electricity statement of the "Sep 2026" cutoff is also `-2026-09`. It is derived at print time,
+  not stored, not editable, and the same in a full print, a selection or a reprint (before, it was a 0001-style counter of
+  the statement's position in the print). A "Show reprint notice" checkbox (on by default) prints
   "REPRINT - recalculated <date> from current data; may differ from the statement originally issued" on both copies, as a
   small two-line note in the top-right corner under the copy label (it takes no height, so nothing on the fixed half-page copy
   is pushed off). Back returns to the previous page. A tenant with no statement there gets "No … statement for this tenant on
@@ -364,8 +369,7 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   print icon (`?only=<id>`), "Print all", "Print selected (n)" (`?skip=<held ids>`) and "Clear holds". Unticking a row holds
   it: a "Held" badge shows, and the hold is kept in this browser only (`localStorage`, per cutoff and category; not shared
   with other staff). The print pages accept `?only=` / `?skip=` (comma-separated tenant ids, unknown ids ignored;
-  `pickStatements` in `monthlyStatement.js`): the Bill No. of every statement stays its position in the FULL list (a held
-  tenant printed later gets the number it would have had), the header reads "n of M bills · skipped: <names>", and `?only=`
+  `pickStatements` in `monthlyStatement.js`; a selection does not change any Billing No.), the header reads "n of M bills · skipped: <names>", and `?only=`
   prints without the reprint notice. Nothing is recomputed per selection: every amount, the roommates' utility shares, the
   Per Room reconciliation and Collections are exactly the same whether a tenant is held or not.
 - **Proration:** mid-cycle move-in/move-out/transfer prorates by exact day count against the
