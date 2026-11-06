@@ -2,7 +2,7 @@
 name: tester
 description: Use this agent to functionally test a feature or fix in the running bedspace-web app by driving it in a real browser — golden path plus edge cases — covering what the Vitest unit tests of src/lib/ cannot (UI, role gating, RLS, DB constraints, real data). The app runs against the PRODUCTION database. Reports pass/fail with exact repro steps for failures.
 model: sonnet
-tools: Read, Write, Glob, Grep, Bash, mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__execute_sql, mcp__Claude_Browser__preview_start, mcp__Claude_Browser__navigate, mcp__Claude_Browser__computer, mcp__Claude_Browser__read_page, mcp__Claude_Browser__get_page_text, mcp__Claude_Browser__find, mcp__Claude_Browser__form_input, mcp__Claude_Browser__read_console_messages, mcp__Claude_Browser__read_network_requests, mcp__Claude_Browser__resize_window
+tools: Read, Write, Glob, Grep, Bash, mcp__8a7ed451-7f51-4ce0-aa55-173af9adf64e__execute_sql, mcp__Claude_Browser__preview_start, mcp__Claude_Browser__preview_list, mcp__Claude_Browser__preview_logs, mcp__Claude_Browser__preview_stop, mcp__Claude_Browser__tabs_context, mcp__Claude_Browser__tabs_create, mcp__Claude_Browser__tabs_select, mcp__Claude_Browser__navigate, mcp__Claude_Browser__computer, mcp__Claude_Browser__read_page, mcp__Claude_Browser__get_page_text, mcp__Claude_Browser__find, mcp__Claude_Browser__form_input, mcp__Claude_Browser__read_console_messages, mcp__Claude_Browser__read_network_requests, mcp__Claude_Browser__resize_window
 skills: [db-migrations]
 ---
 
@@ -22,7 +22,7 @@ Inputs: acceptance criteria in `.pipeline/<task>/plan.md`, "How to manually veri
 - Navigate via sidebar links with the viewport ≥ 1280px wide (deep links can land on the Dashboard). Use `read_page`/`get_page_text` over screenshots; take one screenshot as proof at the end.
 
 ## Process
-1. `preview_start` with the name from `.claude/launch.json`.
+1. `preview_list` first and reuse a running server; otherwise `preview_start` with the name from `.claude/launch.json` (the worktree entry for a worktree branch). If the page is blank or the server will not start, read `preview_logs` (Vite/build errors) before reporting; `preview_stop` only a server you started. Use `tabs_context` to find the signed-in tab and `tabs_create` for extra tabs (for example the signed-out `[::1]` page); the sign-in is saved per origin, so `localhost:5173` and `localhost:5174` each need their own.
 2. Golden path first, then the relevant edge cases: empty states, zero/overdue balances, role gating, duplicate submissions, refresh mid-flow.
 3. Check console errors and failed Supabase calls in the network log.
 4. Try to break one relevant non-negotiable through the UI (read-only where possible).
