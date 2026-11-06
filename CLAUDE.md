@@ -40,7 +40,7 @@ npm run build     # -> dist/
 - `src/components/` shared UI (MoveInFlow (the one Move In path: Tenants + Bed Map), MoveInModal, MoveOutModal, TransferModal, Statement, DrillDownModal, ReceiptLinesInput,
   ReissueFinalBillModal (admin Void & re-issue of a final bill), ReservationLedgerModal, RoomReconfigureModal, AddRoomModal, RetireRoomModal, MonthlyStatementPreview, Guard*/Visitor* …);
   `tenantProfile/` holds the TenantProfileModal tabs (BillsTab, StatementHistory, StayTimeline, MaintenanceTab, VisitorsTab).
-- `src/lib/` data layer: `supabase.js` (queries + move-out/receipt writes), `billing.js`, `cutoffBilling.js` (the one
+- `src/lib/` data layer: `supabase.js` (queries + move-out/receipt writes), `billing.js`, `collectionsRows.js` (Collections rows, cutoff outstanding, past-due candidates), `cutoffBilling.js` (the one
   loader + compute for a cutoff's statements: Billing, print pages, profile history), `monthlyStatement.js` (printed
   statement props), `tenantStatements.js` (profile statement history), `finalBill.js`, `reservation.js` (reservation target date, Move In defaults), `stay.js`, `stayExtension.js` (late move-out: P500/night after the contract date, 12:00 PM checkout),
   `utilityPieces.js`, `receiptLines.js`, `moveOutData.js`, `maintenanceTickets.js` (ticket target/place helpers), `pnl.js`,
