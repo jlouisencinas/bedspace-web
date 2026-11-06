@@ -10,6 +10,7 @@ import {
   normalizeReceiptRef, receiptRefsNeeded, missingReceiptRefs, applyReceiptRefs, applyCheckRefs,
 } from '../lib/finalBill'
 import { classifyStay, computeCoverage, appStart, localToday } from '../lib/stay'
+import { hasExtension, extensionNights, nightsWarning } from '../lib/stayExtension'
 import AdvanceCheckBox from './AdvanceCheckBox'
 import CombinedBillSummary from './CombinedBillSummary'
 import FinalBillPreview from './FinalBillPreview'
@@ -57,6 +58,7 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
   const [vacated, setVacated] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [pendingReqs, setPendingReqs] = useState([])
+  const [afterNoon, setAfterNoon] = useState(null)
 
   const [pre, setPre] = useState(null)
   const [preErr, setPreErr] = useState('')
@@ -125,6 +127,10 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
     return row && row.prev != null ? Number(row.prev) : null
   }
   const minWater = minOf('WATER'), minElec = minOf('ELECTRIC')
+  // The contract date is the planned move-out stored when the flow opened (the bill uses that, not the editable field).
+  const lateBeds = group.filter(g => hasExtension({ contractISO: iso10(g.move_out_date) || null, actualISO: form.actual_move_out_date }))
+  const late = lateBeds.length > 0
+  const contractDate = iso10((lateBeds[0] || group[0]).move_out_date) || null
 
   const set = (k, v) => {
     setError('')
@@ -151,6 +157,7 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
     if (!form.electric_reading) return 'Electric meter reading is required.'
     if (minElec !== null && Number(form.electric_reading) < minElec)
       return `Electric reading (${form.electric_reading}) cannot be less than the period's starting reading (${minElec}).`
+    if (late && afterNoon == null) return 'Choose whether the tenant vacated by 12:00 PM or after 12:00 PM (stay extension).'
     if (preErr) return `Could not load billing data: ${preErr}`
     if (!pre || pre.date !== actual) return 'Billing data is still loading. Try again in a moment.'
     return null
@@ -167,7 +174,7 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
       deposits: b.deposits, storedCredits: b.storedCredits, payments: b.payments, plannedMoveOut: b.plannedMoveOut,
       waived: new Map(todo.map(g => [g.id, !!beds[g.id]?.waived])), siblingIds: b.siblingIds,
       startOverrides: { WATER: useOverrides.WATER === '' ? undefined : useOverrides.WATER, ELECTRIC: useOverrides.ELECTRIC === '' ? undefined : useOverrides.ELECTRIC },
-      isAdmin,
+      isAdmin, vacatedAfterNoon: late ? afterNoon : null,
     })
     const blocked = [...new Set(todo.flatMap(g => res.drafts.get(g.id).blocking))]
     if (blocked.length) { setBeds({}); setSig(''); return { blocked } }
@@ -196,7 +203,7 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
     return { ok: true }
   }
 
-  const sigOf = () => `${form.actual_move_out_date}|${form.water_reading}|${form.electric_reading}`
+  const sigOf = () => `${form.actual_move_out_date}|${form.water_reading}|${form.electric_reading}|${late ? afterNoon : ''}`
 
   async function goToBill() {
     const err = validateStep1()
@@ -387,7 +394,7 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
           fieldName:  'move_out',
           oldValue:   { is_active: true, move_out_date: first.move_out_date || null },
           newValue: {
-            _action: 'process_move_out', ...ref(first), ...moveOut, _bill: mkBill(first),
+            _action: 'process_move_out', ...ref(first), ...moveOut, _vacated_after_noon: late ? afterNoon : null, _bill: mkBill(first),
             ...(todo.length > 1 ? { _siblings: todo.slice(1).map(g => ({ ...ref(g), _bill: mkBill(g) })) } : {}),
           },
           reason: reason.trim(),
@@ -609,6 +616,30 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
                 </div>
               )}
 
+              {late && (
+                <div className="fg full">
+                  <div className="bg-info-bg border border-info-border rounded-xl px-3 py-2.5 text-[12px] text-info-text space-y-1.5">
+                    <div className="font-semibold">
+                      Stay extension: the actual move-out is after the contract move-out {contractDate}. Rent stops on {contractDate}; the nights after it are
+                      charged at ₱500.00 per night ({extensionNights({ contractISO: contractDate, actualISO: form.actual_move_out_date, afterNoon: false })} night(s) if vacated by 12:00 PM,
+                      {' '}{extensionNights({ contractISO: contractDate, actualISO: form.actual_move_out_date, afterNoon: true })} if after).
+                    </div>
+                    <div className="flex gap-4 flex-wrap text-ink">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input type="radio" name="vacated-noon" checked={afterNoon === false} onChange={() => { setError(''); setAfterNoon(false) }} /> Vacated by 12:00 PM
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input type="radio" name="vacated-noon" checked={afterNoon === true} onChange={() => { setError(''); setAfterNoon(true) }} /> Vacated after 12:00 PM
+                      </label>
+                      <span className="text-ink-muted">(required)</span>
+                    </div>
+                    {nightsWarning(extensionNights({ contractISO: contractDate, actualISO: form.actual_move_out_date, afterNoon: afterNoon === true })) && (
+                      <div className="text-warning-text">{nightsWarning(extensionNights({ contractISO: contractDate, actualISO: form.actual_move_out_date, afterNoon: afterNoon === true }))}</div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <div className="fg full">
                 <label>Final Amount Paid (PHP, optional){multi ? ` — recorded once, on Bed ${bedOf(group[0])}` : ''}</label>
                 <input type="number" value={form.amount_paid} onChange={e => set('amount_paid', e.target.value)} placeholder="0.00" min="0" step="0.01" />
@@ -745,7 +776,7 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
           {!locked && step === 1 && <button type="button" className="btn secondary" onClick={onClose}>Cancel</button>}
           {!locked && step > 1 && <button type="button" className="btn secondary" disabled={busy} onClick={() => setPreviewOpen(true)}><Printer size={14} /> Preview bill</button>}
           {!locked && step > 1 && <button type="button" className="btn secondary" disabled={busy} onClick={() => { setError(''); for (const g of todo) patchBed(g.id, { editIdx: null }); setStep(step - 1) }}>Back</button>}
-          {!locked && step === 1 && <button type="button" className="btn primary" disabled={busy || !!pendingText} onClick={goToBill}>{busy ? 'Building bill…' : 'Next: Final bill'}</button>}
+          {!locked && step === 1 && <button type="button" className="btn primary" disabled={busy || !!pendingText || (late && afterNoon == null)} onClick={goToBill}>{busy ? 'Building bill…' : 'Next: Final bill'}</button>}
           {!locked && step === 2 && <button type="button" className="btn primary" disabled={busy} onClick={goToConfirm}>{busy ? 'Checking the database…' : 'Next: Confirm'}</button>}
           {!locked && step === 3 && (
             <button type="button" className="btn danger" disabled={busy || (isAdmin && !vacated)} onClick={confirm}>
@@ -759,8 +790,8 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
   )
 }
 
-// One bed's section of the final bill editor.
-function BedBill({ g, s, multi, isAdmin, staleNote, actual, check, refNeeded, refs, setRef, refFlow, refIndex, patchBed, patchLine, toggleWaive, setAmount, addLine, removeLine }) {
+// One bed's section of the final bill editor (also used by the final bill re-issue).
+export function BedBill({ g, s, multi, isAdmin, staleNote, actual, check, refNeeded, refs, setRef, refFlow, refIndex, patchBed, patchLine, toggleWaive, setAmount, addLine, removeLine }) {
   const { draft, lines, waived, waiveReason, preparedBy, editIdx } = s
   const totals = totalsOf(lines)
   const net = totals.net_amount
@@ -816,6 +847,9 @@ function BedBill({ g, s, multi, isAdmin, staleNote, actual, check, refNeeded, re
 
       <div className="text-ink-muted space-y-0.5">
         <div>{kindText}.</div>
+        {draft.extension && (
+          <div>Stay extension: {draft.extension.nights} night(s) after the contract move-out {draft.extension.contract_date} (vacated {draft.extension.after_noon ? 'after' : 'by'} 12:00 PM), rent charged up to that date.</div>
+        )}
         <div>
           Covers: water {cov.water.covered.length ? cov.water.covered.join(', ') : 'no period'} · electricity {cov.electric.covered.length ? cov.electric.covered.join(', ') : 'no period'}.
           {' '}Everything below is filled in from existing data; click a row to adjust it, or add a line.

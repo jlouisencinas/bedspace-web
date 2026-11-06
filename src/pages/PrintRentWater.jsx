@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { useSearchParams, useNavigate, Link } from 'react-router-dom'
 import { fetchCutoffs } from '../lib/supabase'
 import { loadCutoffBillingInputs, computeCutoffBilling, NO_ADVANCE_DATA } from '../lib/cutoffBilling'
-import { rentWaterRows, rentWaterProps, rentWaterDefaultBillingDate, REPRINT_BANNER } from '../lib/monthlyStatement'
+import { rentWaterRows, rentWaterProps, rentWaterDefaultBillingDate, REPRINT_BANNER, pickStatements, parseIdList } from '../lib/monthlyStatement'
 import Statement from '../components/Statement'
 
 const todayIso = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
@@ -15,6 +15,11 @@ export default function PrintRentWater() {
   const cutoffId = Number(params.get('cutoff'))
   // ?tenant=<id>: reprint of one tenant's statement (from the tenant profile)
   const tenantId = params.get('tenant') ? Number(params.get('tenant')) : null
+  // ?only=<ids> / ?skip=<ids>: a selection from Billing (held tenants print later). Bill numbers stay those of the full list.
+  const onlyKey = params.get('only') || '', skipKey = params.get('skip') || ''
+  const only = useMemo(() => parseIdList(onlyKey), [onlyKey])
+  const skip = useMemo(() => parseIdList(skipKey), [skipKey])
+  const selection = tenantId == null && (only.length > 0 || skip.length > 0)
 
   const [cutoff, setCutoff] = useState(null)
   const [inputs, setInputs] = useState(EMPTY_INPUTS)
@@ -49,16 +54,18 @@ export default function PrintRentWater() {
 
   const allStatements = useMemo(() => rentWaterRows(perTenant), [perTenant])
   // Bill numbers keep their position in the full print, so a single reprint gets the same default number.
-  const statements = useMemo(() => {
-    const numbered = allStatements.map((t, i) => ({ t, pos: i }))
-    return tenantId == null ? numbered : numbered.filter(x => x.t.id === tenantId)
-  }, [allStatements, tenantId])
+  const statements = useMemo(() => pickStatements(allStatements, { tenant: tenantId, only, skip }), [allStatements, tenantId, only, skip])
+  const skippedNames = useMemo(() => {
+    const shown = new Set(statements.map(x => x.t.id))
+    return allStatements.filter(t => !shown.has(t.id)).map(t => t.name)
+  }, [allStatements, statements])
 
   if (loading) return <div className="loading-screen"><div className="spinner" /></div>
   if (!cutoff) return <div className="page"><p>{loadError ? `Could not load this cutoff: ${loadError}` : 'Cutoff not found.'} <Link to="/billing">Back</Link></p></div>
 
   const advData = inputs.advData
   const startNo = billStart ?? (tenantId != null && statements.length ? statements[0].pos + 1 : 1)
+  const billNoOf = (pos, i) => String(selection ? startNo + pos : startNo + i).padStart(4, '0')
   const banner = tenantId != null && showReprint ? REPRINT_BANNER(todayIso()) : undefined
 
   const propsFor = (t, billNo, copyLabel) => rentWaterProps({
@@ -84,7 +91,10 @@ export default function PrintRentWater() {
           </label>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{ fontSize: 12, color: '#64748B' }}>{statements.length} bill(s) · Rent + Water{tenantId != null ? ' · reprint' : ''}</span>
+          <span style={{ fontSize: 12, color: '#64748B' }}>
+            {selection ? `${statements.length} of ${allStatements.length} bills` : `${statements.length} bill(s)`} · Rent + Water{tenantId != null ? ' · reprint' : ''}
+            {selection && only.length === 0 && skippedNames.length > 0 && <> · skipped: {skippedNames.join(', ')}</>}
+          </span>
           <button className="btn primary" onClick={() => window.print()}>🖨 Print / Save PDF</button>
         </div>
       </div>
@@ -107,8 +117,8 @@ export default function PrintRentWater() {
         </div>
       )}
 
-      {statements.map(({ t }, i) => {
-        const billNo = String(startNo + i).padStart(4, '0')
+      {statements.map(({ t, pos }, i) => {
+        const billNo = billNoOf(pos, i)
         return (
           <div className="a4page" key={t.id}>
             <Statement {...propsFor(t, billNo, "Tenant's Copy")} />

@@ -35,6 +35,30 @@ export const periodLabelIncl = (start, end) => {
 export const rentWaterRows   = (perTenant) => perTenant.filter(t => (t.rent + t.water + (t.addonRentWater || 0)) > 0.01)
 export const electricityRows = (perTenant) => perTenant.filter(t => (t.elec + (t.addonElectric || 0)) > 0.01)
 
+/** "3,5,x,5" -> [3, 5]: positive integer ids, each once; anything else is ignored. */
+export function parseIdList(v) {
+  const out = []
+  for (const part of String(v ?? '').split(',')) {
+    const s = part.trim()
+    if (!/^\d+$/.test(s)) continue
+    const n = Number(s)
+    if (n > 0 && !out.includes(n)) out.push(n)
+  }
+  return out
+}
+
+/**
+ * The statements to print, numbered by their position in the FULL list (so a held tenant printed later keeps the same Bill No.):
+ * `tenant` (one reprint) wins, else `only`, else every row minus `skip`. Unknown ids are ignored. Returns [{ t, pos }].
+ */
+export function pickStatements(rows, { only = null, skip = null, tenant = null } = {}) {
+  const numbered = (rows || []).map((t, pos) => ({ t, pos }))
+  if (tenant != null) return numbered.filter(x => x.t.id === tenant)
+  if (only && only.length) return numbered.filter(x => only.includes(x.t.id))
+  if (skip && skip.length) return numbered.filter(x => !skip.includes(x.t.id))
+  return numbered
+}
+
 export const rentWaterDefaultBillingDate   = (cutoff) => addDays(cutoff.water_end, -1)
 export const electricityDefaultBillingDate = (cutoff) => cutoff.electric_end   // reading is taken ON the 10th
 

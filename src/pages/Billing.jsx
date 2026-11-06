@@ -4,6 +4,7 @@ import {
   setRoomSplit, saveAddon, deleteAddon,
 } from '../lib/supabase'
 import { loadCutoffBillingInputs, computeCutoffBilling } from '../lib/cutoffBilling'
+import { rentWaterRows, electricityRows } from '../lib/monthlyStatement'
 import { billPosition, advanceConsumed } from '../lib/finalBill'
 import { cacheBilling } from '../lib/billingCache'
 import { useToast } from '../components/Toast'
@@ -35,8 +36,21 @@ export default function Billing() {
   const [addonTenant, setAddonTenant] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)
   const { show, ToastEl } = useToast()
+  const { isAdmin } = useAuth()
 
   const cutoff = cutoffs.find(c => c.id === cutoffId)
+
+  // Held statements (print later): browser-local, per cutoff and category. Printing a selection never changes any amount.
+  const holdKey = cutoffId ? `billing-holds:${cutoffId}:${billCat}` : null
+  const [holds, setHolds] = useState([])
+  useEffect(() => {
+    if (!holdKey) return
+    try { setHolds((JSON.parse(localStorage.getItem(holdKey) || '[]') || []).filter(Number.isFinite)) } catch { setHolds([]) }
+  }, [holdKey])
+  function saveHolds(next) {
+    setHolds(next)
+    try { if (next.length) localStorage.setItem(holdKey, JSON.stringify(next)); else localStorage.removeItem(holdKey) } catch { /* private mode: holds last until reload */ }
+  }
 
   useEffect(() => {
     fetchCutoffs().then(cs => {
@@ -80,6 +94,12 @@ export default function Billing() {
     if (!cutoff || !perTenant.length) return new Map()
     return advanceConsumed({ tenants, cutoff, perTenant, stored: advData.stored, cutoffs })
   }, [cutoff, perTenant, tenants, advData, cutoffs])
+
+  const printPath = billCat === 'RENT_WATER' ? '/print/rent-water' : '/print/electricity'
+  const printable = useMemo(() => new Set((billCat === 'RENT_WATER' ? rentWaterRows(perTenant) : electricityRows(perTenant)).map(t => t.id)), [perTenant, billCat])
+  const heldPrintable = holds.filter(id => printable.has(id))
+  const selectedCount = printable.size - heldPrintable.length
+  const toggleHold = (id) => saveHolds(holds.includes(id) ? holds.filter(x => x !== id) : [...holds, id])
 
   const splitFlags = useMemo(() => {
     const s = new Set(); splits.forEach(x => s.add(`${x.room_id}|${x.utility}`)); return s
@@ -148,6 +168,16 @@ export default function Billing() {
           ))}
         </div>
 
+        {view === 'tenants' && isAdmin && cutoffId && (
+          <div className="flex gap-1.5 items-center flex-wrap">
+            <Link className="btn-xs blue inline-flex items-center gap-1" to={`${printPath}?cutoff=${cutoffId}`}><Printer size={11} /> Print all</Link>
+            {selectedCount > 0 && heldPrintable.length > 0
+              ? <Link className="btn-xs blue inline-flex items-center gap-1" to={`${printPath}?cutoff=${cutoffId}&skip=${heldPrintable.join(',')}`}><Printer size={11} /> Print selected ({selectedCount})</Link>
+              : <button className="btn-xs" disabled><Printer size={11} /> Print selected ({selectedCount})</button>}
+            {holds.length > 0 && <button className="btn-xs" onClick={() => saveHolds([])} title="Holds are kept in this browser only">Clear holds ({holds.length})</button>}
+          </div>
+        )}
+
         {/* Category toggle — only in Per Tenant view */}
         {view === 'tenants' && (
           <div className="flex gap-1 p-1 bg-surface-3 rounded-lg">
@@ -180,6 +210,12 @@ export default function Billing() {
           <table>
             <thead>
               <tr>
+                {isAdmin && (
+                  <th className="w-8" title="Print: untick to hold a statement and print it later">
+                    <input type="checkbox" checked={printable.size > 0 && heldPrintable.length === 0} disabled={!printable.size}
+                      onChange={() => saveHolds(heldPrintable.length === 0 ? [...new Set([...holds, ...printable])] : holds.filter(id => !printable.has(id)))} />
+                  </th>
+                )}
                 <th>Tenant</th><th>Room</th><th>Bed</th>
                 {billCat === 'RENT_WATER' ? (
                   <>
@@ -209,8 +245,19 @@ export default function Billing() {
                 const elecTotal = (t.elec  || 0) + (t.addonElectric || 0)
                 return (
                   <tr key={t.id}>
+                    {isAdmin && (
+                      <td className="whitespace-nowrap">
+                        {printable.has(t.id) && (
+                          <span className="inline-flex items-center gap-1">
+                            <input type="checkbox" checked={!holds.includes(t.id)} onChange={() => toggleHold(t.id)} title="Print this statement" />
+                            <Link to={`${printPath}?cutoff=${cutoffId}&only=${t.id}`} title="Print only this statement" className="text-ink-faint hover:text-ink"><Printer size={11} /></Link>
+                          </span>
+                        )}
+                      </td>
+                    )}
                     <td className="td-name">
                       {t.name}
+                      {isAdmin && printable.has(t.id) && holds.includes(t.id) && <span className="badge ml-1.5 bg-warning-bg text-warning-text" style={{ border: '1px solid var(--warning-border)' }} title="Held: not in Print selected; print it later on its own">Held</span>}
                       {t.settled     && <span className="badge oor ml-1.5">moved out</span>}
                       {billCat === 'RENT_WATER' && !t.special && cutoff && (cutoff.is_active
                         ? billPosition(tenantById.get(t.id), cutoff) === 'SECOND_TO_LAST'
@@ -305,7 +352,7 @@ export default function Billing() {
             <tfoot>
               {billCat === 'RENT_WATER' ? (
                 <tr className="bg-surface-2 border-t-2 border-navy-700">
-                  <td colSpan={3} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wide">Totals</td>
+                  <td colSpan={isAdmin ? 4 : 3} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wide">Totals</td>
                   <td className="text-right font-extrabold">{peso(totals.rent)}</td>
                   <td colSpan={2}></td>
                   <td></td>
@@ -315,7 +362,7 @@ export default function Billing() {
                 </tr>
               ) : (
                 <tr className="bg-surface-2 border-t-2 border-amber-500">
-                  <td colSpan={3} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wide">Totals</td>
+                  <td colSpan={isAdmin ? 4 : 3} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wide">Totals</td>
                   <td colSpan={2}></td>
                   <td></td>
                   <td className="text-right font-extrabold">{peso(totals.elec)}</td>

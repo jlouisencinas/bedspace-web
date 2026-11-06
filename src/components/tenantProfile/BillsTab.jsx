@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { CreditCard } from 'lucide-react'
 import { dbToCents } from '../../lib/receiptLines'
 import { groupPaymentsByCutoff, centsToPeso } from '../../lib/tenantHistory'
+import { reissueBlocker } from '../../lib/finalBill'
 import StatementHistory from './StatementHistory'
 
 const CATEGORY_LABEL = { RENT_WATER: 'Rent & Water', ELECTRICITY: 'Electricity', OTHER: 'Other' }
@@ -28,7 +29,7 @@ export default function BillsTab({
   bills, billsLoading, billsError,
   deposits, depLoadError,
   canPrint, isAdmin, voidId, voidReason, billBusy,
-  onStartVoid, onVoidReason, onConfirmVoid, onCancelVoid, onGoToAdvance,
+  onStartVoid, onVoidReason, onConfirmVoid, onCancelVoid, onReissue, onGoToAdvance,
 }) {
   const { groups, totalCents } = groupPaymentsByCutoff(payments, cutoffs)
   const voidedIds = new Set((payments || []).filter(p => p.voids_payment_id).map(p => p.voids_payment_id))
@@ -69,13 +70,23 @@ export default function BillsTab({
                     </div>
                   )}
                   {b.details?.advance_check?.text && <div className="text-[11px] text-ink-muted mt-0.5">{b.details.advance_check.text}</div>}
-                  {b.status === 'VOID' && <div className="text-[11px] text-danger-text mt-0.5">Voided: {b.void_reason}</div>}
+                  {b.status === 'VOID' && <div className="text-[11px] text-danger-text mt-0.5">Voided: {b.void_reason}{b.replaced_by_bill_id != null ? ` · Replaced by #${b.replaced_by_bill_id}` : ''}</div>}
+                  {b.replaces_bill_id != null && <div className="text-[11px] text-ink-muted mt-0.5">Replaces #{b.replaces_bill_id} (voided)</div>}
                   {(canPrint || isAdmin) && (
                     <div className="flex items-center gap-2 mt-2">
                       {canPrint && <Link className="btn-xs blue" to={`/print/final-bill?id=${b.id}`}>Print</Link>}
                       {isAdmin && b.status === 'FINAL' && voidId !== b.id && (
                         <button className="btn-xs red" onClick={() => onStartVoid(b.id)}>Void</button>
                       )}
+                      {isAdmin && b.status === 'FINAL' && voidId !== b.id && onReissue && (() => {
+                        const why = reissueBlocker({ bill: b, tenant, isAdmin })
+                        return (
+                          <>
+                            <button className="btn-xs" disabled={!!why} title={why || 'Void this bill and issue a corrected one in its place, in one step'} onClick={() => onReissue(b)}>Void &amp; re-issue</button>
+                            {why && <span className="text-[11px] text-ink-muted">{why}</span>}
+                          </>
+                        )
+                      })()}
                     </div>
                   )}
                   {isAdmin && voidId === b.id && (

@@ -232,8 +232,8 @@ and **Move Out** only (Edit Details moved to its own module — see below).
 The profile (`TenantProfileModal`, tabs scroll sideways on a narrow screen) is the tenant's full
 record and works the same for moved-out tenants. Every source is read by `tenant_id`; each tab shows
 its own "Could not load …: <message>" if its read fails (the other tabs still load). Nothing here writes.
-- **Bills** (`tenantProfile/BillsTab.jsx`): the final bills (with Print for admin and user, Void for
-  admin only, voided bills shown with their reason); payments grouped by cutoff name, newest cutoff
+- **Bills** (`tenantProfile/BillsTab.jsx`): the final bills (with Print for admin and user, Void and Void & re-issue for
+  admin only, voided bills shown with their reason and "Replaced by #n", a re-issued bill with "Replaces #n (voided)"); payments grouped by cutoff name, newest cutoff
   first and "No cutoff" last, columns Date / Category / Type / Amount / Notes, a void row shown
   negative with "Void of #id" and its original marked "Voided"; per-cutoff and overall totals summed
   in integer cents (a void pair nets to 0); a summary of advance/deposit receipts by status linking to
@@ -359,6 +359,15 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   small two-line note in the top-right corner under the copy label (it takes no height, so nothing on the fixed half-page copy
   is pushed off). Back returns to the previous page. A tenant with no statement there gets "No … statement for this tenant on
   <cutoff>"; a failed load shows "Could not load this cutoff: <message>" instead (on the full print too).
+- **Print selected / hold a statement (2026-11-06).** Billing's Per Tenant view (admin, the role that can open the print
+  pages) has a "Print" checkbox column (with select-all) on every row that gets a statement in the chosen category, a per-row
+  print icon (`?only=<id>`), "Print all", "Print selected (n)" (`?skip=<held ids>`) and "Clear holds". Unticking a row holds
+  it: a "Held" badge shows, and the hold is kept in this browser only (`localStorage`, per cutoff and category; not shared
+  with other staff). The print pages accept `?only=` / `?skip=` (comma-separated tenant ids, unknown ids ignored;
+  `pickStatements` in `monthlyStatement.js`): the Bill No. of every statement stays its position in the FULL list (a held
+  tenant printed later gets the number it would have had), the header reads "n of M bills · skipped: <names>", and `?only=`
+  prints without the reprint notice. Nothing is recomputed per selection: every amount, the roommates' utility shares, the
+  Per Room reconciliation and Collections are exactly the same whether a tenant is held or not.
 - **Proration:** mid-cycle move-in/move-out/transfer prorates by exact day count against the
   rent/water cutoff window (not a calendar month) — confirmed correct as implemented.
 - **Due-date labels must be dynamic, not hardcoded.** Today `Collections.jsx` shows fixed strings
@@ -547,6 +556,26 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       `details.ref_corrections` {old, new, by, at} and logs 'Receipt Number Corrected'; it refuses any other change to
       the bill and a reservation-carried T.R#. Out of scope: the `advance_credits.ref_text` snapshot on an earlier
       second-to-last statement is not updated by a correction.
+    - **Stay extension (late move-out, 2026-11-06).** When the actual move-out is AFTER the contract (planned) move-out date as
+      stored when the flow opened, the nights after it are charged as a stay extension instead of pro-rated rent:
+      nights = (actual - contract) + 1 if the tenant vacated after 12:00 PM on the actual day (checkout is 12:00 PM; staying
+      past it is another full night). Out on the contract date: 0, also after 12:00 PM. Rate `STAY_EXTENSION_NIGHTLY` = P500.00
+      per night (code constant, `src/lib/stayExtension.js`), integer cents, one line per bed, no cap (a warning above 7
+      nights suggests editing the planned date instead, i.e. a lease extension). **Rent runs to the contract date** with the
+      rent rule of that date (one-month stay -> flat monthly rate; whole months -> `stayRent(move-in, contract)` less closed
+      statements; older stays -> windows prorated through the contract date); **utilities, coverage and readings run to the
+      actual date**. Input: Move Out step 1 shows "Stay extension ..." with a required choice "Vacated by 12:00 PM" /
+      "Vacated after 12:00 PM" (no default; Next stays disabled until chosen). The line `{ source: 'EXTENSION', mid: 'N nights',
+      rate: 500, computed }` follows the rent line, is editable like rent (not removable), and `details.extension = { contract_date,
+      actual_date, after_noon, nights, rate, amount }` is stored. A staff request carries `_vacated_after_noon`; Approvals
+      recomputes the extension from that choice (an unedited line follows the database, an edited one is kept with a warning);
+      a stay extension staff typed by hand (a rent line or an "Unsettled" line whose label mentions "extension", as before this
+      rule existed) is removed in favour of the computed line, listed in the differences and shown as "Typed stay extension
+      replaced", so the nights are never charged twice (`isTypedExtension`, shared with the re-issue);
+      an older request without the choice shows the same choice and keeps Approve disabled until the admin picks one. The
+      printed bill and "Preview bill" show the line (rate P500.00) and a foot note; the activity note names the extension.
+      Example: one-month stay Oct 2 -> contract Nov 2 at P10,000, out Nov 5 after 12:00 PM: rent P10,000.00 flat + stay
+      extension 4 nights P2,000.00 (by 12:00 PM: 3 nights P1,500.00) + water and electricity to Nov 5.
     - **Early termination** = actual move-out earlier than the tenant's planned `move_out_date` as stored when
       the modal opened. Default: advance and deposit forfeited (`forfeit` lines at 0.00 with the original amounts
       shown). The "Management approved, do not forfeit" waiver is admin-only and needs a typed reason.
@@ -555,7 +584,13 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       `SECOND_TO_LAST` if it is inside the NEXT window (`water_end` .. `addMonths(water_end, 1)`, same month
       arithmetic as Utilities; `water_end` is exclusive, as in `billing.js`), else `STANDARD`. A tenant who moved
       in during the candidate window has no second-to-last bill (stays of only one or two billing periods get the
-      advance on the final bill instead). Billing (Rent + Water view) shows a "2nd-to-last bill" badge plus "Less
+      advance on the final bill instead). **A move-out on a calendar month end has none either** (2026-11-06): when the
+      date is the LAST day of the next window (`nextEnd - 1`, e.g. out Nov 30 for the Oct cutoff) the Oct bill is
+      `STANDARD` and the whole advance goes on the final bill (a full month); a non-month-end date in the next window
+      (Nov 15, Nov 29) still gets the Oct credit. This applies to the active cutoff (Oct 2026) and every later one: no badge,
+      no "Less advance", no credit line on PrintRentWater, no Collections / Payment Monitoring adjustment, and Open Cutoff
+      stores no `advance_credits` row for that tenant. Credits already stored for closed cutoffs (Sep 2026) are unchanged.
+      Billing (Rent + Water view) shows a "2nd-to-last bill" badge plus "Less
       advance / Net"; PrintRentWater prints the credit line and the reduced total; credit = min(advance on file,
       that period's rent). The credit is an **adjustment, not cash**: Collections' amount to collect is net of it,
       and Payment Monitoring / Dashboard use it as `adjustments` in `buildPaymentMonitoring` (outstanding =
@@ -633,7 +668,29 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       receipt-number fix panel is admin-only; the rent-water / electricity print pages stay admin-only) reuses
       `Statement.jsx` (additive props: rate column, amount text, italic rows, total label/colour). Buttons: "Print
       final bill" on the move-out result screen and in the tenant profile (Bills tab, with an admin-only
-      Void). Voiding sets the bill VOID with a reason and puts its HELD-then-settled receipts back to HELD.
+      Void). Voiding sets the bill VOID with a reason (and `voided_by`) and puts its HELD-then-settled receipts back to HELD.
+    - **Void & re-issue (2026-11-06, admin).** Tenant profile -> Bills -> "Void & re-issue" on a FINAL bill of a moved-out
+      tenant whose refund is not PAID (`reissueBlocker`; bills of several beds, `details.stay.group.tenant_ids` > 1, are not
+      supported yet: the button says so and the RPC refuses them). `ReissueFinalBillModal`: step 1 shows the move-out date and readings read-only
+      (the saved move-out interim readings of that tenant and date, else the bill's own) and, for a late move-out, the required
+      12:00 PM choice (no default); step 2 is the bill editor with rent and stay extension recomputed (`loadReissueBundle`: the
+      bill's receipts treated as HELD, the bill left out of the ghost stamps, contract date = `details.extension.contract_date`,
+      else the move-out request's `old_value.move_out_date`, else the tenant row), water and electricity RECOMPUTED from the
+      database (so the bill equals the ghost share the room's statements use, §14; edit a line to change it), typed lines carried
+      over, a typed extension (rent or "Unsettled" line mentioning "extension") replaced by the computed one, and a comparison
+      table (old bill = approved amounts / new bill / change per line type, plus the water and electricity recomputed now); step 3 asks a required reason. Confirm re-checks the advance and payments against
+      the database, then the RPC `reissue_final_bill` (`database/migrations/final_bill_reissue.sql`) does everything in ONE
+      transaction: old bill VOID ("Re-issued: <reason>", `voided_at`, `voided_by`), its receipts back to HELD, the new FINAL
+      bill inserted (guard G2 runs), `replaces_bill_id` / `replaced_by_bill_id` linked, the receipts settled on the new bill,
+      activity rows "Final Bill Voided" and "Final Bill Reissued". It refuses (nothing written) a non-admin, a non-FINAL bill,
+      a several-beds bill, a PAID refund, an active tenant, another tenant or move-out date, and totals that are not the exact cent sum of the
+      lines. Never a delete: the old bill stays as VOID history (its refund value too). The new bill: new number
+      FINAL-<room>-<new id>, `details.reissue = { of, reason, at, by }`, the same `details.approval_request_id` (else the
+      tenant's approved move-out request for that date; so the request's "Final bill" button opens it), covered cutoffs = the
+      fresh coverage merged per component with the old bill's, refund PENDING when net < 0. The tenant, bed, readings and the
+      approval request are not written. The leaver stays a ghost throughout (the swap is atomic), so roommates' statements do
+      not move. Prints: the VOID bill "VOID — <reason> · Replaced by FINAL-<room>-<n>", the new one the foot note "Replaces
+      FINAL-<room>-<old> (voided <date>)"; the Bills tab shows "Replaced by #n" / "Replaces #n (voided)".
       Final bills stay reachable after the move-out: Tenants → View (Overview banner and Bills tab, §3), and
       Approvals: after an admin approves a move-out request a banner shows "Move-out applied: <tenant>.
       Final bill #n" with Print final bill(s) and Open tenant profile; every Approved move-out row has a
@@ -782,7 +839,7 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       same-name beds with no move-out date, so dated tenants never are); the advance credit code still handles a collapsed row by
       summing all same-name beds against the combined rent; (3) add-ons and custom utility splits of the covered cutoffs are not on the final
       bill (a warning is shown; add a typed line); (4) transfers inside the stay are not folded into the rent/utility lines (warning
-      shown); (5) unsettled earlier amounts are typed in by staff; (6) no re-issue flow after voiding a bill; (7) the credit on a printed
+      shown); (5) unsettled earlier amounts are typed in by staff; (6) a voided bill is re-issued only through "Void & re-issue" (single-bed bills; sibling-group bills not yet), a plain Void still leaves the tenant with no bill; (7) the credit on a printed
       second-to-last statement is not retroactively corrected if the date later moves; (8) an interim reading dated on a window's first day now
       counts as a boundary in Billing (a live audit found none); (9) editing the move-in or planned move-out date of a stay-billed tenant to something
       that is no longer one month makes the tenant reappear on the statements; (12) if Open Cutoff records the advance credits but opening then fails, and the tenant moves out with no next cutoff, the stored credit still counts against the final bill although that bill covers the cutoff (fixing it needs a change to guard G2); (13) usage after the last window is priced at that cutoff's rate and stays frozen on the bill even if the next cutoff's rate differs, so the leaver's ghost share in the new cutoff need not equal the bill; (10) a leaver final-billed electric-only on one cutoff and water-only on a different cutoff is a billed row for the uncovered component in `billing.js`, but is not a participant for that utility in the final-bill split (low likelihood); (11) retroactive back-dated move-in: a tenant added AFTER roommates were already final-billed, with a move-in inside the period those bills covered, gets a utility split that includes days the earlier bills already absorbed, so the room's final-bill utility total can exceed the metered consumption (the draft warns when the tenant was created after another final bill of the room that overlaps the span; amounts are not changed, staff review the utility lines).
@@ -1521,6 +1578,11 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       Dashboard Occupancy card from Asia/Manila (`manilaMonthToDateWindow` in `src/lib/occupancyMtd.js`). Outside the
       Philippines, between 00:00 and 08:00 Manila time, their current-month averages can briefly disagree. Follow-up:
       have Occupancy.jsx use `manilaMonthToDateWindow`.
+- [ ] (2026-11-06) Billing statement holds ("Print selected") are kept in the browser only (`localStorage`): another staff member
+      or another browser does not see them.
+- [ ] (2026-11-06) The stay extension has no cap (P500/night, a warning above 7 nights); a long overstay should be a lease extension
+      (edit the planned move-out date) instead.
+- [ ] (2026-11-06) "Void & re-issue" is per bed: a final bill of a sibling group (several beds, one name) cannot be re-issued yet.
 
 ## 16. Occupancy Simulator (isolated what-if module)
 - **Purpose.** Lets `admin`/`user` roles model potential rent at 100% (or a scaled) occupancy

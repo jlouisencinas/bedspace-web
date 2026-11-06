@@ -5,6 +5,7 @@
  * the "Preview bill" overlay so both always show the same statement.
  */
 import { combineBillsForPrint, groupBillsForPrint } from './finalBill'
+import { extensionNote } from './stayExtension'
 
 export const COMPANY = {
   address:    'JP Rizal ext., Cor Lapu-Lapu street, Brgy. West Rembo, Taguig City',
@@ -54,9 +55,20 @@ function toCharge(l) {
 
 const SOURCE_NAME = { PREV_TENANT_MOVE_OUT: "previous tenant's move-out reading", MOVE_IN_READING: 'move-in reading', CUTOFF_CLOSING: 'cutoff closing reading', CUTOFF_PREV: 'cutoff opening reading', MANUAL: 'entered by staff' }
 
-function footNotesOf(bill) {
+const manilaDay = (v) => {
+  const t = Date.parse(String(v))
+  if (!String(v).includes('T') || !Number.isFinite(t)) return String(v).slice(0, 10)
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(t))
+}
+
+export const finalBillNo =(room, id) => `FINAL-${room}-${String(id ?? '').padStart(4, '0')}`
+
+function footNotesOf(bill, room = '') {
   const d = bill.details || {}
   const out = []
+  const ext = extensionNote(d.extension)
+  if (ext) out.push(ext)
+  if (d.reissue?.of != null) out.push(`Replaces ${finalBillNo(room, d.reissue.of)} (voided ${d.reissue.at ? fmt(manilaDay(d.reissue.at)) : 'on re-issue'}).`)
   const stay = d.stay
   if (stay) {
     for (const [k, name] of [['water', 'Water'], ['electric', 'Electricity']]) {
@@ -119,7 +131,15 @@ export function statementProps(unit, { copyLabel, series, preparedBy, billingDat
       ? unit.items.map(i => (i.bill.details?.advance_check?.text ? `Bed ${i.bed}: ${i.bill.details.advance_check.text}` : '')).filter(Boolean).join(' ')
       : (d.advance_check?.text || ''),
     footNotes: unit.combined
-      ? [unit.combined.bedNote, ...new Set(unit.items.flatMap(i => footNotesOf(i.bill)))]
-      : footNotesOf(bill),
+      ? [unit.combined.bedNote, ...new Set(unit.items.flatMap(i => footNotesOf(i.bill, room)))]
+      : footNotesOf(bill, room),
   }
+}
+
+/** The VOID watermark text of a unit ('' for a non-void bill): the reason and, after a re-issue, the bill that replaces it. */
+export function voidTextOf(unit) {
+  const b = unit?.view
+  if (b?.status !== 'VOID') return ''
+  const room = unit.tenant?.beds?.rooms?.room_no ?? ''
+  return ['VOID', b.void_reason ? ` — ${b.void_reason}` : '', b.replaced_by_bill_id != null ? ` · Replaced by ${finalBillNo(room, b.replaced_by_bill_id)}` : ''].join('')
 }
