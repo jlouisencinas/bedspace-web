@@ -12,7 +12,7 @@ import { pickStatements, rentWaterRows, electricityRows } from './monthlyStateme
 import { moveInEligibleBeds, deriveBedStatuses, isActiveTenantPerBedViolation } from './bedEligibility'
 import { OCT, CUTOFFS } from './__fixtures__/cutoffs'
 import { SCENARIOS, seeded } from './__fixtures__/scenarios'
-import { goldenWholeMonths, earlyWithPriorCredit, lateOneMonth, NOW } from './__fixtures__/finalBill'
+import { goldenWholeMonths, earlyWithPriorCredit, lateOneMonth, proratedAdvanceOut, NOW } from './__fixtures__/finalBill'
 import { payment, tenant, billRow, interim } from './__fixtures__/tenants'
 
 const C = (n) => Math.round(n * 100)
@@ -66,7 +66,7 @@ describe('1. a tenant\'s balance reconciles: billed = paid + adjustments + outst
   })
 
   it('a final bill\'s totals are the exact sum of its stored lines, and it verifies against the data it was built from', () => {
-    for (const f of [goldenWholeMonths(), earlyWithPriorCredit(), earlyWithPriorCredit({ waived: true }), lateOneMonth(), lateOneMonth({ afterNoon: false })]) {
+    for (const f of [goldenWholeMonths(), earlyWithPriorCredit(), earlyWithPriorCredit({ waived: true }), lateOneMonth(), lateOneMonth({ afterNoon: false }), proratedAdvanceOut()]) {
       const d = buildFinalBillDraft(f)
       const sum = (pred) => d.lines.filter(pred).reduce((s, l) => s + toCents(l.amount), 0)
       expect(toCents(d.totals.net_amount)).toBe(sum(() => true))

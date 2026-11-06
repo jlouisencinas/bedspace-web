@@ -408,7 +408,9 @@
   body.fb-preview-open > *:not(.fbp-root) { display: none !important; }
   .fbp-root { position: static; overflow: visible; padding: 0; background: #fff; }
   body, .app-shell, .page { background: #fff !important; }
-  .main-content { overflow: visible !important; }
+  html, body, #root { height: auto !important; }
+  .app-shell { display: block !important; height: auto !important; overflow: visible !important; }
+  .main-content { overflow: visible !important; height: auto !important; }
   .a4page { width: auto; margin: 0; page-break-after: always; break-after: page; }
   .a4page:last-child { page-break-after: auto; }
   .stmt-copy { border: none; }

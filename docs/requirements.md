@@ -371,7 +371,9 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   with other staff). The print pages accept `?only=` / `?skip=` (comma-separated tenant ids, unknown ids ignored;
   `pickStatements` in `monthlyStatement.js`; a selection does not change any Billing No.), the header reads "n of M bills · skipped: <names>", and `?only=`
   prints without the reprint notice. Nothing is recomputed per selection: every amount, the roommates' utility shares, the
-  Per Room reconciliation and Collections are exactly the same whether a tenant is held or not.
+  Per Room reconciliation and Collections are exactly the same whether a tenant is held or not. In print, every print page
+  lets the app shell grow to its full height, so every selected statement prints on its own A4 page; before 2026-11-06 the
+  app shell's one-screen height clipped the print to the first page.
 - **Proration:** mid-cycle move-in/move-out/transfer prorates by exact day count against the
   rent/water cutoff window (not a calendar month) — confirmed correct as implemented.
 - **Due-date labels must be dynamic, not hardcoded.** Today `Collections.jsx` shows fixed strings
@@ -498,8 +500,9 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   - **Final bill / move-out settlement — Phase 2 DONE** (rules below; what was built and its known
     limits are in the "Phase 2 as built" bullet that follows the rules). Only the refund tracker is left (Phase 3):
     - **Billing periods** follow the cutoff windows (rent/water 1st–EOM, electric 10th–10th).
-    - The **advance is credited against the rent of the second-to-last bill** — the billing period
-      *before* the one containing the move-out date. If the tenant stays only one or two billing
+    - The **advance is credited against the rent of the second-to-last bill, pro-rated by days** (2026-11-06) — the
+      billing period *before* the one containing the move-out date gets advance x (days of the stay in the move-out
+      month) / (days of the second-to-last month); the rest of the advance is credited on the final bill. If the tenant stays only one or two billing
       periods, the unused advance is credited on the final bill and any excess is refunded.
     - The **deposit covers the final bill**: prorated rent through the move-out date + utilities as
       of the move-out readings + any unsettled earlier amounts entered manually by staff. (Data in
@@ -594,9 +597,28 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       (Nov 15, Nov 29) still gets the Oct credit. This applies to the active cutoff (Oct 2026) and every later one: no badge,
       no "Less advance", no credit line on PrintRentWater, no Collections / Payment Monitoring adjustment, and Open Cutoff
       stores no `advance_credits` row for that tenant. Credits already stored for closed cutoffs (Sep 2026) are unchanged.
-      Billing (Rent + Water view) shows a "2nd-to-last bill" badge plus "Less
-      advance / Net"; PrintRentWater prints the credit line and the reduced total; credit = min(advance on file,
-      that period's rent). The credit is an **adjustment, not cash**: Collections' amount to collect is net of it,
+      Billing (Rent + Water view) shows a "2nd-to-last bill" badge plus "Less advance (pro-rated D of W days) / Net";
+      PrintRentWater prints the credit line and the reduced total.
+      **The credit is pro-rated by days (2026-11-06, `proratedAdvanceCents` in `finalBill.js`):** W = days of the
+      second-to-last window (`water_end - water_start`, e.g. Oct = 31, Sep = 30, Feb = 28/29), D = days of the stay in the
+      next window through the move-out day inclusive (`moveOut - water_end + 1`, 1..W-1 since a month end is STANDARD);
+      A = advance on file (HELD/APPLIED ADVANCE receipts, whole-room beds summed; never the deposit or a reservation
+      payment). credit = min(half-up integer cents of A x D / W, that period's rent); remaining = A - credit, exact by
+      subtraction (it absorbs the rounding, so credit + remaining = A to the cent). The remaining part stays HELD and the
+      final bill credits it ("already credited P.. on <cutoff> · remaining P.. (credited here)"); the final bill's rent is
+      unchanged (Nov 1-23 on `stayRent`, no flat month). Worked example (rate and advance 5,000, out Nov 23, Oct window 31
+      days): Oct credit 5,000 x 23/31 = 3,709.68, Oct rent due 1,290.32 (+ water); final bill (in Sep 1) rent 3,833.33
+      (2 months + 23 of 30 days = 13,833.33 less 10,000.00 billed on closed statements), Less: Advanced Payment
+      -1,290.32, rent payable 2,543.01; total rent after the advance 1,290.32 + 2,543.01 = 3,833.33. Other days: out Nov 15
+      -> 2,419.35 (2,580.65 carried), Nov 1 -> 161.29 (4,838.71 carried, any excess on the final bill is returned), Nov 29
+      -> 4,677.42. Advance 6,000 on rent 5,000, out Nov 23 -> 4,451.61; out Nov 29 -> capped at 5,000.00. Printed detail:
+      "S.I# 1234 · credited ₱3,709.68 on this bill (pro-rated 23 of 31 days) · remaining ₱1,290.32 for the final bill"
+      (the day count prints only while advance x D / W reproduces the credit; a credit capped at the rent says
+      "(pro-rated)"; a stored credit from before this rule, or one whose move-out date moved since, prints no note).
+      Live while the cutoff is ACTIVE (the amount follows the move-out date until Open Cutoff, which stores it and freezes
+      it). It applies to the active Oct 2026 cutoff too, so Oct statements printed before the deploy show the old full
+      credit and differ from a reprint. Stored credits (Sep 2026) and issued final bills are unchanged; Void & re-issue
+      keeps the stored credit. The credit is an **adjustment, not cash**: Collections' amount to collect is net of it,
       and Payment Monitoring / Dashboard use it as `adjustments` in `buildPaymentMonitoring` (outstanding =
       billed - adjustments - paid; "paid"/collected never includes it), so sum(bills) = sum(payments) +
       adjustments + outstanding. Viewers cannot read the receipts (RLS), so their Dashboard summary omits it.
@@ -873,8 +895,8 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   cadence as regular bedspace tenants**. **Commercial WATER — done:** the Commercial area reading is
   linked (`area_readings.tenant_id`) to the single active `COMMERCIAL` tenant when saved from
   `Utilities.jsx`; `billing.js` then bills that tenant `consumption × bedspace rate`, and the utility
-  P&L counts it as a collection, so water variance = (room collections + commercial water) − provider
-  cost. The commercial tenant's `rate` stays a separate fixed monthly charge. **Commercial ELECTRIC is
+  P&L counts it as part of the amount to be collected, so water variance = (rooms to be collected +
+  commercial water) − provider cost. The commercial tenant's `rate` stays a separate fixed monthly charge. **Commercial ELECTRIC is
   still pending** (not linked, not in variance). Actual collections for a cutoff = bedspace tenants +
   the commercial tenant.
 - **Final-bill utilities vs the cutoff statement.** A leaver's final bill is stay-anchored (reading-to-reading, split by days
@@ -888,6 +910,14 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
 - **Judgment-laden "losing"/"earning" wording removed from the utility P&L variance display —
   DONE.** `Utilities.jsx` now renders the room-collections-vs-provider-cost variance as
   "Shortfall" / "Surplus" instead of "losing" / "earning."
+- **Utility P&L variance = amount to be collected − provider cost (since 2026-11-06).** The P&L uses the
+  amount **billed** to tenants per the bedspace submeters (Method B, submeters × bedspace rate), never
+  payments received: tenants pay late, so payments would understate a cutoff. On the Utilities P&L card
+  the row is "To be collected (submeters)" (hint: billed to tenants, not payments received; it was
+  "Room collections"), and a formula line under VARIANCE shows the parts: Water "To be collected ₱A
+  (rooms ₱R + commercial ₱C) − Provider cost ₱P", Electric "To be collected ₱R − Provider cost ₱P"
+  (commercial electric pending, not included). Sign unchanged: negative = Shortfall, positive = Surplus;
+  the variance values stored in snapshots and shown on Dashboard/Reports are unchanged.
 - **Deleting a "Move-out readings this cutoff" entry (Billing) needs a confirmation step and
   proper approval.** These are the interim meter readings captured at a tenant's move-out for the
   active cutoff. Today's delete button removes one with no confirmation. Confirmed requirement:
@@ -1610,6 +1640,9 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       or another browser does not see them.
 - [ ] (2026-11-06) The stay extension has no cap (P500/night, a warning above 7 nights); a long overstay should be a lease extension
       (edit the planned move-out date) instead.
+- [ ] (2026-11-06) The pro-rated second-to-last advance credit (§5) changed the live Oct 2026 statements of tenants moving
+      out in November (rent due goes up): copies printed before the deploy show the full credit; reprint and hand out
+      the new figures. A move-out on day 1-2 of the month gives a tiny credit and a large carry to the final bill (what the formula gives; no minimum credit).
 - [ ] (2026-11-06) "Void & re-issue" is per bed: a final bill of a sibling group (several beds, one name) cannot be re-issued yet.
 
 ## 16. Occupancy Simulator (isolated what-if module)
