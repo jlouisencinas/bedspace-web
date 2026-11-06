@@ -172,7 +172,7 @@ export default function Tenants({ scope = 'all' }) {
   }
 
   if (loading) return (
-    <div className="loading-screen"><div className="spinner" /></div>
+    <div className="loading-screen"><div className="spinner" />{ToastEl}</div>
   )
 
   return (

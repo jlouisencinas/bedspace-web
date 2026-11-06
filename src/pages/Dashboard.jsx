@@ -348,7 +348,7 @@ export default function Dashboard() {
         { key: 'room_bed', label: 'Room · Bed', render: roomBed },
         { key: 'reserved_name', label: 'Reserved for', render: b => <span className="max-w-[160px] truncate inline-block align-bottom">{b.reserved_name || '—'}</span> },
         { key: 'reserved_move_in_date', label: 'Target move-in', render: b => {
-          if (!b.reserved_move_in_date) return '—'
+          if (!b.reserved_move_in_date) return <span className="text-warning-text">No target date</span>
           const overdue = targetDateState(b.reserved_move_in_date, localToday()).state === 'OVERDUE'
           return <span className={overdue ? 'text-danger-text font-semibold' : ''}>{fmtDate(b.reserved_move_in_date)}{overdue ? ' · overdue' : ''}</span>
         } },

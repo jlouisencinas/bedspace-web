@@ -568,7 +568,7 @@ export default function BedMap() {
 
   // After Move In: reload without the loading screen so the Move In toast stays visible.
   async function refresh() {
-    try { setBeds(await fetchBeds()) } catch (e) { show(e.message, 'error') }
+    try { setBeds(await fetchBeds()) } catch (e) { show(`The Bed Map could not reload: ${e.message}. Refresh the page.`, 'error', { duration: 20000 }) }
     await loadHeld()
   }
 

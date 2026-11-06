@@ -1235,7 +1235,7 @@ in another module.**
   Occupied Beds footer is "Open full list in Current Tenants →"); Month detail and Move-ins This Month
   go to `/tenants` because those tenants may already have moved out;
   Vacant/Reserved navigate to `/property`'s Bed Rates tab with the room auto-expanded and scrolled
-  into view. The Reserved table has a **Target move-in** column (the reservation's date, "—" when
+  into view. The Reserved table has a **Target move-in** column (the reservation's date, "No target date" when
   none, red "· overdue" when past); the Reserved KPI count is unchanged. Monthly Revenue's rows are aggregate (by room type) and not clickable. **Viewer
   role:** every drill-down still opens with full, correct data — only row-click navigation and the
   footer link are hidden (routes `/tenants`/`/current-tenants`/`/property` are admin/user only, same `canAct` gate as

@@ -59,6 +59,7 @@ const TYPE_CONFIG = {
   'Reservation Payment Forfeited': { bg: 'bg-badge-rose-bg',   text: 'text-badge-rose-text',   dot: 'bg-rose-400'   },
   'Reservation Payment Voided':    { bg: 'bg-surface-3',       text: 'text-ink-muted',         dot: 'bg-slate-400'  },
   'Reservation Payment Updated':   { bg: 'bg-badge-sky-bg',    text: 'text-badge-sky-text',    dot: 'bg-sky-400'    },
+  'Reservation Target Date Changed': { bg: 'bg-badge-sky-bg', text: 'text-badge-sky-text',   dot: 'bg-sky-300'    },
   // System
   'Bed Status Changed':         { bg: 'bg-surface-3',   text: 'text-ink-muted',    dot: 'bg-slate-300'    },
 }
@@ -73,7 +74,7 @@ const BILLING_TYPES  = new Set([
   'Room Config Updated', 'Bed Rate Updated', 'Bed Removed', 'Room Reconfigured',
   'Add-on Type Created', 'Add-on Type Updated', 'Add-on Type Deleted',
   'Reservation Payment Recorded', 'Reservation Payment Applied', 'Reservation Payment Forfeited',
-  'Reservation Payment Voided', 'Reservation Payment Updated',
+  'Reservation Payment Voided', 'Reservation Payment Updated', 'Reservation Target Date Changed',
 ])
 
 function TypeBadge({ type }) {
@@ -165,6 +166,7 @@ export default function Activity() {
             <option value="Reservation Payment Forfeited">Reservation Payment Forfeited</option>
             <option value="Reservation Payment Voided">Reservation Payment Voided</option>
             <option value="Reservation Payment Updated">Reservation Payment Updated</option>
+            <option value="Reservation Target Date Changed">Reservation Target Date Changed</option>
           </optgroup>
           <optgroup label="Approvals">
             <option value="Approval Requested">Approval Requested</option>
