@@ -23,7 +23,7 @@ The main session is the orchestrator. Triage every request first (a hook reminds
 
 ## Stack & commands
 React 18 + Vite + react-router-dom + Tailwind · Supabase/Postgres (DB, auth, RLS, Edge Function) · static SPA on Vercel
-(`vercel.json`; merging to `main` deploys production).
+(`vercel.json`; merging to `main` deploys production). Each build writes `dist/version.json` (build id, served no-store) so open tabs detect a new deploy.
 ```
 npm install
 npm run dev       # http://localhost:5173 (talks to the PRODUCTION database)
@@ -38,9 +38,10 @@ npm run build     # -> dist/
   NotificationSettings, VisitorLog, Login, PrintElectricity, PrintRentWater, PrintFinalBill.
   Property.jsx: "Reconfigure" (bed count/rates) is in the Bed Rates tab; "+ Add Room" / "Retire" in the Room Config tab.
 - `src/components/` shared UI (MoveInFlow (the one Move In path: Tenants + Bed Map), MoveInModal, MoveOutModal, TransferModal, Statement, DrillDownModal, ReceiptLinesInput,
-  ReissueFinalBillModal (admin Void & re-issue of a final bill), ReservationLedgerModal, RoomReconfigureModal, AddRoomModal, RetireRoomModal, MonthlyStatementPreview, Guard*/Visitor* …);
+  ReissueFinalBillModal (admin Void & re-issue of a final bill), ReservationLedgerModal, RoomReconfigureModal, AddRoomModal, RetireRoomModal, MonthlyStatementPreview, UpdateBanner (reload prompt after a new deploy), Guard*/Visitor* …);
   `tenantProfile/` holds the TenantProfileModal tabs (BillsTab, StatementHistory, StayTimeline, MaintenanceTab, VisitorsTab).
-- `src/lib/` data layer: `supabase.js` (queries + move-out/receipt writes), `billing.js`, `collectionsRows.js` (Collections rows, cutoff outstanding, past-due candidates), `cutoffBilling.js` (the one
+- `src/lib/` data layer: `supabase.js` (queries + move-out/receipt writes), `appVersion.js` (pure build-id compare) +
+  `appVersionCheck.js` (`assertAppCurrent`: money writes refuse from an outdated tab), `billing.js`, `collectionsRows.js` (Collections rows, cutoff outstanding, past-due candidates), `cutoffBilling.js` (the one
   loader + compute for a cutoff's statements: Billing, print pages, profile history), `monthlyStatement.js` (printed
   statement props), `tenantStatements.js` (profile statement history), `finalBill.js`, `reservation.js` (reservation target date, Move In defaults), `stay.js`, `stayExtension.js` (late move-out: P500/night after the contract date, 12:00 PM checkout),
   `utilityPieces.js`, `receiptLines.js`, `moveOutData.js`, `maintenanceTickets.js` (ticket target/place helpers), `pnl.js`,

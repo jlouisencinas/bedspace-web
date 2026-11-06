@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { fetchApprovals, approveRequest, rejectRequest } from '../lib/approvals'
 import { supabase, processTransfer, logTenantMoveOutDateChange, deleteInterimReading, processMoveOutWithBill, fetchTenantDeposits, fetchCutoffs, fetchStoredAdvanceCredits, fetchAdvanceSiblingIds, verifyMoveOutApplied, fetchPayments, moveOutGroupNames, fetchReceiptRefIndex, DEPOSIT_REF_LABEL, fetchFinalBillsForRequest } from '../lib/supabase'
+import { assertAppCurrent } from '../lib/appVersionCheck'
 import { reconcileBill, toCents, mergeRecomputedLines, computeTotals, normalizeLines, appliedByRequest, bedRequestState, earlierLeavers, earlierLeaverWarning, figuresChangedMessage, normalizeReceiptRef, receiptRefsNeeded, missingReceiptRefs } from '../lib/finalBill'
 import ReceiptRefInputs from '../components/ReceiptRefInputs'
 import { buildRequestFreshDrafts } from '../lib/moveOutData'
@@ -625,6 +626,8 @@ function DecideModal({ request, onClose, onDone }) {
     setDecision(d); setBusy(true); setError('')
     try {
       let warning = null, moveOut = null
+      // Before approveRequest: the generic path marks the request APPROVED before applying it, so a stale tab must stop here.
+      if (d === 'APPROVED') await assertAppCurrent()
       if (d === 'APPROVED' && request.field_name === 'tenant_profile') {
         // Apply before marking approved so a failed apply leaves the request PENDING.
         warning = await applyTenantProfileRequest()

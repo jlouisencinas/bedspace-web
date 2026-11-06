@@ -161,6 +161,11 @@ describe('cutoff lookup', () => {
     expect(finalCutoffForUtility(CUTOFFS, 'ELECTRIC', '2026-09-05')).toEqual({ cutoff: null, beyondWindow: false })
   })
 
+  it('finalCutoffForUtility: water window ends 2026-11-01, move-out 2026-11-05 -> the latest cutoff, not null (bill 26)', () => {
+    expect(finalCutoffForUtility([SEP, OCT], 'WATER', '2026-11-05')).toEqual({ cutoff: OCT, beyondWindow: true })
+    expect(cutoffForDate([SEP, OCT], '2026-11-05')).toBeNull()
+  })
+
   it('expectedCutoffName: electric before the 10th belongs to the previous month', () => {
     expect(expectedCutoffName('ELECTRIC', '2027-01-05')).toBe('Dec 2026')
     expect(expectedCutoffName('ELECTRIC', '2027-01-10')).toBe('Jan 2027')
@@ -205,6 +210,12 @@ describe('computeCoverage', () => {
     const cov = computeCoverage({ cutoffs: [OCT, NOV], moveInISO: '2026-09-01', moveOutISO: '2026-10-05', kind: 'ODD' })
     expect(cov.electric.final).toBeNull()
     expect(cov.electric.missing).toEqual({ name: 'Sep 2026', date: '2026-10-05' })
+  })
+
+  it('a stay that began after the latest window has a cutoff_id but no covered entries (a legit empty covered_cutoffs)', () => {
+    const cov = computeCoverage({ cutoffs: [SEP, OCT], moveInISO: '2026-11-12', moveOutISO: '2026-11-25', kind: 'ODD' })
+    expect(cov.primaryCutoffId).toBe(OCT.id)
+    expect(coveredEntries(cov)).toEqual([])
   })
 })
 
