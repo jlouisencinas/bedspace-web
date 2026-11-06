@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { notifyAsync } from './notify'
-import { normalizeLines, computeTotals, round2, assertCreditRows, verifyBillAgainstDb, vacatedRecord, normalizeReceiptRef, missingReceiptRefs, applyReceiptRefs, applyCheckRefs, asHeldForReissue } from './finalBill'
+import { normalizeLines, computeTotals, round2, assertCreditRows, verifyBillAgainstDb, vacatedRecord, normalizeReceiptRef, missingReceiptRefs, applyReceiptRefs, applyCheckRefs, asHeldForReissue, finalBillShapeProblem } from './finalBill'
+import { assertAppCurrent } from './appVersionCheck'
 import { finalCutoffForUtility, newLeaseMoveOutProblem, finalBilledStamps, planReattachment, cutoffDeleteBlocker, readingOnFileFor } from './stay'
 import { parseMoney, moneyProblem, centsToNumber } from './receiptLines'
 import { deriveBedStatuses, activeTenantOnBedMessage, isActiveTenantPerBedViolation } from './bedEligibility'
@@ -189,6 +190,7 @@ export async function addTenant(bedId, tenantData) {
 }
 
 export async function recordPayment(tenantId, paymentData) {
+  await assertAppCurrent()
   // Strip helper fields used only for activity logging
   const { _tenant_name, _room_no, _bed_letter, _cutoff_name, ...raw } = paymentData
 
@@ -240,6 +242,7 @@ export async function recordPayment(tenantId, paymentData) {
 // Every write here throws on error (no logActivity()-style swallowing) since
 // this is money-adjacent.
 export async function recordPaymentsBatch(entries) {
+  await assertAppCurrent()
   if (!entries || entries.length === 0) return []
 
   const payTypeFor = category =>
@@ -309,6 +312,7 @@ export async function recordPaymentsBatch(entries) {
 // (payments has no update/delete policy for any role, by design). Scoped to the
 // exact rows passed in — never queries for "other payments to void."
 export async function voidPayments(paymentRows) {
+  await assertAppCurrent()
   if (!paymentRows || paymentRows.length === 0) return []
 
   const today = new Date().toISOString().slice(0, 10)
@@ -428,6 +432,7 @@ const peso = n => '₱' + Number(n).toLocaleString('en-PH', { minimumFractionDig
 // Inserts all rows in one statement so a move-in never ends up with only one of
 // the two receipts. Throws on any error; the activity log is best-effort.
 export async function addTenantDeposits(tenantId, entries, actorId) {
+  await assertAppCurrent()
   const rows = entries.map(e => ({
     tenant_id:     tenantId,
     kind:          e.kind,
@@ -685,6 +690,7 @@ export async function assertMoveInReceiptsAvailable() {
 // All money here is integer cents from receiptLines.js (line kinds ADVANCE, DEPOSIT, RESERVATION); converted once to exact 2-decimal numbers.
 // The DB re-validates the sums with numeric arithmetic and writes everything in one transaction.
 export async function recordMoveInReceipts(tenantId, { advanceDueCents, depositDueCents, expectedReservationCents, lines }) {
+  await assertAppCurrent()
   const { data, error } = await supabase.rpc('record_move_in_receipts', {
     p_tenant_id:            tenantId,
     p_advance_due:          centsToNumber(advanceDueCents),
@@ -809,6 +815,7 @@ export async function fetchAdvanceCreditData() {
 
 // Admin session only (RLS). Idempotent per (tenant, cutoff): a credit that is already recorded is kept.
 export async function saveAdvanceCredits(rows, actorId) {
+  await assertAppCurrent()
   if (!rows.length) return []
   assertCreditRows(rows)
   const { data, error } = await supabase
@@ -826,7 +833,9 @@ export async function saveAdvanceCredits(rows, actorId) {
   return data
 }
 
-export async function saveFinalBill(bill, actorId) {
+// opts.cutoffs: the fresh cutoff list the bill was verified against (fetched when omitted), for the G4 shape check.
+export async function saveFinalBill(bill, actorId, opts = {}) {
+  await assertAppCurrent()
   if (!bill.tenant_id) throw new Error('Final bill: tenant is required.')
   if (!bill.move_out_date) throw new Error('Final bill: move-out date is required.')
   if (!Array.isArray(bill.lines) || bill.lines.length === 0) throw new Error('Final bill: at least one line is required.')
@@ -837,6 +846,8 @@ export async function saveFinalBill(bill, actorId) {
   if (bill.forfeit_waived && !String(bill.waived_reason ?? '').trim()) {
     throw new Error('Final bill: a reason is required to waive the forfeiture.')
   }
+  const shape = finalBillShapeProblem(bill, { cutoffs: opts.cutoffs ?? await fetchCutoffs() })
+  if (shape) throw new Error(shape)
   const lines = normalizeLines(bill.lines)
   const totals = computeTotals(lines)
   const { data, error } = await supabase
@@ -972,6 +983,7 @@ const REISSUE_RPC_MISSING = 'The database update for re-issuing final bills has 
  * and is thrown with the database's message. Returns the new bill id.
  */
 export async function reissueFinalBill(oldId, reason, bill) {
+  await assertAppCurrent()
   if (!String(reason ?? '').trim()) throw new Error('A reason is required to re-issue a final bill.')
   const lines = normalizeLines(bill.lines)
   const totals = computeTotals(lines)
@@ -1069,6 +1081,7 @@ const REF_RPC_MISSING = 'The database update for correcting receipt numbers has 
  * number in its line details and Advance check text, in one transaction with the receipt (correct_receipt_ref refuses any other change).
  */
 export async function correctReceiptRef(depositId, raw) {
+  await assertAppCurrent()
   const { data: d, error } = await supabase.from('tenant_deposits').select('*').eq('id', depositId).single()
   if (error) throw error
   const n = normalizeReceiptRef(d.kind, raw)
@@ -1108,6 +1121,7 @@ export async function correctReceiptRef(depositId, raw) {
  * Returns { billId, net_amount }.
  */
 export async function processMoveOutWithBill(tenant, moveOutData, bill, actorId, opts = {}) {
+  await assertAppCurrent()
   const actual = moveOutData.actual_move_out_date || moveOutData.move_out_date
   const vacated = vacatedRecord(opts.vacated, actorId)
 
@@ -1140,7 +1154,7 @@ export async function processMoveOutWithBill(tenant, moveOutData, bill, actorId,
   const saved = await saveFinalBill({
     ...bill, lines, cutoff_id: verdict.cutoff_id, covered_cutoffs: verdict.covered_cutoffs,
     details: { ...(bill.details || {}), advance_check: verdict.check, vacated }, tenant_id: tenant.id, move_out_date: actual,
-  }, actorId)
+  }, actorId, { cutoffs: verdict.cutoffs })
   const done = [`final bill #${saved.id} saved`]
   const fail = (step, err, advice) => Object.assign(new Error(
     `Final bill #${saved.id} was saved. Done: ${done.join('; ')}. FAILED: ${step} (${err.message}). ${advice}`), { partial: true, billId: saved.id })
@@ -1278,6 +1292,7 @@ export function moveOutGroupNames(list) {
  * Returns [{ tenantId, status: 'ok' | 'failed', billId, net_amount, error, partial, stale, orphanBill, diffs }].
  */
 export async function processMoveOutGroup(items, moveOutData, actorId, opts = {}) {
+  await assertAppCurrent()
   const vacated = vacatedRecord(opts.vacated, actorId)  // one tick, one timestamp, recorded on every bed's bill
   const groupNames = moveOutGroupNames(items.map(i => ({ name: i.tenant.name, bed: i.tenant._bed_letter ?? i.tenant.bed_letter })))
   const out = []
@@ -1574,6 +1589,7 @@ export async function fetchTicketsForTenant(tenantId) {
  * tenant must include: { id, bed_id, room_id, room_no, bed_letter, name, rate }
  */
 export async function processTransfer(tenant, transferData, actorId) {
+  await assertAppCurrent()
   const { to_bed_id, transfer_date, new_rate, water_reading, electric_reading, to_water_reading, to_electric_reading, notes } = transferData
 
   // 1. Get destination bed + room
@@ -1833,6 +1849,7 @@ export async function saveReadings(rows, opts = {}) {
 }
 
 export async function openCutoff(p) {
+  await assertAppCurrent()
   const { data, error } = await supabase.rpc('open_cutoff', {
     p_name:                   p.name,
     p_water_start:            p.water_start,

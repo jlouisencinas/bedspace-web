@@ -799,6 +799,32 @@ end $$;
 drop trigger if exists trg_final_bills_advance_guard on public.final_bills;
 create trigger trg_final_bills_advance_guard before insert on public.final_bills
   for each row execute function public.final_bills_advance_guard();
+-- G4 (database/migrations/final_bill_shape_guard.sql): a NEW FINAL bill must carry the shape the current app writes (a cutoff when
+-- the move-out date has one, details.advance_check, details.vacated unless a re-issue). BEFORE INSERT only; bills 7 and 26 predate it.
+create or replace function public.final_bills_shape_guard() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.status is distinct from 'FINAL' then return new; end if;
+  if new.cutoff_id is null and (
+       exists (select 1 from public.cutoffs c
+                where c.water_start is not null and c.water_end is not null
+                  and c.water_start <= new.move_out_date and new.move_out_date < c.water_end)
+       or (not exists (select 1 from public.cutoffs c where c.water_start > new.move_out_date)
+           and new.move_out_date >= (select c.water_end from public.cutoffs c where c.water_start is not null
+                                      order by c.water_start desc, c.id desc limit 1))) then
+    raise exception 'final bill: no cutoff is set on this bill. The app in this browser is out of date: reload the page and issue the bill again. Nothing was changed.';
+  end if;
+  if jsonb_typeof(new.details->'advance_check') is distinct from 'object' then
+    raise exception 'final bill: the advance check is missing. The app in this browser is out of date: reload the page and issue the bill again. Nothing was changed.';
+  end if;
+  if new.replaces_bill_id is null and jsonb_typeof(new.details->'vacated') is distinct from 'object' then
+    raise exception 'final bill: the vacated confirmation is missing. The app in this browser is out of date: reload the page and issue the bill again. Nothing was changed.';
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_final_bills_shape_guard on public.final_bills;
+create trigger trg_final_bills_shape_guard before insert on public.final_bills
+  for each row execute function public.final_bills_shape_guard();
 
 -- G3: an ADVANCE receipt cannot be edited below what a statement already credited from it.
 create or replace function public.td_guard_credited_advance() returns trigger

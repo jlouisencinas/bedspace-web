@@ -15,7 +15,7 @@
  * (the amount the system computed, so a staff edit can be flagged).
  */
 import {
-  dayNum, isoOfDay, addMonthsISO, classifyStay, appStart, computeCoverage, isCutoffClosed, cutoffForDate, windowOf, pricingInfoForDay, snapToMonthEnd, stayRent, prorateCents, coveredEntries, parseCovered,
+  dayNum, isoOfDay, addMonthsISO, classifyStay, appStart, computeCoverage, isCutoffClosed, cutoffForDate, finalCutoffForUtility, windowOf, pricingInfoForDay, snapToMonthEnd, stayRent, prorateCents, coveredEntries, parseCovered,
 } from './stay'
 import { resolveStartReading, splitUtility, resolveRate, checkReadingOrder } from './utilityPieces'
 import { hasExtension, extensionLine, extensionDetails, nightsWarning, extensionNights, NOON_CHOICE_MISSING } from './stayExtension'
@@ -430,6 +430,25 @@ export function vacatedRecord(v, fallbackBy = null, now = new Date()) {
     throw new Error('Confirm that the tenant has vacated the room and access has been returned before moving them out. Nothing was changed.')
   }
   return { confirmed: true, by: v.by || fallbackBy || null, at: v.at || now.toISOString() }
+}
+
+const STALE_SHAPE_TAIL = 'The app in this browser is out of date: reload the page and issue the bill again. Nothing was changed.'
+const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * Mirror of database trigger G4 (database/migrations/final_bill_shape_guard.sql): the problem with a NEW FINAL bill that has the
+ * shape an outdated client wrote (bills 7 and 26), else null. `cutoffs` = the fresh cutoff list; a null cutoff_id is refused only
+ * when finalCutoffForUtility gives a water cutoff for the move-out date (a date in a window gap or before every window keeps none).
+ * covered_cutoffs is not checked: a stay that began after the latest window legitimately stores [] with a cutoff_id.
+ * isReissue: a re-issue may replace a bill that never had `vacated`.
+ */
+export function finalBillShapeProblem(bill, { cutoffs = [], isReissue = false } = {}) {
+  if (bill?.cutoff_id == null && finalCutoffForUtility(cutoffs, 'WATER', bill?.move_out_date).cutoff) {
+    return `final bill: no cutoff is set on this bill. ${STALE_SHAPE_TAIL}`
+  }
+  if (!isObj(bill?.details?.advance_check)) return `final bill: the advance check is missing. ${STALE_SHAPE_TAIL}`
+  if (!isReissue && !isObj(bill?.details?.vacated)) return `final bill: the vacated confirmation is missing. ${STALE_SHAPE_TAIL}`
+  return null
 }
 
 export const isSystemLine = (l) =>

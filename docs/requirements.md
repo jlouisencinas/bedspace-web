@@ -667,6 +667,18 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       G2 on `final_bills` insert (a credit/forfeit line may only use that tenant's HELD receipts, once, and an
       ADVANCE credit cannot exceed what earlier statements left; orphan credits are not counted); G3 on
       `tenant_deposits` update (an ADVANCE receipt cannot be edited below what was credited from it).
+      **G4 (2026-11-06, `database/migrations/final_bill_shape_guard.sql`, in `init.sql` after G2)** on `final_bills`
+      insert of a FINAL bill: refuses the shape an outdated browser tab wrote (bill #26): (a) `cutoff_id` null although
+      the move-out date has a water cutoff (a window holding the date, or the date on/after the end of the latest
+      window, as `finalCutoffForUtility`; a date in a gap between windows or before every window may keep null);
+      (b) `details.advance_check` missing; (c) `details.vacated` missing, except on a re-issue (`replaces_bill_id` set
+      by `reissue_final_bill`, which may replace an old bill without it). `covered_cutoffs` is not checked: a stay that
+      began after the latest window legitimately stores `[]` with a cutoff. The message tells staff to reload the page;
+      nothing is written (`processMoveOutWithBill` saves the bill first, and Approvals leaves the request PENDING).
+      Insert only: existing bills (#7 and #26 predate the guard) and every UPDATE (void, refund, receipt-number fix,
+      data repair) are untouched. `saveFinalBill` runs the same check first (`finalBillShapeProblem` in `finalBill.js`).
+      G4 cannot catch a stale client that sends this shape with other outdated money logic; the app version check (§13)
+      covers that for tabs that loaded the 2026-11-06 build or later.
       `recordAdvanceCredits` (Open Cutoff) fetches transfers and final bills too, stores HELD receipts only, skips
       tenants with a FINAL bill and checks that allocations add up before inserting. The credit lines on Billing
       and the printed Rent + Water statement say "credited P x on this bill · remaining P y for the final bill".
@@ -1447,6 +1459,19 @@ Tenants module.
   side with proper padding. *(Implementation task — see backlog §15: audit every search input for
   this, fix as one consistent pattern rather than one-off per page, since it'll be touched again
   by the theming work above — coordinate the two.)*
+- **Update banner / app version check (2026-11-06).** The SPA never reloads itself after a Vercel deploy, so a tab left open
+  kept writing money records with old rules (final bill #26). Each build gets an id (`vite.config.js`: commit sha + time),
+  baked into the bundle and written to `dist/version.json` (served `Cache-Control: no-store`, `vercel.json`). The signed-in
+  shell (`UpdateBanner` in `App.jsx` Layout; not the guard shell, not printed) fetches it on load, focus, tab visibility and
+  every 5 minutes; when it differs it shows "A new version of the app is available. Reload to avoid saving with old rules."
+  with a Reload button, and the tab stays marked out of date until reloaded. Money writes check first and refuse with "The
+  app was updated. Reload the page, then try again. Nothing was changed." before anything is written: move-out (single and
+  group), final bill save and re-issue, payments (single, batch, undo), advance/deposit receipts and Move In receipts,
+  advance credits, receipt-number correction, transfer, Open Cutoff, and Approve in Approvals (before the request is
+  marked approved). Fail-open: if `version.json` cannot be fetched or is not valid (offline, hosting blip) writes go ahead
+  and no banner shows. Local dev and tests use id `dev` and are never blocked. A tab opened during a deploy may see one
+  false "updated" prompt (a reload fixes it). Limitation: a tab running a build older than this feature has no check; for
+  final bills guard G4 (§5) is the backstop.
 
 ## 14. Non-negotiables
 - A tenant's outstanding balance must always reconcile — sum of bills must equal sum of payments
@@ -1640,6 +1665,11 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       out in November (rent due goes up): copies printed before the deploy show the full credit; reprint and hand out
       the new figures. A move-out on day 1-2 of the month gives a tiny credit and a large carry to the final bill (what the formula gives; no minimum credit).
 - [ ] (2026-11-06) "Void & re-issue" is per bed: a final bill of a sibling group (several beds, one name) cannot be re-issued yet.
+- [ ] (2026-11-06) Final bills #7 and #26 were written by an outdated browser tab before guard G4 (§5): no cutoff, no covered
+      periods, no advance check / vacated, no move-out interim readings. #26 is repaired separately (owner-approved data step);
+      #7 needs the same review. G4 only catches that shape; other outdated-logic differences are covered only by the app
+      version check (§13) in tabs that loaded the 2026-11-06 build or later. Not built: a data check flagging FINAL bills with
+      a null cutoff / empty covered periods / a move-out reading without an interim row.
 
 ## 16. Occupancy Simulator (isolated what-if module)
 - **Purpose.** Lets `admin`/`user` roles model potential rent at 100% (or a scaled) occupancy
