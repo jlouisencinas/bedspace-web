@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { X } from 'lucide-react'
 import { resolveTicket } from '../lib/supabase'
+import { ticketPlace } from '../lib/maintenanceTickets'
 
 function fmtDateTime(d) {
   if (!d) return '—'
@@ -27,7 +28,7 @@ export default function ResolveTicketModal({ ticket, onClose, onSaved }) {
     }
   }
 
-  const room   = ticket.rooms?.room_no  ? `Room ${ticket.rooms.room_no}` : '—'
+  const room   = ticketPlace(ticket)
   const tenant = ticket.tenants?.name   || 'Staff-raised'
 
   return (

@@ -129,7 +129,7 @@ const maintenanceTicket: Handler<any> = {
     if (caller.role !== 'admin' && caller.role !== 'user') throw new NotifyError('forbidden', 403)
     const { data, error } = await admin
       .from('maintenance_tickets')
-      .select('id, concern, remarks, status, raised_at, created_at, rooms(room_no), tenants(name)')
+      .select('id, concern, remarks, status, raised_at, created_at, location, rooms(room_no), tenants(name)')
       .eq('id', Number(recordId))
       .maybeSingle()
     if (error) { console.error('notify-email: ticket load failed', error.code); throw new NotifyError('load_failed', 500) }
@@ -140,6 +140,7 @@ const maintenanceTicket: Handler<any> = {
       id:         data.id,
       raisedBy:   caller.email,
       roomNo:     data.rooms?.room_no ?? null,
+      location:   data.location ?? null,
       concern:    data.concern,
       remarks:    data.remarks,
       tenantName: data.tenants?.name ?? null,

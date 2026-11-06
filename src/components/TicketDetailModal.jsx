@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X, CheckCircle } from 'lucide-react'
 import { fetchProfileEmail } from '../lib/supabase'
+import { ticketPlace } from '../lib/maintenanceTickets'
 
 function fmtDateTime(d) {
   if (!d) return '—'
@@ -29,7 +30,7 @@ export default function TicketDetailModal({ ticket, canWrite, onClose, onResolve
       <div className="modal modal-sm">
         <div className="modal-head">
           <div className="flex items-center gap-2.5">
-            <h3>Room {ticket.rooms?.room_no ?? '—'}</h3>
+            <h3>{ticketPlace(ticket)}</h3>
             {ticket.status === 'PENDING' ? (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-warning-bg text-warning-text">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />PENDING

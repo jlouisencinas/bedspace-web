@@ -7,6 +7,7 @@ import { deriveBedStatuses, activeTenantOnBedMessage, isActiveTenantPerBedViolat
 import { windowLastDay } from './cutoffDates'
 import { fmtTargetDate } from './reservation'
 import { PROFILE_FIELD_LABELS } from '../../supabase/functions/_shared/approval-labels.ts'
+import { maintenanceLocationLabel, validateTicketTarget } from '../../supabase/functions/_shared/maintenance-locations.ts'
 
 const url = import.meta.env.VITE_SUPABASE_URL
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -1390,7 +1391,7 @@ export async function fetchRooms() {
 
 // ── Maintenance Tickets ───────────────────────────────────────────────────────
 
-export async function fetchTickets({ roomId, status } = {}) {
+export async function fetchTickets({ roomId, location, status } = {}) {
   let q = supabase
     .from('maintenance_tickets')
     .select(`
@@ -1400,6 +1401,7 @@ export async function fetchTickets({ roomId, status } = {}) {
     `)
     .order('raised_at', { ascending: false })
   if (roomId) q = q.eq('room_id', roomId)
+  if (location) q = q.eq('location', location)
   if (status) q = q.eq('status', status)
   const { data, error } = await q
   if (error) throw error
@@ -1414,11 +1416,15 @@ export async function fetchProfileEmail(userId) {
   return data?.email || null
 }
 
-export async function addTicket({ roomId, tenantId, concern, remarks }) {
+export async function addTicket({ roomId, location, tenantId, concern, remarks }) {
+  const targetError = validateTicketTarget({ roomId, location })
+  if (targetError) throw new Error(targetError)
+
   const { data, error } = await supabase
     .from('maintenance_tickets')
     .insert({
-      room_id:   roomId,
+      room_id:   roomId ?? null,
+      location:  location ?? null,
       tenant_id: tenantId || null,
       concern,
       remarks:   remarks || null,
@@ -1427,22 +1433,24 @@ export async function addTicket({ roomId, tenantId, concern, remarks }) {
     .single()
   if (error) throw error
 
-  // Log a REPAIR entry for this room
-  await supabase.from('room_logs').insert({
-    room_id:     roomId,
-    event_type:  'REPAIR',
-    description: concern,
-  })
+  // room_logs is per-room repair history (room_id NOT NULL): common-area tickets get no entry.
+  if (roomId) {
+    await supabase.from('room_logs').insert({
+      room_id:     roomId,
+      event_type:  'REPAIR',
+      description: concern,
+    })
+  }
 
-  // Log to activity
+  const areaLabel = data.room_id ? null : (maintenanceLocationLabel(data.location) ?? data.location)
   await logActivity({
     activity_type: 'Ticket Raised',
     tenant_id:     tenantId || null,
     entity_type:   'TICKET',
     entity_id:     data.id,
     room_no:       data.rooms?.room_no || null,
-    notes:         concern,
-    metadata:      { concern, remarks: remarks || null, room_no: data.rooms?.room_no },
+    notes:         areaLabel ? `${areaLabel}: ${concern}` : concern,
+    metadata:      { concern, remarks: remarks || null, room_no: data.rooms?.room_no, location: data.location ?? null },
   })
 
   notifyAsync('maintenance_ticket', data.id)
@@ -1465,7 +1473,7 @@ export async function resolveTicket(id, resolutionNotes) {
     .single()
   if (error) throw error
 
-  // Log to activity
+  const areaLabel = data.room_id ? null : (maintenanceLocationLabel(data.location) ?? data.location)
   await logActivity({
     activity_type: 'Ticket Resolved',
     actor_id:      user.id,
@@ -1473,8 +1481,8 @@ export async function resolveTicket(id, resolutionNotes) {
     entity_type:   'TICKET',
     entity_id:     id,
     room_no:       data.rooms?.room_no || null,
-    notes:         resolutionNotes || `Ticket #${id} resolved`,
-    metadata:      { concern: data.concern, resolution_notes: resolutionNotes, room_no: data.rooms?.room_no },
+    notes:         resolutionNotes || (areaLabel ? `${areaLabel}: Ticket #${id} resolved` : `Ticket #${id} resolved`),
+    metadata:      { concern: data.concern, resolution_notes: resolutionNotes, room_no: data.rooms?.room_no, location: data.location ?? null },
   })
 
   return data

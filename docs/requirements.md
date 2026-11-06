@@ -265,9 +265,9 @@ its own "Could not load …: <message>" if its read fails (the other tabs still 
     and, where a FINAL final bill covers that component, "Billed on final bill #n; payments on this cutoff are netted on that
     final bill" (no balance); otherwise "Not on the current Billing page (moved out): payments only".
 - **Advance & Deposit:** unchanged, plus a "Final bills are on the Bills tab" link.
-- **Maintenance** (`tenantProfile/MaintenanceTab.jsx`): tickets with this `tenant_id` (room, concern,
-  remarks, resolution notes, status, raised and resolved dates). Room tickets with no tenant linked
-  are not shown.
+- **Maintenance** (`tenantProfile/MaintenanceTab.jsx`): tickets with this `tenant_id` (location: room
+  or common area, concern, remarks, resolution notes, status, raised and resolved dates). Common-area
+  tickets linked to the tenant are shown too. Tickets with no tenant linked are not shown.
 - **Visitors** (`tenantProfile/VisitorsTab.jsx`, admin/user only): read-only visits (check-in,
   check-out, visitor name, contact, state chip, overnight status, void reason), no ID number or photo,
   latest 300, link to the Visitor Log. A visit is keyed to the lowest tenant id of the active same-name
@@ -1031,6 +1031,22 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   raised it (nullable — supports staff-raised tickets with no tenant attached), resolution notes,
   resolved-by/resolved-at, pending/resolved status, with an auto-write to `room_logs` and
   `activity_log` on raise/resolve.
+- **A ticket targets a room or a common area (2026-11-05).** The required "Location" select in the New
+  Ticket modal lists a "Common areas" group (LOBBY, 2ND FLOOR, 3RD FLOOR, 4TH FLOOR, 5TH FLOOR, 6TH FLOOR,
+  7TH FLOOR, KITCHEN, ROOF DECK, shown as the user typed them) and then a "Rooms" group. The common areas
+  are a fixed list in `supabase/functions/_shared/maintenance-locations.ts` (shared by the client and the
+  email), stored as a code in `maintenance_tickets.location` (`LOBBY`, `FLOOR_2`…`FLOOR_7`, `KITCHEN`,
+  `ROOF_DECK`); a CHECK constraint mirrors the list and another requires exactly one of `room_id` /
+  `location`. It is a code list, not a table, because these are fixed parts of one building and nobody edits
+  them; adding a location = a migration replacing the CHECK plus a one-line change in that file.
+  - The tenant stays optional ("Staff-raised" by default). For a room, the picker lists that room's tenants;
+    for a common area, all active tenants. Changing the location clears the tenant.
+  - A common-area ticket writes no `room_logs` entry (room repair history stays per room). Its activity
+    entries have no room number, notes `"<area>: <concern>"` and `metadata.location`.
+  - Everywhere a ticket is shown (Maintenance list, Dashboard panel, detail and resolve modals, tenant
+    profile tab, email) it has one place label: "Room 702" or the area ("LOBBY"). The Maintenance list's
+    first column and filter are "Location" (filter: all locations, one common area, or one room; a floor
+    does not include its rooms), and search matches the label.
 - A tenant's tickets (`maintenance_tickets.tenant_id`) also appear on their profile's Maintenance tab,
   past tenants included (§3 "Tenant profile history").
 - This same ticket list (with tenant name shown) is also reachable from the Dashboard as a "Room
@@ -1054,10 +1070,11 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   from the existing Raise/Resolve action modals. — **DONE** (`TicketDetailModal.jsx`).
 - **"New ticket raised" email is a designed layout (§7).** Built by `notify-email/ticket-email.ts` with
   the same kit as the approval emails: header label "Maintenance", "● PENDING" pill with a `MT-<id>`
-  reference, summary card (Room, Tenant — "Staff-raised" when none, Concern, Raised by, Raised time in
-  Manila time), a Remarks block ("No remarks provided" when empty), a centered "View ticket" button to
-  `/maintenance` (omitted when `APP_URL` is unset), and a footer naming the "Maintenance tickets"
-  subscription. Subject `[New ticket] Room 702 · <concern>`. The loading, authorization (admin/user only),
+  reference, summary card (Location — "Room 702" or the common area, Tenant — "Staff-raised" when none,
+  Concern, Raised by, Raised time in Manila time), a Remarks block ("No remarks provided" when empty), a
+  centered "View ticket" button to `/maintenance` (omitted when `APP_URL` is unset), and a footer naming the
+  "Maintenance tickets" subscription. The intro ("… raised a ticket for <place>."), preheader and subject
+  use the place: `[New ticket] Room 702 · <concern>`, `[New ticket] LOBBY · <concern>`. The loading, authorization (admin/user only),
   `PENDING` and 5-minute freshness guards are unchanged; "Raised by" is the caller's JWT email. Admins can
   send a fictitious "Sample: maintenance ticket" to one recipient from the notification settings page.
   Follow-up idea (not built): a "ticket resolved" email to whoever raised the ticket.
@@ -1182,7 +1199,8 @@ in another module.**
   recording lives in Collections per §3/§12). All four quick-action buttons, and the
   tenant-search picker that powered them, have been removed from the Dashboard. **The Dashboard
   does not offer a tenant-search-and-act entry point** — staff use the Tenants page for that.
-- **Room Maintenance panel — DONE, with role gating (see §8).** Compact pending-ticket list and a
+- **Room Maintenance panel — DONE, with role gating (see §8).** Compact pending-ticket list (room and
+  common-area tickets, each with its place label) and a
   "View all in Maintenance →" link, visible only to `admin`/`user`. **Raise Ticket is removed from
   this panel** — raising a ticket happens only in the Maintenance module (§8); the panel is a
   read/monitor surface for the Dashboard, not a duplicate entry point.
