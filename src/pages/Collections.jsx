@@ -2,11 +2,11 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   fetchCutoffs, fetchTenants, recordPaymentsBatch, voidPayments,
-  fetchPaymentsForCutoff, fetchAdvanceCreditData, setPaymentReceiptRefs,
+  fetchPaymentsForCutoff, fetchAdvanceCreditData, setPaymentReceiptRefs, correctPaymentAmount,
 } from '../lib/supabase'
 import { loadCutoffBillingInputs, computeCutoffBilling } from '../lib/cutoffBilling'
-import { buildCollectionRows, cutoffOutstanding, countFullyPaid, pickPastDueCandidates, resolveCutoffId, adjacentCutoffId, createPastDueRefresh } from '../lib/collectionsRows'
-import { normalizePaymentRef, formatPaymentRefs, effectivePaymentLines, canEditPaymentRef, validateStagedRefs } from '../lib/paymentRefs'
+import { buildCollectionRows, cutoffOutstanding, countFullyPaid, pickPastDueCandidates, resolveCutoffId, adjacentCutoffId, createPastDueRefresh, cellStatus } from '../lib/collectionsRows'
+import { normalizePaymentRef, formatPaymentRefs, effectivePaymentLines, canEditPaymentRef, validateStagedRefs, canCorrectPaymentAmount, validateAmountCorrection } from '../lib/paymentRefs'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
 import { Droplets, Zap, Wallet, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react'
@@ -50,23 +50,40 @@ function StagedRefInputs({ row, category, staged, onRefChange }) {
   )
 }
 
-function PaymentLines({ pays, refEdit }) {
+function AmountPreview({ line, editing, billed, netPaid }) {
+  const v = validateAmountCorrection({ payment: line, newAmount: editing.amount, reason: editing.reason })
+  if (v.newCents == null) return <div className="text-[11px] text-ink-faint">Enter the correct amount (₱0 voids the whole line).</div>
+  const after = cellStatus({ billed, paid: (Math.round(Number(netPaid) * 100) + v.deltaCents) / 100 })
+  const tail = after.state === 'over' ? `Overpaid ${fmtPeso(after.over)}`
+    : after.state === 'paid' ? 'Fully paid'
+    : `Remaining ${fmtPeso(after.remaining)}`
+  return (
+    <div className="text-[11px] text-ink-muted">
+      {v.voidsLine && <span className="font-semibold text-warning-text">₱0 voids this whole payment line · </span>}
+      Billed {fmtPeso(after.billed)} · Paid after correction {fmtPeso(after.paid)} · {tail}
+    </div>
+  )
+}
+
+function PaymentLines({ pays, refEdit, amountEdit, billed, netPaid }) {
   const lines = effectivePaymentLines(pays)
   if (lines.length === 0) return null
   const { role, editing, saving } = refEdit
+  const amtEditing = amountEdit.editing
   return (
     <div className="space-y-1">
       {lines.map(l => {
         const refs = formatPaymentRefs(l)
         const perm = canEditPaymentRef({ role, payment: l })
         const isEditing = editing?.paymentId === l.id
+        const isAmountEditing = amtEditing?.paymentId === l.id
         const fieldOk = f => { const p = canEditPaymentRef({ role, payment: l, field: f }); return p.canFill || p.canChange }
         return (
           <div key={l.id} className="space-y-1">
             <div className="text-[11px] text-ink-muted flex items-center gap-1.5 flex-wrap">
               <span>{fmtPeso(l.amount)} · {fmtDate(l.payment_date)}</span>
               {refs ? <span>· {refs}</span> : <span className="text-ink-faint italic">· no S.I#/T.R# yet</span>}
-              {!isEditing && (perm.canFill || perm.canChange) && (
+              {!isEditing && !isAmountEditing && (perm.canFill || perm.canChange) && (
                 <button
                   onClick={() => refEdit.start(l)}
                   disabled={saving}
@@ -75,7 +92,38 @@ function PaymentLines({ pays, refEdit }) {
                   {refs ? 'Edit' : '+ add numbers'}
                 </button>
               )}
+              {!isEditing && !isAmountEditing && canCorrectPaymentAmount({ role, payment: l }) && (
+                <button
+                  onClick={() => amountEdit.start(l)}
+                  disabled={saving}
+                  className="text-[11px] text-ink-faint hover:text-navy-600 underline transition-colors disabled:opacity-50"
+                >
+                  Edit amount
+                </button>
+              )}
             </div>
+            {isAmountEditing && (
+              <div className="space-y-1">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <input
+                    type="text" aria-label="Corrected amount" value={amtEditing.amount} maxLength={20} disabled={saving}
+                    onChange={e => amountEdit.change('amount', e.target.value)}
+                    placeholder="₱ 0.00" className={refInputCls} style={{ border: '1px solid var(--border)' }}
+                  />
+                  <input
+                    type="text" aria-label="Reason for the correction" value={amtEditing.reason} maxLength={200} disabled={saving}
+                    onChange={e => amountEdit.change('reason', e.target.value)}
+                    placeholder="Reason (required)" className="w-48 px-2.5 py-1.5 text-[12px] rounded-lg bg-surface disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-navy-500/25 transition-colors"
+                    style={{ border: '1px solid var(--border)' }}
+                  />
+                  <button onClick={amountEdit.save} disabled={saving} className="btn primary text-[12px] disabled:opacity-50">
+                    {amountEdit.amountSaving ? 'Saving…' : 'Save'}
+                  </button>
+                  <button onClick={amountEdit.cancel} disabled={saving} className="btn secondary text-[12px] disabled:opacity-50">Cancel</button>
+                </div>
+                <AmountPreview line={l} editing={amtEditing} billed={billed} netPaid={netPaid} />
+              </div>
+            )}
             {isEditing && (
               <div className="flex items-center gap-1.5 flex-wrap">
                 <input
@@ -101,7 +149,7 @@ function PaymentLines({ pays, refEdit }) {
   )
 }
 
-function PayCell({ row, category, pays, status, selected, onToggle, onAmountChange, onRefChange, refEdit }) {
+function PayCell({ row, category, pays, status, selected, onToggle, onAmountChange, onRefChange, refEdit, amountEdit }) {
   const { state, billed, paid: netPaid, remaining, over } = status
   const key     = `${row.id}:${category}`
   const staged  = selected.get(key)
@@ -134,7 +182,7 @@ function PayCell({ row, category, pays, status, selected, onToggle, onAmountChan
           </button>
         </div>
         <div className="text-[11px] text-ink-faint">Billed {fmtPeso(billed)} · Paid {fmtPeso(netPaid)}</div>
-        <PaymentLines pays={pays} refEdit={refEdit} />
+        <PaymentLines pays={pays} refEdit={refEdit} amountEdit={amountEdit} billed={billed} netPaid={netPaid} />
         {staged && (
           <>
             <input
@@ -197,6 +245,8 @@ export default function Collections() {
   const [saving,     setSaving]     = useState(false)
   const [refEditing, setRefEditing] = useState(null)
   const [refSaving,  setRefSaving]  = useState(false)
+  const [amountEditing, setAmountEditing] = useState(null)
+  const [amountSaving,  setAmountSaving]  = useState(false)
 
   const { role } = useAuth()
   const { show, ToastEl } = useToast()
@@ -210,6 +260,7 @@ export default function Collections() {
   useEffect(() => {
     setSelected(new Map())
     setRefEditing(null)
+    setAmountEditing(null)
     load(cutoffParam, { refreshPastDue: false })
   }, [cutoffParam])
 
@@ -270,7 +321,7 @@ export default function Collections() {
   }
 
   function changeCutoff(id) {
-    if (saving || refSaving || id == null || id === selectedId) return
+    if (saving || refSaving || amountSaving || id == null || id === selectedId) return
     setSearchParams(prev => { const next = new URLSearchParams(prev); next.set('cutoff', String(id)); return next }, { replace: true })
   }
 
@@ -278,7 +329,7 @@ export default function Collections() {
   const isPast = !!selectedCutoff && !selectedCutoff.is_active
   const olderId = adjacentCutoffId(cutoffs, selectedId, 'older')
   const newerId = adjacentCutoffId(cutoffs, selectedId, 'newer')
-  const pickerLocked = saving || refSaving
+  const pickerLocked = saving || refSaving || amountSaving
 
   // Second-to-last-bill advance credit (credits) is an adjustment against rent, so the amount to collect is net of it.
   const collectionRows = useMemo(() =>
@@ -326,15 +377,15 @@ export default function Collections() {
   const refEdit = {
     role,
     editing: refEditing,
-    saving: refSaving || saving,
-    start: line => setRefEditing({ paymentId: line.id, si: line.si_no ?? '', tr: line.tr_no ?? '', expectedSi: line.si_no ?? null, expectedTr: line.tr_no ?? null }),
+    saving: refSaving || saving || amountSaving,
+    start: line => { setAmountEditing(null); setRefEditing({ paymentId: line.id, si: line.si_no ?? '', tr: line.tr_no ?? '', expectedSi: line.si_no ?? null, expectedTr: line.tr_no ?? null }) },
     change: (field, value) => setRefEditing(prev => (prev ? { ...prev, [field]: value } : prev)),
     cancel: () => setRefEditing(null),
     save: handleSaveRefs,
   }
 
   async function handleSaveRefs() {
-    if (!refEditing || refSaving) return
+    if (!refEditing || refSaving || amountSaving) return
     const si = normalizePaymentRef('SI', refEditing.si)
     const tr = normalizePaymentRef('TR', refEditing.tr)
     if (si.error || tr.error) {
@@ -355,6 +406,36 @@ export default function Collections() {
     setRefSaving(false)
   }
 
+  const amountEdit = {
+    editing: amountEditing,
+    amountSaving,
+    start: line => { setRefEditing(null); setAmountEditing({ paymentId: line.id, expected: line.amount, amount: (Math.round(line.amount * 100) / 100).toFixed(2), reason: '' }) },
+    change: (field, value) => setAmountEditing(prev => (prev ? { ...prev, [field]: value } : prev)),
+    cancel: () => setAmountEditing(null),
+    save: handleSaveAmount,
+  }
+
+  async function handleSaveAmount() {
+    if (!amountEditing || amountSaving || saving || refSaving) return
+    const v = validateAmountCorrection({ payment: { amount: amountEditing.expected }, newAmount: amountEditing.amount, reason: amountEditing.reason })
+    if (v.noChange) { show('No change: the amount is the same.', 'error'); return }
+    if (!v.ok) { show(`${v.error} Nothing was saved.`, 'error'); return }
+    setAmountSaving(true)
+    try {
+      const res = await correctPaymentAmount({
+        paymentId: amountEditing.paymentId, expectedAmount: amountEditing.expected, newAmount: v.newAmount, reason: v.reason,
+      })
+      setAmountEditing(null)
+      await load()
+      show(res?.changed === false ? 'No change.'
+        : v.voidsLine ? `Payment line voided (${fmtPeso(v.oldCents / 100)} -> ₱0.00).`
+        : `Amount corrected (${fmtPeso(v.oldCents / 100)} -> ${fmtPeso(v.newAmount)}).`, 'success')
+    } catch(e) {
+      show(e.message, 'error')
+    }
+    setAmountSaving(false)
+  }
+
   async function handleUndo(insertedRows) {
     try {
       await voidPayments(insertedRows)
@@ -367,7 +448,7 @@ export default function Collections() {
   }
 
   async function handleSaveBatch() {
-    if (selected.size === 0 || saving) return
+    if (selected.size === 0 || saving || amountSaving) return
 
     const staged = Array.from(selected.values())
     if (staged.some(s => parseAmt(s.amount) <= 0)) {
@@ -570,7 +651,7 @@ export default function Collections() {
                         row={r} category="RENT_WATER" pays={r.rwPays}
                         status={r.status.rw}
                         selected={selected} onToggle={toggleCell} onAmountChange={updateAmount}
-                        onRefChange={updateRef} refEdit={refEdit}
+                        onRefChange={updateRef} refEdit={refEdit} amountEdit={amountEdit}
                       />
                     </td>
                     <td>
@@ -578,7 +659,7 @@ export default function Collections() {
                         row={r} category="ELECTRICITY" pays={r.elecPays}
                         status={r.status.elec}
                         selected={selected} onToggle={toggleCell} onAmountChange={updateAmount}
-                        onRefChange={updateRef} refEdit={refEdit}
+                        onRefChange={updateRef} refEdit={refEdit} amountEdit={amountEdit}
                       />
                     </td>
                   </tr>
@@ -615,7 +696,7 @@ export default function Collections() {
           />
           <button
             onClick={handleSaveBatch}
-            disabled={saving}
+            disabled={saving || amountSaving}
             className="btn primary shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {saving ? 'Saving…' : 'Save'}
