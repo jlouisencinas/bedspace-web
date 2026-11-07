@@ -100,13 +100,18 @@ export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, cop
   if (!t.special || t.water > 0) charges.push({ label: 'Add: Water (cu. m)', mid: cu(t.waterCons), amount: t.water })
   ;(t.addons || []).filter(a => a.bill_on !== 'ELECTRIC').forEach(a =>
     charges.push({ label: `Add: ${a.label}${a.recurring ? '' : ' · one-time'}`, mid: '', amount: Number(a.amount) }))
-  // Only the receipt ref and the credit's days go in the row; the rest of the breakdown is paymentNote (a long cell grew
-  // the fixed-height copy and clipped it).
-  if (credit) charges.push({
-    label: credit.window ? 'Less: Advance' : 'Less: Advanced Payment',
-    mid: credit.window ? [credit.ref, creditPeriodText(credit.window)].filter(Boolean).join(' | ') : (credit.ref || ''),
-    amount: -credit.amount, amountText: '-' + peso(credit.amount),
-  })
+  // Only the receipt ref and the credit's days go in the row; the rest of the breakdown is paymentNote. The window credit
+  // prints them as two short small lines (midLines, `small`): one long wrapping cell widened the middle column, wrapped the
+  // labels and the amount and pushed the fixed-height copy past its height (late-fee line clipped).
+  if (credit) {
+    const lines = credit.window ? [credit.ref, creditPeriodText(credit.window)].filter(Boolean) : null
+    charges.push({
+      label: credit.window ? 'Less: Advance' : 'Less: Advanced Payment',
+      mid: lines ? lines.join(' | ') : (credit.ref || ''),
+      ...(lines ? { midLines: lines, small: true } : {}),
+      amount: -credit.amount, amountText: '-' + peso(credit.amount),
+    })
+  }
   return {
     company: COMPANY, copyLabel, peso,
     name: t.name, room: t.room_no, asOf: fmt(asOf), due: fmt(due), billNo, preparedBy,

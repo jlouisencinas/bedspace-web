@@ -6,9 +6,11 @@
  *   company   { address, bankName, bankAcct, bankBranch }
  *   copyLabel "Tenant's Copy" | "Owner's Copy"
  *   name, room, asOf, due, billNo, preparedBy
- *   charges   [{ label, mid, amount, rateText?, amountText?, italic? }]
+ *   charges   [{ label, mid, amount, rateText?, amountText?, italic?, midLines?, small? }]
  *             rateText adds a rate column (shown when any row has one); amountText overrides
- *             the formatted amount (e.g. "-₱4,500.00"); italic renders the row in italics
+ *             the formatted amount (e.g. "-₱4,500.00"); italic renders the row in italics; midLines prints the
+ *             middle cell as separate lines instead of `mid`; small uses a smaller font in the middle cell.
+ *             Amounts never wrap.
  *   total     number
  *   totalLabel  label of the total row (default "Total amount due")
  *   totalColor  CSS colour of the total row (e.g. green for an amount to be returned)
@@ -72,9 +74,11 @@ export default function Statement({
             {charges.map((c, i) => (
               <tr key={i} style={c.italic ? { fontStyle: 'italic' } : undefined}>
                 <td>{c.label}</td>
-                <td style={{ textAlign: 'center' }}>{c.mid}</td>
+                <td style={c.small ? { textAlign: 'center', fontSize: 9, lineHeight: 1.1 } : { textAlign: 'center' }}>
+                  {c.midLines ? c.midLines.map((l, j) => <div key={j}>{l}</div>) : c.mid}
+                </td>
                 {hasRate && <td className="rate" style={{ textAlign: 'center' }}>{c.rateText || ''}</td>}
-                <td style={{ textAlign: 'right' }}>{c.amountText ?? (Number(c.amount) < 0 ? '-' + peso(-c.amount) : peso(c.amount))}</td>
+                <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{c.amountText ?? (Number(c.amount) < 0 ? '-' + peso(-c.amount) : peso(c.amount))}</td>
               </tr>
             ))}
             {/* The table's own td colour rule beats a colour set on the <tr>, so the highlight
@@ -86,7 +90,7 @@ export default function Statement({
                   : {}
                 return (<>
                   <td style={hl}>{totalLabel}</td><td style={hl}></td>{hasRate && <td style={hl}></td>}
-                  <td style={{ textAlign: 'right', ...hl }}>{peso(total)}</td>
+                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap', ...hl }}>{peso(total)}</td>
                 </>)
               })()}
             </tr>

@@ -236,6 +236,17 @@ describe('printed second-to-last statement (Less: Advance)', () => {
     expect(p.charges.find(c => c.label === 'Less: Advance').mid).toBe('S.I# 5401 | 20 days (Oct 12 to Oct 31)')
   })
 
+  it('print layout: the credit cell is two short small lines (ref, days) so it never widens the row; legacy row unchanged', () => {
+    const worst = props(base, credit({ ref: 'S.I# 1234 & S.I# 1235', amount: 4354.84 })).charges.find(c => c.label === 'Less: Advance')
+    expect(worst).toMatchObject({ midLines: ['S.I# 1234 & S.I# 1235', '20 days (Oct 12 to Oct 31)'], small: true, amountText: '-₱4,354.84' })
+    expect(worst.mid).toBe('S.I# 1234 & S.I# 1235 | 20 days (Oct 12 to Oct 31)')
+    expect(Math.max(...worst.midLines.map(l => l.length))).toBeLessThanOrEqual(26)
+    expect(props(base, credit({ ref: '' })).charges.find(c => c.label === 'Less: Advance').midLines).toEqual(['20 days (Oct 12 to Oct 31)'])
+    const legacy = props(base, { amount: 5000, remaining: 0, ref: 'S.I# 1234' }).charges.find(c => c.label === 'Less: Advanced Payment')
+    expect(legacy.midLines).toBeUndefined()
+    expect(legacy.small).toBeUndefined()
+  })
+
   it('missing S.I#: only the days text; nothing remaining: no note; add-ons are in the total', () => {
     expect(props(base, credit({ ref: '' })).charges.find(c => c.label === 'Less: Advance').mid).toBe('20 days (Oct 12 to Oct 31)')
     expect(props(base, credit({ amount: 2000, remaining: 0 })).paymentNote).toBeUndefined()
