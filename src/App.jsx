@@ -79,12 +79,12 @@ function Layout() {
               <Route path="/occupancy-simulator" element={<OccupancySimulator />} />
               <Route path="/visitors"    element={<VisitorLog />}  />
               <Route path="/print/final-bill" element={<PrintFinalBill />} />
+              <Route path="/print/rent-water"  element={<PrintRentWater />}   />
+              <Route path="/print/electricity" element={<PrintElectricity />} />
             </>}
 
             {/* admin only */}
             {isAdmin && <>
-              <Route path="/print/rent-water"  element={<PrintRentWater />}   />
-              <Route path="/print/electricity" element={<PrintElectricity />} />
               <Route path="/approvals"         element={<Approvals />}        />
               <Route path="/users"             element={<Users />}            />
               <Route path="/notification-settings" element={<NotificationSettings />} />
