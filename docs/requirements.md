@@ -1022,6 +1022,9 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   `/print/rent-water` and `/print/electricity` (in the admin+user route block). Before, the header buttons showed for user
   but the routes were admin-only, so the click bounced to the Dashboard. The print pages only read (every input is
   admin/user under RLS) and write nothing, so no policy changed. Viewer and guard still cannot reach them.
+- **Correcting a payment amount (2026-11-07):** admin and user may correct the amount of a recorded Collections payment
+  (§12, "Edit amount"), with a required reason, not approval-gated (logged as `Payment Amount Corrected`). Viewer and guard
+  get no link, and the RPC `correct_payment_amount` refuses them (it checks `app_role()`; execute is revoked from anon).
 - **Add-ons are explicitly NOT approval-gated.** `user` role can add/remove billing add-ons
   (parking, aircon, etc.) freely, with no approval and no reason required — the only requirement
   is that it's logged in `activity_log`. Confirmed intentional, not a gap to close.
@@ -1435,6 +1438,9 @@ for monitoring rent collection status across all tenants at once.
   (same as Billing and Collections, mid-period transfers included).
 - **S.I# / T.R# (2026-11-06):** payment numbers recorded in Collections (§12) appear in the tenant profile Bills tab; they
   carry no amount, so no figure here changes.
+- **Amount corrections (2026-11-07):** a corrected payment (§12) is a void row plus a replacement row on the same cutoff,
+  so the net paid (SUM of amounts) here, on the Dashboard and in the profile Bills tab shows the corrected amount with no
+  code change.
 - **Feeds the Dashboard's projected-vs-actual summary widget (§10)** — the two share one
   calculation (`src/lib/collectionsSummary.js`), so there's no room for the numbers to drift apart.
   This must continue to hold once payments are recorded via the new multi-select/batch-save flow
@@ -1469,7 +1475,9 @@ Tenants module.
   general void-any-past-payment capability reachable anytime? Default assumption unless corrected:
   undo applies to the just-completed action only — a broader "void any historical payment" ability
   is a bigger feature that overlaps with the deposits/running-balance work in §5, and shouldn't be
-  assumed in scope here without confirmation.)*
+  assumed in scope here without confirmation.)* Still true (2026-11-07): Undo is the toast action right after a save.
+  A wrong amount on an older line is fixed with "Edit amount" (below), which also voids; correcting it to ₱0 voids the
+  whole line, so a payment entered by mistake can be removed later too (void row, never a delete).
 - **Payments recorded here must be immediately reflected in the Tenant Payment Monitoring module
   (§11) and the Dashboard's collections summary widget (§10)** — both already read from the same
   shared calculation, so this should hold automatically; re-verify it still holds once the
@@ -1521,9 +1529,29 @@ Tenants module.
     payments and non-positive amounts cannot be edited. It is compare-and-set (someone else's change in between ->
     "reload"). Each change writes a `Payment Ref Corrected` activity row with the old and new numbers; a no-op writes
     nothing. `payments` still has no UPDATE policy; the trigger `trg_payments_refs_only_update` refuses any update that
-    touches another column (§14).
+    touches another column (§14). The amount itself is corrected with "Edit amount" (next bullet), which inserts rows and
+    never updates one.
   - The live `payments` table also has two older columns, `method` and `reference_no` (not in `init.sql`); the app does
     not use them.
+- **Correct a payment amount — DONE (2026-11-07).** Each listed Rent + Water / Electricity payment still in force has an
+  "Edit amount" link (admin and user; not viewer/guard, void rows or undone payments). It opens an inline editor: the
+  amount (pre-filled), a required reason (max 200 characters), Save / Cancel, and a preview "Billed ₱x · Paid after
+  correction ₱y · Remaining ₱z / Overpaid ₱z / Fully paid". The new amount must be ₱0 or more with at most 2 decimals
+  (typed text is never rounded; `validateAmountCorrection` / `canCorrectPaymentAmount` in `src/lib/paymentRefs.js`); the
+  same amount is "No change" and writes nothing. **₱0 voids the whole line** (2026-11-07, for a line entered by mistake):
+  the preview warns "₱0 voids this whole payment line", the reason is still required, and the toast says "Payment line voided".
+  - Saving calls the RPC `correct_payment_amount` (`database/migrations/payments_correct_amount.sql`), one transaction:
+    a VOID row `-old` linked by `voids_payment_id` (dated today, like Undo), a replacement row with the new amount on the
+    same tenant, category, cutoff, payment date, pay type and S.I#/T.R# (note "Corrects payment #n (was ₱x)"), and an
+    activity row `Payment Amount Corrected` (actor, tenant/room/bed, `amount_paid` = the difference, note
+    "Payment #n: ₱old -> ₱new · reason", metadata with the three payment ids, old, new, reason). The original row stays.
+    A correction to ₱0 writes only the VOID row (note "Amount corrected to 0: payment #n voided"), no replacement; the
+    activity note ends "(line voided)", `entity_id` is the original payment, metadata `voided: true`, `new_payment_id` null.
+  - Compare-and-set: the RPC refuses if the amount changed since the page loaded, or the line was already undone or
+    corrected (also the unique index on `voids_payment_id`): "reload and try again", nothing written. A replacement can be
+    corrected again; each step is in the log. Allowed on past cutoffs, also when a final bill later covered the cutoff.
+  - Only one editor (S.I#/T.R# or amount) is open at a time; the cutoff picker and the batch Save are locked while it saves.
+    After a save the table, summary bar and past-due banner reload. The write refuses from an outdated tab (§13).
 - **Cell status shows remaining balance — DONE (2026-11-06).** Each Rent + Water / Electricity cell shows a status
   derived from billed vs. net paid (`cellStatus` in `src/lib/collectionsRows.js`, compared in integer cents; void rows
   lower paid):
@@ -1585,7 +1613,8 @@ Tenants module.
   governs the new Collections undo feature (§12)** — undo must be a void/compensating entry, never
   a `DELETE`. The S.I#/T.R# numbers of a payment (§12) are the only thing that can change on a saved payment row
   (RPC `set_payment_receipt_refs`); the `trg_payments_refs_only_update` trigger refuses any change to the amount, date,
-  category, cutoff or void link, for every role.
+  category, cutoff or void link, for every role. A payment amount correction (§12) is a void + re-record (RPC
+  `correct_payment_amount`: a negative VOID row plus a new row, or only the VOID row for a correction to ₱0), never an update or delete.
 
 ## 15. Confirmed implementation backlog
 Concrete follow-up work items surfaced by this requirements pass, for the dev pipeline to pick up:

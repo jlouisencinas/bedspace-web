@@ -121,6 +121,52 @@ describe('1. a tenant\'s balance reconciles: billed = paid + adjustments + outst
   })
 })
 
+describe('1b. a payment amount correction is void + re-record: never an update or delete, and it reconciles', () => {
+  // Rows as correct_payment_amount (payments_correct_amount.sql) writes them: the original stays, a VOID row negates it,
+  // a replacement carries the corrected amount on the same tenant/category/cutoff. A correction to 0 writes only the void row.
+  const correctRows = (orig, newAmount, nextId) => [
+    payment({ id: nextId, tenant_id: orig.tenant_id, cutoff_id: orig.cutoff_id, category: orig.category, amount: -orig.amount, pay_type: 'VOID', voids_payment_id: orig.id }),
+    payment({ id: nextId + 1, tenant_id: orig.tenant_id, cutoff_id: orig.cutoff_id, category: orig.category, amount: newAmount, payment_date: orig.payment_date, si_no: orig.si_no, tr_no: orig.tr_no }),
+  ].filter(r => r.amount !== 0)
+
+  it('net paid per tenant/category/cutoff equals the corrected amount (0 = line voided) to the cent, the row count only grows, and the balance reconciles', () => {
+    const s = SCENARIOS[0]
+    const { perTenant } = run(s)
+    const rnd = seeded(23)
+    let pays = []
+    perTenant.forEach((t, i) => {
+      pays.push(payment({ id: 1000 + i * 2, tenant_id: t.id, cutoff_id: OCT.id, category: 'RENT_WATER', amount: Math.floor(rnd() * 900000 + 1) / 100 }))
+      pays.push(payment({ id: 1001 + i * 2, tenant_id: t.id, cutoff_id: OCT.id, category: 'ELECTRICITY', amount: Math.floor(rnd() * 90000 + 1) / 100 }))
+    })
+    const before = pays.map(p => ({ ...p }))
+    const expected = new Map()
+    let nextId = 5000
+    let zeroes = 0
+    for (const orig of before) {
+      const newAmount = rnd() < 0.3 ? 0 : Math.floor(rnd() * 900000 + 1) / 100
+      if (newAmount === 0) zeroes++
+      pays = pays.concat(correctRows(orig, newAmount, nextId))
+      nextId += 2
+      expected.set(`${orig.tenant_id}:${orig.category}`, C(newAmount))
+    }
+    expect(perTenant.length).toBeGreaterThan(0)
+    expect(zeroes).toBeGreaterThan(0)
+    expect(pays.length).toBe(before.length * 3 - zeroes)
+    for (const b of before) expect(pays.find(p => p.id === b.id)).toEqual(b)
+    for (const [key, cents] of expected) {
+      const [tid, cat] = key.split(':')
+      const net = pays.filter(p => p.tenant_id === Number(tid) && p.category === cat && p.cutoff_id === OCT.id).reduce((a, p) => a + C(p.amount), 0)
+      expect(net).toBe(cents)
+    }
+    const rows = buildPaymentMonitoring(OCT, s.tenants, perTenant, pays, new Map())
+    for (const r of rows) {
+      const paidC = (expected.get(`${r.id}:RENT_WATER`) || 0) + (expected.get(`${r.id}:ELECTRICITY`) || 0)
+      expect(C(r.paid.total)).toBe(paidC)
+      expect(C(r.billed.total)).toBe(C(r.paid.total) + C(r.adjustments) + C(r.outstanding) - C(r.credit))
+    }
+  })
+})
+
 describe('2. a room\'s metered consumption equals the total billed across its tenants', () => {
   describe.each(SCENARIOS.map(s => [s.name, s]))('%s', (_, s) => {
     for (const U of ['WATER', 'ELECTRIC']) {

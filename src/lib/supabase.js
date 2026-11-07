@@ -365,6 +365,24 @@ export async function setPaymentReceiptRefs({ paymentId, expectedSi, expectedTr,
   return data
 }
 
+const CORRECT_AMOUNT_RPC_MISSING = 'The database update for correcting payment amounts has not been applied yet. Apply database/migrations/payments_correct_amount.sql first.'
+
+// Amount correction of a saved payment (validated by paymentRefs.js validateAmountCorrection). One RPC transaction:
+// a void row for the original + a replacement row + activity; compare-and-set on the amount the screen showed.
+export async function correctPaymentAmount({ paymentId, expectedAmount, newAmount, reason }) {
+  await assertAppCurrent()
+  const { data, error } = await supabase.rpc('correct_payment_amount', {
+    p_payment_id: paymentId, p_expected_amount: expectedAmount, p_new_amount: newAmount, p_reason: reason,
+  })
+  if (error) {
+    if (isMissingRpc(error)) throw new Error(CORRECT_AMOUNT_RPC_MISSING)
+    if (error.code === '23505') throw new Error('This payment was already undone or corrected. Reload the page and try again. Nothing was changed.')
+    throw error
+  }
+  if (!data) throw new Error('The amount was not corrected (not permitted for your role). Reload the page and try again.')
+  return data
+}
+
 export async function fetchPayments(tenantId) {
   const { data, error } = await supabase
     .from('payments')

@@ -4,8 +4,10 @@
  * S.I# (service invoice) / T.R# (temporary receipt) numbers on Collections payments (§12). Pure, no Supabase.
  * Stored bare (no prefix) in payments.si_no / payments.tr_no; optional; edited after saving only through the
  * set_payment_receipt_refs RPC (staff fill an empty number, admin changes or clears one).
+ * Amount corrections (void + re-record through the correct_payment_amount RPC) are validated here too.
  */
 import { normalizeReceiptRef } from './finalBill'
+import { parseMoney, moneyProblem } from './receiptLines'
 
 const KIND = { SI: 'ADVANCE', TR: 'DEPOSIT' }
 const LABEL = { SI: 'S.I#', TR: 'T.R#' }
@@ -43,7 +45,10 @@ export function effectivePaymentLines(pays) {
   const voided = new Set(list.filter(p => p.voids_payment_id != null).map(p => p.voids_payment_id))
   return list
     .filter(p => !isVoidRow(p) && !voided.has(p.id) && cents(p.amount) > 0)
-    .map(p => ({ id: p.id, amount: Number(p.amount), payment_date: p.payment_date ?? null, si_no: p.si_no ?? null, tr_no: p.tr_no ?? null, notes: p.notes ?? null }))
+    .map(p => ({
+      id: p.id, amount: Number(p.amount), payment_date: p.payment_date ?? null, si_no: p.si_no ?? null, tr_no: p.tr_no ?? null,
+      notes: p.notes ?? null, category: p.category ?? null, pay_type: p.pay_type ?? null,
+    }))
     .sort((a, b) => (a.payment_date === b.payment_date ? b.id - a.id : (a.payment_date ?? '') < (b.payment_date ?? '') ? 1 : -1))
 }
 
@@ -62,6 +67,40 @@ export function canEditPaymentRef({ role, payment, field = null, voided = false 
     canFill: fields.some(f => !set(f)),
     canChange: role === 'admin' && fields.some(f => set(f)),
   }
+}
+
+const CORRECTABLE = new Set(['RENT_WATER', 'ELECTRICITY'])
+const MAX_AMOUNT_CENTS = 9999999999
+const MAX_REASON = 200
+
+/** Who may correct a saved payment's amount (the correct_payment_amount RPC enforces the same rule): admin or staff,
+ *  on an in-force positive Rent + Water / Electricity payment. */
+export function canCorrectPaymentAmount({ role, payment, voided = false }) {
+  if (role !== 'admin' && role !== 'user') return false
+  if (!payment || voided || isVoidRow(payment) || cents(payment.amount) <= 0) return false
+  return CORRECTABLE.has(payment.category)
+}
+
+/**
+ * Typed corrected amount + reason for one payment, in integer cents (typed text is never rounded).
+ * -> { ok, error, noChange, voidsLine, oldCents, newCents, deltaCents, newAmount, reason }. ok is true only when a write should
+ * happen; an unchanged amount gives ok false, noChange true, error null. 0 is allowed and voids the whole line (voidsLine).
+ */
+export function validateAmountCorrection({ payment, newAmount, reason }) {
+  const fail = error => ({ ok: false, error, noChange: false, voidsLine: false, oldCents: null, newCents: null, deltaCents: null, newAmount: null, reason: null })
+  if (!payment) return fail('Payment not found. Reload the page and try again.')
+  const oldCents = cents(payment.amount)
+  const raw = String(newAmount ?? '').replace(/[₱\s]/g, '')
+  if (raw === '') return fail('Enter the corrected amount.')
+  const newCents = parseMoney(raw)
+  if (newCents == null) return fail(`The corrected ${moneyProblem(raw)}.`)
+  if (newCents > MAX_AMOUNT_CENTS) return fail('The corrected amount is too large.')
+  const base = { voidsLine: newCents === 0, oldCents, newCents, deltaCents: newCents - oldCents, newAmount: newCents / 100 }
+  if (newCents === oldCents) return { ok: false, error: null, noChange: true, ...base, reason: null }
+  const why = String(reason ?? '').trim()
+  if (!why) return { ...fail('Enter the reason for the correction.'), ...base }
+  if (why.length > MAX_REASON) return { ...fail(`The reason is too long (max ${MAX_REASON} characters).`), ...base }
+  return { ok: true, error: null, noChange: false, ...base, reason: why }
 }
 
 /** staged: [{ key, siNo, trNo, tenant: { name }, category }] -> [{ key, field: 'si'|'tr', message }] for every invalid number. */
