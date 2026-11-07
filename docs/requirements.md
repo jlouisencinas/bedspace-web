@@ -1060,6 +1060,9 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   `aria-pressed`. The input is not remounted, so typed text is preserved; `autoComplete` attributes
   are unchanged so password managers keep working. The field stays visible/masked only for the
   current page view — it is not reset after a failed login.
+- **Login page redesign — DONE.** Fixed-light, mobile-first card layout with the full bedspace logo
+  (`public/bedspace-logo-full.png`), a brand panel at lg+, labelled 44px inputs, orange primary
+  button, `role="alert"` errors. Sign-in behaviour unchanged.
 - **Role must be resolved before routing — DONE.** `useAuth().loading` stays true from sign-in
   until the user's role has been read from `profiles` (`src/lib/auth.jsx`); `App.jsx` shows the
   loading screen and only then mounts the router and the role-gated routes. This is what makes
