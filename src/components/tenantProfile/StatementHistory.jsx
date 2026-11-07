@@ -245,7 +245,7 @@ function ActiveStatement({ cutoff, entry, paid, tenant, siblingIds, transfers, t
     <div className="flex items-center gap-2 pt-1.5">
       <button type="button" className="btn-xs blue" disabled={!!disabledReason} title={disabledReason || ''}
         onClick={() => onPreview({ component: comp, cutoff, row, result, inputs })}><Eye size={10} /> Preview</button>
-      {isAdmin && !disabledReason && (
+      {canAct && !disabledReason && (
         <Link className="btn-xs" to={`/print/${comp === 'RW' ? 'rent-water' : 'electricity'}?cutoff=${cutoff.id}&tenant=${printId}`}>
           <Printer size={10} /> Print
         </Link>

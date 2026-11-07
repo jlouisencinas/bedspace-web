@@ -37,7 +37,8 @@ export default function Billing() {
   const [addonTenant, setAddonTenant] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(null)
   const { show, ToastEl } = useToast()
-  const { isAdmin } = useAuth()
+  const { isAdmin, isUser } = useAuth()
+  const canPrint = isAdmin || isUser // staff generate (print) monthly statements
 
   const cutoff = cutoffs.find(c => c.id === cutoffId)
 
@@ -169,7 +170,7 @@ export default function Billing() {
           ))}
         </div>
 
-        {view === 'tenants' && isAdmin && cutoffId && (
+        {view === 'tenants' && canPrint && cutoffId && (
           <div className="flex gap-1.5 items-center flex-wrap">
             <Link className="btn-xs blue inline-flex items-center gap-1" to={`${printPath}?cutoff=${cutoffId}`}><Printer size={11} /> Print all</Link>
             {selectedCount > 0 && heldPrintable.length > 0
@@ -211,7 +212,7 @@ export default function Billing() {
           <table>
             <thead>
               <tr>
-                {isAdmin && (
+                {canPrint && (
                   <th className="w-8" title="Print: untick to hold a statement and print it later">
                     <input type="checkbox" checked={printable.size > 0 && heldPrintable.length === 0} disabled={!printable.size}
                       onChange={() => saveHolds(heldPrintable.length === 0 ? [...new Set([...holds, ...printable])] : holds.filter(id => !printable.has(id)))} />
@@ -246,7 +247,7 @@ export default function Billing() {
                 const elecTotal = (t.elec  || 0) + (t.addonElectric || 0)
                 return (
                   <tr key={t.id}>
-                    {isAdmin && (
+                    {canPrint && (
                       <td className="whitespace-nowrap">
                         {printable.has(t.id) && (
                           <span className="inline-flex items-center gap-1">
@@ -258,7 +259,7 @@ export default function Billing() {
                     )}
                     <td className="td-name">
                       {t.name}
-                      {isAdmin && printable.has(t.id) && holds.includes(t.id) && <span className="badge ml-1.5 bg-warning-bg text-warning-text" style={{ border: '1px solid var(--warning-border)' }} title="Held: not in Print selected; print it later on its own">Held</span>}
+                      {canPrint && printable.has(t.id) && holds.includes(t.id) && <span className="badge ml-1.5 bg-warning-bg text-warning-text" style={{ border: '1px solid var(--warning-border)' }} title="Held: not in Print selected; print it later on its own">Held</span>}
                       {t.settled     && <span className="badge oor ml-1.5">moved out</span>}
                       {billCat === 'RENT_WATER' && !t.special && cutoff && (credits.has(t.id) || (cutoff.is_active
                         && billPosition(tenantById.get(t.id), cutoff) === 'SECOND_TO_LAST')) && (
@@ -359,7 +360,7 @@ export default function Billing() {
             <tfoot>
               {billCat === 'RENT_WATER' ? (
                 <tr className="bg-surface-2 border-t-2 border-navy-700">
-                  <td colSpan={isAdmin ? 4 : 3} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wide">Totals</td>
+                  <td colSpan={canPrint ? 4 : 3} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wide">Totals</td>
                   <td className="text-right font-extrabold">{peso(totals.rent)}</td>
                   <td colSpan={2}></td>
                   <td></td>
@@ -369,7 +370,7 @@ export default function Billing() {
                 </tr>
               ) : (
                 <tr className="bg-surface-2 border-t-2 border-amber-500">
-                  <td colSpan={isAdmin ? 4 : 3} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wide">Totals</td>
+                  <td colSpan={canPrint ? 4 : 3} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wide">Totals</td>
                   <td colSpan={2}></td>
                   <td></td>
                   <td className="text-right font-extrabold">{peso(totals.elec)}</td>
