@@ -256,7 +256,7 @@ its own "Could not load …: <message>" if its read fails (the other tabs still 
     one-month stay ("billed on the final bill"); no row ("no charge computed"). A warning shows when the Billing page places the
     tenant in their current room for a period they spent in another room (transfer in an earlier cutoff), and "Check readings
     for Room X" when that room does not reconcile. Preview (admin and user) opens the printed statement, identical to the
-    print page, with Billing Date / Prepared by and the REPRINT notice (on by default); admin also gets Print
+    print page, with Billing Date / Prepared by and the REPRINT notice (on by default); admin and user also get Print
     (`/print/rent-water` or `/print/electricity` `?cutoff=&tenant=`). Preview and Print are offered only when the component
     is over ₱0.01 (the print filter), and not for Rent + Water while advance credits failed to load. Nothing is written or
     cached for the Billing page.
@@ -364,8 +364,8 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   small two-line note in the top-right corner under the copy label (it takes no height, so nothing on the fixed half-page copy
   is pushed off). Back returns to the previous page. A tenant with no statement there gets "No … statement for this tenant on
   <cutoff>"; a failed load shows "Could not load this cutoff: <message>" instead (on the full print too).
-- **Print selected / hold a statement (2026-11-06).** Billing's Per Tenant view (admin, the role that can open the print
-  pages) has a "Print" checkbox column (with select-all) on every row that gets a statement in the chosen category, a per-row
+- **Print selected / hold a statement (2026-11-06).** Billing's Per Tenant view (admin and user, the roles that can open the
+  print pages; user since 2026-11-07) has a "Print" checkbox column (with select-all) on every row that gets a statement in the chosen category, a per-row
   print icon (`?only=<id>`), "Print all", "Print selected (n)" (`?skip=<held ids>`) and "Clear holds". Unticking a row holds
   it: a "Held" badge shows, and the hold is kept in this browser only (`localStorage`, per cutoff and category; not shared
   with other staff). The print pages accept `?only=` / `?skip=` (comma-separated tenant ids, unknown ids ignored;
@@ -708,7 +708,7 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       in); non-admins cannot. Going back and changing the date/readings rebuilds the computed lines but keeps
       lines staff added.
     - **Print:** `/print/final-bill?id=` / `?ids=` (`PrintFinalBill.jsx`, admin and user, read-only for user: the
-      receipt-number fix panel is admin-only; the rent-water / electricity print pages stay admin-only) reuses
+      receipt-number fix panel is admin-only; the rent-water / electricity print pages are admin and user too) reuses
       `Statement.jsx` (additive props: rate column, amount text, italic rows, total label/colour). Buttons: "Print
       final bill" on the move-out result screen and in the tenant profile (Bills tab, with an admin-only
       Void). Voiding sets the bill VOID with a reason (and `voided_by`) and puts its HELD-then-settled receipts back to HELD.
@@ -978,8 +978,13 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   route block); Void and the receipt-number fixes stay admin-only. The profile's Visitors tab is
   admin/user only, like the Visitor Log (§17).
 - **Monthly statement history (profile Bills tab):** admin and user see it and open the statement Preview (including its
-  browser print, read-only). The "Print" link to `/print/rent-water` / `/print/electricity` `?tenant=` is admin-only, like those
-  routes (admin-only in `App.jsx`). Every input it reads is admin/user under RLS; nothing is written.
+  browser print, read-only). The "Print" link to `/print/rent-water` / `/print/electricity` `?tenant=` is admin and user, like those
+  routes (admin+user block in `App.jsx`).
+- **Generating monthly bills (2026-11-07):** `user` generates (prints) the monthly Rent + Water and Electricity statements
+  like admin: the Billing header buttons, the Per Tenant "Print all / Print selected / hold" controls and the print pages
+  `/print/rent-water` and `/print/electricity` (in the admin+user route block). Before, the header buttons showed for user
+  but the routes were admin-only, so the click bounced to the Dashboard. The print pages only read (every input is
+  admin/user under RLS) and write nothing, so no policy changed. Viewer and guard still cannot reach them.
 - **Add-ons are explicitly NOT approval-gated.** `user` role can add/remove billing add-ons
   (parking, aircon, etc.) freely, with no approval and no reason required — the only requirement
   is that it's logged in `activity_log`. Confirmed intentional, not a gap to close.
