@@ -6,6 +6,7 @@ import {
 import { loadCutoffBillingInputs, computeCutoffBilling } from '../lib/cutoffBilling'
 import { rentWaterRows, electricityRows, creditSubText } from '../lib/monthlyStatement'
 import { windowRange } from '../lib/advanceWindow'
+import { commercialWaterIssues } from '../lib/commercialWater'
 import { billPosition, advanceConsumed } from '../lib/finalBill'
 import { cacheBilling } from '../lib/billingCache'
 import { useToast } from '../components/Toast'
@@ -99,6 +100,7 @@ export default function Billing() {
 
   const printPath = billCat === 'RENT_WATER' ? '/print/rent-water' : '/print/electricity'
   const printable = useMemo(() => new Set((billCat === 'RENT_WATER' ? rentWaterRows(perTenant) : electricityRows(perTenant)).map(t => t.id)), [perTenant, billCat])
+  const waterIssues = useMemo(() => billCat === 'RENT_WATER' ? commercialWaterIssues(perTenant) : [], [perTenant, billCat])
   const heldPrintable = holds.filter(id => printable.has(id))
   const selectedCount = printable.size - heldPrintable.length
   const toggleHold = (id) => saveHolds(holds.includes(id) ? holds.filter(x => x !== id) : [...holds, id])
@@ -201,6 +203,17 @@ export default function Billing() {
       {advData.error && (
         <div className="mb-3 px-4 py-3 bg-warning-bg border border-warning-border rounded-xl text-[13px] text-warning-text">
           Advance credits could not be loaded ({advData.error}); the amounts below do not include any second-to-last-bill advance credit.
+        </div>
+      )}
+
+      {!loading && waterIssues.length > 0 && (
+        <div className="mb-3 px-4 py-3 bg-warning-bg border border-warning-border rounded-xl text-[13px] text-warning-text">
+          {waterIssues.map(w => (
+            <div key={w.id} className="flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span><strong>{w.name}</strong>: commercial water is 0 cu. m. Enter the Commercial water reading on <Link to="/utilities" className="underline">Utilities</Link> before issuing this bill.</span>
+            </div>
+          ))}
         </div>
       )}
 

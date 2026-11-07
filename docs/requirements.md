@@ -374,6 +374,15 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   Per Room reconciliation and Collections are exactly the same whether a tenant is held or not. In print, every print page
   lets the app shell grow to its full height, so every selected statement prints on its own A4 page; before 2026-11-06 the
   app shell's one-screen height clipped the print to the first page.
+- **Commercial Rent + Water statement always has both rows (2026-11-07).** A `COMMERCIAL` tenant's Rent + Water statement
+  lists "Monthly Rent" and "Add: Water (cu. m)" every time, also at 0.00 cu. m / P0.00 (`rentWaterProps` in
+  `monthlyStatement.js`, so the Billing preview, the print page and the profile statement history all match). Before, a special
+  tenant's Water row was hidden whenever its water was 0, so a commercial bill with a missing reading silently printed rent
+  only. `PARKING_ONLY` / `OTHER` keep the old rule (Water row only when water > 0); the commercial Electricity statement is
+  unchanged (commercial electric still pending). Amounts and totals are unchanged; a reprint of an older commercial statement
+  now shows the 0.00 water row. Billing (Rent + Water) shows a warning banner for each commercial tenant with no water
+  consumption (`commercialWaterIssues` in `src/lib/commercialWater.js`): "<name>: commercial water is 0 cu. m. Enter the
+  Commercial water reading on Utilities before issuing this bill." It is advisory and never blocks printing (a real 0 is possible).
 - **Proration:** mid-cycle move-in/move-out/transfer prorates by exact day count against the
   rent/water cutoff window (not a calendar month) — confirmed correct as implemented.
 - **Due-date labels must be dynamic, not hardcoded.** Today `Collections.jsx` shows fixed strings
@@ -935,7 +944,15 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   P&L counts it as part of the amount to be collected, so water variance = (rooms to be collected +
   commercial water) − provider cost. The commercial tenant's `rate` stays a separate fixed monthly charge. **Commercial ELECTRIC is
   still pending** (not linked, not in variance). Actual collections for a cutoff = bedspace tenants +
-  the commercial tenant.
+  the commercial tenant. The Utilities footnote says so (before, it called commercial billing "pending").
+- **Common-area Previous carries forward (2026-11-07).** When a cutoff has no saved row yet for a common area (Lobby,
+  Second Floor, Roof Deck, Commercial; water and electric), Utilities shows both Previous and Actual at the previous cutoff's
+  actual reading (consumption 0 until the new reading is typed), with the hint "Previous carried from <cutoff>"
+  (`carriedAreaReading` in `src/lib/commercialWater.js`; before, they showed 0/0). Nothing is written until staff edit a field
+  (auto-save) or press Save All; a saved row is never overwritten. The Commercial WATER row warns "No water consumption: the
+  commercial tenant will be billed P0.00 water" when its consumption is 0 or less, and "Previous differs from last cutoff's
+  actual reading" when a saved Previous does not equal the previous cutoff's actual reading (`areaPrevMismatch`, compared in
+  cents). Warnings only; nothing is blocked.
 - **Final-bill utilities vs the cutoff statement.** A leaver's final bill is stay-anchored (reading-to-reading, split by days
   present, priced per window), so it need not equal the share that tenant would have had on the cutoff statement as a ghost
   participant (gap days, a window opening reading older than the previous tenant's closing reading). The room still reconciles inside

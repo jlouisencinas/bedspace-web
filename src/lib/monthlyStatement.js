@@ -97,7 +97,7 @@ export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, cop
   const room = roomRow || {}
   const sp = splits.find(s => s.room_id === t.room_id && s.tenant_id === t.id && s.utility === 'WATER')
   const charges = [{ label: 'Monthly Rent', mid: period, amount: t.rent }]
-  if (!t.special || t.water > 0) charges.push({ label: 'Add: Water (cu. m)', mid: cu(t.waterCons), amount: t.water })
+  if (!t.special || t.category === 'COMMERCIAL' || t.water > 0) charges.push({ label: 'Add: Water (cu. m)', mid: cu(t.waterCons), amount: t.water })
   ;(t.addons || []).filter(a => a.bill_on !== 'ELECTRIC').forEach(a =>
     charges.push({ label: `Add: ${a.label}${a.recurring ? '' : ' · one-time'}`, mid: '', amount: Number(a.amount) }))
   // Only the receipt ref and the credit's days go in the row; the rest of the breakdown is paymentNote. The window credit
