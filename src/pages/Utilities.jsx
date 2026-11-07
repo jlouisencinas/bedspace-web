@@ -4,6 +4,7 @@ import {
   fetchInterimReadings, fetchTenants, fetchAreaReadings, upsertAreaReadings,
 } from '../lib/supabase'
 import { computePnL } from '../lib/pnl'
+import { carriedAreaReading, areaPrevMismatch } from '../lib/commercialWater'
 import { windowLastDay } from '../lib/cutoffDates'
 import { buildAndSaveSnapshot } from '../lib/snapshot'
 import { recordAdvanceCredits } from '../lib/advanceCredit'
@@ -48,6 +49,9 @@ export default function Utilities() {
   const [cfg, setCfg] = useState({})               // cutoff provider/markup/rate fields
   const [areas, setAreas] = useState({})           // `${name}|${utility}` → {previous_reading,current_reading}
   const [areaDirty, setAreaDirty] = useState({})   // `${name}|${utility}` → true, pending auto-save
+  const [priorAreas, setPriorAreas] = useState([])   // the previous cutoff's area readings
+  const [priorName, setPriorName] = useState('')
+  const [areaCarried, setAreaCarried] = useState({}) // `${name}|${utility}` → true while showing the carried Previous
   const [autoState, setAutoState] = useState('')   // '' | 'saving' | 'saved'
   const inflight = useRef(false)
   const pendingFlush = useRef(false)
@@ -78,23 +82,23 @@ export default function Utilities() {
   useEffect(() => {
     if (!cutoffId) return
     setLoading(true)
+    const idx = cutoffs.findIndex(x => x.id === cutoffId)
+    const prior = idx >= 0 ? cutoffs[idx + 1] : null
     Promise.all([
       fetchUtilityBill(cutoffId), fetchInterimReadings(cutoffId), fetchTenants(), fetchAreaReadings(cutoffId),
-    ]).then(([b, ir, t, ar]) => {
+      prior ? fetchAreaReadings(prior.id) : Promise.resolve([]),
+    ]).then(([b, ir, t, ar, pr]) => {
       b.sort((a, c) => (parseInt(a.room_no) || 0) - (parseInt(c.room_no) || 0))
       setBill(b); setInterims(ir); setTenants(t); setEdits({}); setAreaDirty({}); setAutoState('')
       const c = cutoffs.find(x => x.id === cutoffId) || {}
       setCfg({ ...c })
-      const am = {}
+      const am = {}, carried = {}
       AREAS.forEach(([name, rt]) => ['WATER', 'ELECTRIC'].forEach(u => {
         const found = ar.find(x => x.area_name === name && x.utility === u)
-        am[`${name}|${u}`] = {
-          previous_reading: found?.previous_reading ?? 0,
-          current_reading:  found?.current_reading ?? 0,
-          rate_type: rt,
-        }
+        am[`${name}|${u}`] = { ...carriedAreaReading(found, pr, name, u), rate_type: rt }
+        if (!found && pr.some(x => x.area_name === name && x.utility === u)) carried[`${name}|${u}`] = true
       }))
-      setAreas(am)
+      setAreas(am); setPriorAreas(pr); setPriorName(prior?.name || ''); setAreaCarried(carried)
       setLoading(false)
     }).catch(e => { show(e.message, 'error'); setLoading(false) })
   }, [cutoffId, cutoffs, healTick])
@@ -398,10 +402,27 @@ export default function Utilities() {
               const setA = (f, v) => {
                 setAreas(s => ({ ...s, [key]: { ...s[key], rate_type: rt, [f]: v } }))
                 setAreaDirty(d => ({ ...d, [key]: true }))
+                setAreaCarried(c => { if (!c[key]) return c; const n = { ...c }; delete n[key]; return n })
               }
+              const carried = !!areaCarried[key]
+              const commercialWater = name === 'Commercial' && utility === 'WATER'
+              const mismatch = commercialWater && !carried && areaPrevMismatch(a, priorAreas, name, utility)
               return (
                 <tr key={name}>
-                  <td><strong>{name}</strong></td>
+                  <td>
+                    <strong>{name}</strong>
+                    {carried && priorName && <div className="text-[11px] text-ink-faint">Previous carried from {priorName}</div>}
+                    {commercialWater && !(cons > 0) && (
+                      <div className="mt-1"><span className="badge bg-warning-bg text-warning-text" style={{ border: '1px solid var(--warning-border)' }}>
+                        No water consumption: the commercial tenant will be billed P0.00 water
+                      </span></div>
+                    )}
+                    {mismatch && (
+                      <div className="mt-1"><span className="badge bg-warning-bg text-warning-text" style={{ border: '1px solid var(--warning-border)' }}>
+                        Previous differs from last cutoff's actual reading
+                      </span></div>
+                    )}
+                  </td>
                   <td>
                     <span className={`badge ${rt === 'BEDSPACE' ? 'bg-info-bg text-info-text' : 'bg-surface-3 text-ink-muted'}`}>
                       {rt === 'BEDSPACE' ? 'Bedspace' : 'Standard'}
@@ -416,7 +437,7 @@ export default function Utilities() {
             })}
           </tbody></table>
         </div>
-        <p className="text-[11px] text-ink-faint mt-2">Lobby / 2nd Floor / Roof Deck = standard (overhead). Commercial = bedspace (separate billing, pending).</p>
+        <p className="text-[11px] text-ink-faint mt-2">Lobby / 2nd Floor / Roof Deck = standard (overhead). Commercial = bedspace: its water is billed to the commercial tenant's Rent + Water statement (commercial electric still pending).</p>
       </div>
 
       {/* Room readings */}
