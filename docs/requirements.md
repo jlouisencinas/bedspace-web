@@ -1468,7 +1468,7 @@ Tenants module.
   number blocks the whole batch before anything is written; the message names the tenant, category and field. The same
   number may repeat across tenants/categories (one invoice can cover several). The activity note of the payment includes
   them.
-  - **Display:** under "✓ Paid" each payment still in force (void rows and undone payments hidden) is listed as
+  - **Display:** under the "✓ Paid" or "Partial" badge each payment still in force (void rows and undone payments hidden) is listed as
     "₱amount · date · S.I# x · T.R# y", or "no S.I#/T.R# yet". The tenant profile Bills tab shows an "S.I# / T.R#" column.
   - **Correcting later:** "Edit" / "+ add numbers" on a listed payment calls the RPC `set_payment_receipt_refs`. Staff
     (`user`) may fill an empty number only; changing or clearing a recorded number is admin-only. Void rows, undone
@@ -1478,6 +1478,22 @@ Tenants module.
     touches another column (§14).
   - The live `payments` table also has two older columns, `method` and `reference_no` (not in `init.sql`); the app does
     not use them.
+- **Cell status shows remaining balance — DONE (2026-11-06).** Each Rent + Water / Electricity cell shows a status
+  derived from billed vs. net paid (`cellStatus` in `src/lib/collectionsRows.js`, compared in integer cents; void rows
+  lower paid):
+  - **Unpaid** (net paid <= 0): "Billed: ₱x", checkbox and amount, as before. A fully voided cell is Unpaid again.
+  - **Partial** (0 < paid < billed): amber "Partial · Remaining ₱x" badge, never the plain "Paid" badge.
+  - **Paid** (paid = billed): green "✓ Paid".
+  - **Overpaid** (paid > billed, incl. an advance paid before the bill exists): "✓ Paid" plus "Overpaid ₱x".
+  - Every non-empty state shows "Billed ₱x · Paid ₱y" under the badge. "+ add" pre-fills the remaining (empty when
+    nothing remains) and records an ordinary extra payment of that category; Undo voids it, as before.
+  - Summary bar: "x/n paid" counts only fully paid (paid or overpaid) cells (`countFullyPaid`); partial payers are not
+    counted. A "Remaining ₱x (Rent+Water ₱a · Electricity ₱b)" total uses `cutoffOutstanding` (per tenant and component,
+    an overpayment is never netted against another tenant or the other component).
+  - Water is not a separate payment category: rent and water are one "Rent + Water" bucket (due EOM). Water still owed
+    after a rent payment shows as the Rent + Water remaining and is recorded with "+ add" on that cell. The badge says
+    "Remaining", not "Water", because payments are not allocated to bill components. `OTHER`-category payments are not
+    shown on this page.
 
 ## 13. UI/UX & theming
 - **Dark / Light theme toggle.** Confirmed requirement: the app gets a theme toggle (dark and

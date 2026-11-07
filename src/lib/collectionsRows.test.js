@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildCollectionRows, cutoffOutstanding, pickPastDueCandidates, resolveCutoffId, adjacentCutoffId, createPastDueRefresh } from './collectionsRows'
+import { buildCollectionRows, cutoffOutstanding, pickPastDueCandidates, resolveCutoffId, adjacentCutoffId, createPastDueRefresh, cellStatus, countFullyPaid } from './collectionsRows'
 import { buildPaymentMonitoring, summarizeCollections } from './collectionsSummary'
 import { tenant, payment } from './__fixtures__/tenants'
 import { SEP, OCT, NOV } from './__fixtures__/cutoffs'
@@ -196,6 +196,92 @@ describe('per-tenant reconciliation with a void, a partial and an overpayment', 
     expect(rows.find(r => r.id === 1).remaining).toEqual({ rw: 0, elec: 220.1 })
     expect(rows.find(r => r.id === 3).remaining.rw).toBe(0)
     expect(c(cutoffOutstanding(rows).total)).toBe(22010 + 315035 + 22010 + 7555)
+  })
+})
+
+describe('cellStatus (Collections cell shows the remaining balance)', () => {
+  it('partial payment: billed 7,828, paid 6,750 -> partial, remaining 1,078', () => {
+    expect(cellStatus({ billed: 7828, paid: 6750 })).toEqual({ state: 'partial', billed: 7828, paid: 6750, remaining: 1078, over: 0 })
+  })
+
+  it('paid in full: billed 6,750, paid 6,750 -> paid, remaining 0', () => {
+    expect(cellStatus({ billed: 6750, paid: 6750 })).toMatchObject({ state: 'paid', remaining: 0, over: 0 })
+  })
+
+  it('overpaid: billed 6,750, paid 7,000 -> over 250, remaining 0', () => {
+    expect(cellStatus({ billed: 6750, paid: 7000 })).toMatchObject({ state: 'over', remaining: 0, over: 250 })
+  })
+
+  it('advance before any bill: billed 0, paid 6,750 -> over 6,750', () => {
+    expect(cellStatus({ billed: 0, paid: 6750 })).toMatchObject({ state: 'over', remaining: 0, over: 6750 })
+  })
+
+  it('compares in exact cents (0.1 + 0.2 float noise against 100.30 billed)', () => {
+    expect(cellStatus({ billed: 100.3, paid: 100 + 0.1 + 0.2 })).toMatchObject({ state: 'paid', remaining: 0, over: 0 })
+    expect(cellStatus({ billed: 100.1, paid: 100.10 })).toMatchObject({ state: 'paid' })
+    expect(cellStatus({ billed: 620.15, paid: 0.1 + 0.2 })).toMatchObject({ state: 'partial', remaining: 619.85 })
+  })
+
+  it('nothing paid: unpaid when billed, none when nothing billed; a net-voided cell is unpaid', () => {
+    expect(cellStatus({ billed: 1078, paid: 0 })).toMatchObject({ state: 'unpaid', remaining: 1078, over: 0 })
+    expect(cellStatus({ billed: 0, paid: 0 })).toMatchObject({ state: 'none', remaining: 0, over: 0 })
+    expect(cellStatus({ billed: 1078, paid: -0 })).toMatchObject({ state: 'unpaid' })
+  })
+})
+
+describe('buildCollectionRows status per component', () => {
+  const t1 = tenant({ id: 1 })
+  const perTenant = [bill(1, { rent: 6750, water: 1078, elec: 500 })]
+  const first = payment({ id: 1, tenant_id: 1, category: 'RENT_WATER', amount: 6750 })
+
+  it('a second "+ add" payment of the remaining makes the cell paid; voiding it returns it to partial with the same remaining', () => {
+    const extra = payment({ id: 2, tenant_id: 1, category: 'RENT_WATER', amount: 1078 })
+    const [partial] = buildCollectionRows({ perTenant, tenants: [t1], payments: [first] })
+    expect(partial.status.rw).toMatchObject({ state: 'partial', billed: 7828, paid: 6750, remaining: 1078 })
+    const [paid] = buildCollectionRows({ perTenant, tenants: [t1], payments: [first, extra] })
+    expect(paid.status.rw).toMatchObject({ state: 'paid', remaining: 0 })
+    const voidRow = payment({ id: 3, tenant_id: 1, category: 'RENT_WATER', amount: -1078, pay_type: 'VOID', voids_payment_id: 2 })
+    const [reopened] = buildCollectionRows({ perTenant, tenants: [t1], payments: [first, extra, voidRow] })
+    expect(reopened.status.rw).toMatchObject({ state: 'partial', remaining: 1078 })
+  })
+
+  it('overpaid rent+water never lowers the electricity remaining (no cross-component netting)', () => {
+    const big = payment({ id: 1, tenant_id: 1, category: 'RENT_WATER', amount: 9000 })
+    const [r] = buildCollectionRows({ perTenant, tenants: [t1], payments: [big] })
+    expect(r.status.rw).toMatchObject({ state: 'over', over: 1172 })
+    expect(r.status.elec).toMatchObject({ state: 'unpaid', billed: 500, remaining: 500 })
+    expect(r.remaining.elec).toBe(500)
+  })
+
+  it('status agrees with the existing billed / paid / remaining fields', () => {
+    const [r] = buildCollectionRows({ perTenant, tenants: [t1], payments: [first] })
+    for (const k of ['rw', 'elec']) {
+      expect(r.status[k].billed).toBe(r.billed[k])
+      expect(r.status[k].paid).toBe(r.paid[k])
+      expect(r.status[k].remaining).toBe(r.remaining[k])
+    }
+  })
+})
+
+describe('countFullyPaid', () => {
+  it('counts only paid / overpaid cells: one partial, one paid, one unpaid -> 1', () => {
+    const tenants = [tenant({ id: 1 }), tenant({ id: 2, bed: 'B' }), tenant({ id: 3, bed: 'C' })]
+    const perTenant = [bill(1, { rent: 5000, water: 300 }), bill(2, { rent: 5000, water: 300 }), bill(3, { rent: 5000, water: 300 })]
+    const payments = [
+      payment({ id: 1, tenant_id: 1, category: 'RENT_WATER', amount: 5000 }),
+      payment({ id: 2, tenant_id: 2, category: 'RENT_WATER', amount: 5300 }),
+    ]
+    const rows = buildCollectionRows({ perTenant, tenants, payments })
+    expect(countFullyPaid(rows, 'rw')).toBe(1)
+    expect(countFullyPaid(rows, 'elec')).toBe(0)
+  })
+
+  it('an overpaid cell counts as paid', () => {
+    const rows = buildCollectionRows({
+      perTenant: [bill(1, { rent: 100 })], tenants: [tenant({ id: 1 })],
+      payments: [payment({ id: 1, tenant_id: 1, category: 'RENT_WATER', amount: 150 })],
+    })
+    expect(countFullyPaid(rows, 'rw')).toBe(1)
   })
 })
 
