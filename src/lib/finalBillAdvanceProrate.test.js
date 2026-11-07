@@ -4,7 +4,7 @@ import {
   proratedAdvanceCents, advanceCredits, advanceAdjustments, creditsToStore, assertCreditRows, priorCredits, buildCreditLines,
   buildFinalBillDraft, verifyBillAgainstDb, toCents,
 } from './finalBill'
-import { rentWaterProps, proratedNote } from './monthlyStatement'
+import { rentWaterProps, proratedNote, advanceNote } from './monthlyStatement'
 import { buildPaymentMonitoring } from './collectionsSummary'
 import { OCT, OCT_ACTIVE, SEP_ACTIVE, FEB27_ACTIVE, FEB28_ACTIVE, CUTOFFS } from './__fixtures__/cutoffs'
 import { tenant, deposit } from './__fixtures__/tenants'
@@ -152,19 +152,31 @@ describe('printed second-to-last statement', () => {
   const row = { id: 1, name: 'Tenant 1', room_id: 11, room_no: '101', rent: 5000, water: 193.8, waterCons: 1.25, addons: [] }
   const props = (credit) => rentWaterProps({ t: row, cutoff: OCT, roomRow: {}, splits: [], credit, billNo: 'X-1', copyLabel: 'Tenant copy', billingDate: '2026-10-31' })
 
-  it('shows the credited amount, the day count and the remainder; total = rent + water - credit', () => {
+  it('the row keeps only the receipt ref; the breakdown is the payment note; total = rent + water - credit', () => {
     const p = props({ amount: 3709.68, remaining: 1290.32, ref: 'S.I# 1234', days: 23, windowDays: 31 })
     const line = p.charges.find(c => c.label === 'Less: Advanced Payment')
-    expect(line.mid).toBe('S.I# 1234 · credited ₱3,709.68 on this bill (pro-rated 23 of 31 days) · remaining ₱1,290.32 for the final bill')
+    expect(line.mid).toBe('S.I# 1234')
     expect(line.amount).toBe(-3709.68)
+    expect(p.paymentNote).toBe('Advance applied now: Php 3,709.68 (23 of 31 days, for your stay Nov 1 to 23). Remaining advance Php 1,290.32 will be credited on the final bill.')
     expect(toCents(p.total)).toBe(toCents(5000 + 193.8 - 3709.68))
   })
 
-  it('a day count that does not reproduce the amount prints "(pro-rated)" only; no day count prints no note', () => {
+  it('owner example: out Nov 11 -> 1,774.19 now (11 of 31 days, Nov 1 to 11), 3,225.81 on the final bill', () => {
+    const p = props({ amount: 1774.19, remaining: 3225.81, ref: '', days: 11, windowDays: 31 })
+    expect(p.charges.find(c => c.label === 'Less: Advanced Payment').mid).toBe('')
+    expect(p.paymentNote).toBe('Advance applied now: Php 1,774.19 (11 of 31 days, for your stay Nov 1 to 11). Remaining advance Php 3,225.81 will be credited on the final bill.')
+  })
+
+  it('one day prints a single date; a day count that does not reproduce the amount prints "(pro-rated)"; no day count, no detail', () => {
+    expect(advanceNote({ amount: 161.29, remaining: 4838.71, days: 1, windowDays: 31 }, OCT)).toContain('for your stay Nov 1)')
     expect(proratedNote({ amount: 5000, remaining: 1000, days: 29, windowDays: 31 })).toBe(' (pro-rated)')
+    expect(advanceNote({ amount: 5000, remaining: 1000, days: 29, windowDays: 31 }, OCT))
+      .toBe('Advance applied now: Php 5,000.00 (pro-rated). Remaining advance Php 1,000.00 will be credited on the final bill.')
     expect(proratedNote({ amount: 5000, remaining: 0 })).toBe('')
-    const old = props({ amount: 5000, remaining: 0, ref: 'S.I# 1234' }).charges.find(c => c.label === 'Less: Advanced Payment')
-    expect(old.mid).toBe('S.I# 1234 · credited ₱5,000.00 on this bill · remaining ₱0.00 for the final bill')
+    const old = props({ amount: 5000, remaining: 0, ref: 'S.I# 1234' })
+    expect(old.charges.find(c => c.label === 'Less: Advanced Payment').mid).toBe('S.I# 1234')
+    expect(old.paymentNote).toBe('Advance applied now: Php 5,000.00.')
+    expect(props(undefined).paymentNote).toBeUndefined()
   })
 })
 

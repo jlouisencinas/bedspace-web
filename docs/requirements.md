@@ -611,10 +611,14 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       (2 months + 23 of 30 days = 13,833.33 less 10,000.00 billed on closed statements), Less: Advanced Payment
       -1,290.32, rent payable 2,543.01; total rent after the advance 1,290.32 + 2,543.01 = 3,833.33. Other days: out Nov 15
       -> 2,419.35 (2,580.65 carried), Nov 1 -> 161.29 (4,838.71 carried, any excess on the final bill is returned), Nov 29
-      -> 4,677.42. Advance 6,000 on rent 5,000, out Nov 23 -> 4,451.61; out Nov 29 -> capped at 5,000.00. Printed detail:
-      "S.I# 1234 · credited ₱3,709.68 on this bill (pro-rated 23 of 31 days) · remaining ₱1,290.32 for the final bill"
-      (the day count prints only while advance x D / W reproduces the credit; a credit capped at the rent says
-      "(pro-rated)"; a stored credit from before this rule, or one whose move-out date moved since, prints no note).
+      -> 4,677.42. Advance 6,000 on rent 5,000, out Nov 23 -> 4,451.61; out Nov 29 -> capped at 5,000.00. Printed: the
+      "Less: Advanced Payment" row shows only the receipt ref (S.I# 1234) and the amount; the breakdown is a bold note
+      under the bank details (beside the charges, so the fixed-height copy is not clipped): "Advance applied now: Php
+      3,709.68 (23 of 31 days, for your stay Nov 1 to 23). Remaining advance Php 1,290.32 will be credited on the final
+      bill." (owner-approved wording, 2026-11-06; the stay starts the day after the period. The day count and stay dates
+      print only while advance x D / W reproduces the credit; a credit capped at the rent says "(pro-rated)"; a stored
+      credit from before this rule, or one whose move-out date moved since, prints no detail; nothing remaining drops
+      the second sentence).
       Live while the cutoff is ACTIVE (the amount follows the move-out date until Open Cutoff, which stores it and freezes
       it). It applies to the active Oct 2026 cutoff too, so Oct statements printed before the deploy show the old full
       credit and differ from a reprint. Stored credits (Sep 2026) and issued final bills are unchanged; Void & re-issue
@@ -685,7 +689,8 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       covers that for tabs that loaded the 2026-11-06 build or later.
       `recordAdvanceCredits` (Open Cutoff) fetches transfers and final bills too, stores HELD receipts only, skips
       tenants with a FINAL bill and checks that allocations add up before inserting. The credit lines on Billing
-      and the printed Rent + Water statement say "credited P x on this bill · remaining P y for the final bill".
+      say "credited P x on this bill · remaining P y for the final bill"; the printed Rent + Water statement says it in
+      the advance note beside the charges (above).
       Not built yet (stage B): the leaving confirmation at the Billing buttons.
     - **Safeguards:** `processMoveOutWithBill` refuses an inactive tenant or an existing FINAL bill (the unique
       index backs it); after a partial failure the Move Out modal locks to Close only and lists what ran.
@@ -1683,7 +1688,7 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       Fixing it (period participation for closed cutoffs) changes Billing, Collections, P&L and snapshot figures of closed periods.
       Collections' past-cutoff view and past-due banner (2026-11-06, §12) inherit this: such a tenant shows no row and is not
       counted as past due.
-- [ ] Second-to-last Rent + Water statements lose their bottom lines when printed (found 2026-11-05, predates the reprint
+- [x] (Fixed 2026-11-06: the detail moved to a note beside the charges, owner-approved wording, §5.) Second-to-last Rent + Water statements lose their bottom lines when printed (found 2026-11-05, predates the reprint
       notice): the long "Less: Advanced Payment" detail (S.I# · credited … · remaining … for the final bill) wraps in the narrow
       middle column, so the copy needs about 540 px of its 501 px fixed height and the "2% late fee" line (with an add-on or
       split, also the notes) is cut off. The fix needs owner-approved wording/layout (e.g. move that detail to a note line). No
