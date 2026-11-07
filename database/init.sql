@@ -760,8 +760,8 @@ drop trigger if exists trg_advance_credits_guard on public.advance_credits;
 create trigger trg_advance_credits_guard before insert on public.advance_credits
   for each row execute function public.advance_credits_guard();
 
--- Advance window (database/migrations/rent_carryovers.sql): second-to-last rent carried to the final bill, frozen at
--- Open Cutoff. Immutable; the final bill bills carry_amount + (month_rent - carry_amount) and credits the whole advance.
+-- Advance window (database/migrations/rent_carryovers.sql; name historical): the second-to-last advance window, frozen at
+-- Open Cutoff. Immutable; carry_amount = the cutoff part credited on the statement, the final bill bills month_rent - carry_amount.
 create table if not exists public.rent_carryovers (
   id            serial primary key,
   tenant_id     int not null references public.tenants(id),

@@ -30,7 +30,7 @@ export function computeCutoffBilling(cutoff, inputs) {
   const { bill, interims, tenants, splits, addons, areas, transfers, advData } = inputs
   if (!cutoff || !bill?.length) return { perRoom: [], perTenant: [], stayBilled: [], credits: new Map(), carries: new Map() }
   const result = computeBilling(cutoff, bill, interims, tenants, splits, addons, areas, transfers)
-  // A second-to-last leaver's rent is reduced here (advance window), so every page shows the same statement.
+  // The second-to-last advance credit is computed here once, so every page shows the same statement.
   const adv = cutoffAdvance({ cutoff, perTenant: result.perTenant, tenants, advData, transfers })
-  return { ...result, perTenant: adv.perTenant, credits: adv.credits, carries: adv.carries }
+  return { ...result, credits: adv.credits, carries: adv.carries }
 }

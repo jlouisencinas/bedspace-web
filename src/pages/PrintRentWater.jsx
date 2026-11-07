@@ -96,7 +96,7 @@ export default function PrintRentWater() {
 
       {advData.error && (
         <div className="no-print" style={{ maxWidth: 760, margin: '0 auto 16px', background: '#fff7ed', border: '1px solid #fdba74', color: '#9a3412', padding: 12, borderRadius: 10, fontSize: 13 }}>
-          Advance data could not be loaded ({advData.error}). Do not print 2nd-to-last bills until this is fixed: they would show the full rent instead of the rent up to the advance month.
+          Advance credits could not be loaded ({advData.error}). Do not print 2nd-to-last bills until this is fixed: they would be missing the advance credit.
         </div>
       )}
 

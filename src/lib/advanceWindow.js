@@ -1,24 +1,31 @@
 /**
  * src/lib/advanceWindow.js
  * ------------------------
- * Pure. The one-month advance of a leaver whose move-out is not a month end covers the ONE MONTH ENDING on the move-out
- * date, counted backwards with the move-out day billed: [addMonths(M, -1) + 1 day, M]. On the second-to-last statement
- * (cutoff window [s, e), e exclusive) only the days before that window are billed; the rest of that cutoff's rent (the
- * carry) moves to the final bill, which bills it plus the part after the cutoff (month rent - carry, so the window is
- * exactly one monthly rent) and credits the whole advance against them. Integer cents; only the carry is rounded
- * (half-up, prorateCents), the other parts are by subtraction. docs/requirements.md §5.
+ * Pure. The one-month advance of a leaver whose move-out is not a month end covers the W days ENDING on the move-out
+ * date M (inclusive), W = the day count of the second-to-last cutoff (31 for Oct): [M - W + 1, M]. The second-to-last
+ * statement (cutoff window [s, e), e exclusive) bills the full rent and credits the part of the window inside it
+ * (rent x d / W, d = e - window start, half-up) as `Less: Advance`; the final bill credits the rest of the advance and
+ * bills the days after the cutoff as rent - that credit, so the window costs exactly one monthly rent.
+ * The table rent_carryovers (name historical) freezes the window at Open Cutoff: carry_days = d, carry_amount = the
+ * cutoff-side part. Integer cents. docs/requirements.md §5.
  */
 import { dayNum, isoOfDay, addMonthsISO, prorateCents, snapToMonthEnd } from './stay'
 
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December']
+const MON3 = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 const iso10 = (v) => (v ? String(v).slice(0, 10) : null)
 const cents = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.sign(n) * Math.round(Math.abs(n) * 100) + 0 : 0 }
 const dayMonth = (n) => { const [, m, d] = isoOfDay(n).split('-'); return `${d} ${MONTH_NAMES[+m - 1]}` }
+const shortDay = (n) => { const [, m, d] = isoOfDay(n).split('-'); return `${+d} ${MON3[+m - 1]}` }
+const monDay = (n) => { const [, m, d] = isoOfDay(n).split('-'); return `${MON3[+m - 1]} ${+d}` }
+const span = (a, b) => (a === b ? monDay(a) : `${monDay(a)} to ${monDay(b)}`)
+const range = (a, b) => (a === b ? shortDay(a) : `${shortDay(a)} - ${shortDay(b)}`)
 
 /**
  * The advance window of a second-to-last statement, or null when the rule does not apply (move-out not in the next
- * window, on its last day (month-end rule), window start not strictly inside the cutoff, or a carry of 0 / the whole rent).
- * Returns { windowStart, moveOut, cutoffDays, preDays, carryDays, carryCents, preCents, monthRentCents }.
+ * window, on its last day (month-end rule), window start not strictly inside the cutoff, or a part of 0 / the whole rent).
+ * Returns { windowStart, moveOut, cutoffDays, carryDays, carryCents, afterCents, monthRentCents } where carryCents is the
+ * cutoff-side part (the credit basis) and afterCents = rent - carryCents (the days after the cutoff, on the final bill).
  */
 export function advanceWindow({ moveOutISO, cutoff, rentCents }) {
   const M = iso10(moveOutISO)
@@ -26,74 +33,68 @@ export function advanceWindow({ moveOutISO, cutoff, rentCents }) {
   const s = dayNum(cutoff.water_start), e = dayNum(cutoff.water_end), m = dayNum(M)
   const nextEnd = dayNum(addMonthsISO(iso10(cutoff.water_end), 1))
   if (m < e || m >= nextEnd - 1) return null
-  const w0 = dayNum(addMonthsISO(M, -1)) + 1
+  const cutoffDays = e - s
+  const w0 = m - cutoffDays + 1
   if (!(w0 > s && w0 < e)) return null
-  const cutoffDays = e - s, preDays = w0 - s, carryDays = e - w0
+  const carryDays = e - w0
   const carryCents = prorateCents(rentCents, carryDays, cutoffDays)
   if (carryCents <= 0 || carryCents >= rentCents) return null
-  return { windowStart: isoOfDay(w0), moveOut: M, cutoffDays, preDays, carryDays, carryCents, preCents: rentCents - carryCents, monthRentCents: rentCents }
+  return { windowStart: isoOfDay(w0), moveOut: M, cutoffDays, carryDays, carryCents, afterCents: rentCents - carryCents, monthRentCents: rentCents }
 }
 
-const MON3 = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-const shortDay = (n) => { const [, m, d] = isoOfDay(n).split('-'); return `${+d} ${MON3[+m - 1]}` }
-const range = (a, b) => (a === b ? shortDay(a) : `${shortDay(a)} - ${shortDay(b)}`)
-
-/**
- * Display labels of an advance window (amounts are not affected). The window is labelled from addMonths(M, -1) to M
- * (out 11 Nov -> "11 Oct - 11 Nov"), so the statement's part ends the day before it and the carried part starts on it:
- * pre "1 Oct - 10 Oct", carry "11 Oct - 31 Oct", after "1 Nov - 11 Nov". The amounts stay on the stored day counts
- * (pre = days before window_start, carry = carry_days). When addMonths(M, -1) is the cutoff's first day (out 1 Nov for
- * Oct) that label would leave the statement no day although it bills one, so then the labels follow the stored days
- * (pre "1 Oct", carry "2 Oct - 31 Oct"). Accepts a carry info (windowStart, cutoffDays, carryDays, moveOut) or a
- * rent_carryovers row. Returns { pre, carry, after, window }.
- */
-export function windowLabels(w) {
+// Accepts a window info (advanceWindow / credit.window) or a rent_carryovers row.
+const facts = (w) => {
   const w0 = dayNum(iso10(w.windowStart ?? w.window_start))
-  const carryDays = Number(w.carryDays ?? w.carry_days), cutoffDays = Number(w.cutoffDays ?? w.cutoff_days)
-  const m = dayNum(iso10(w.moveOut ?? w.move_out_date))
-  const e = w0 + carryDays, s = e - cutoffDays
-  const start = w0 - 1 > s ? w0 - 1 : w0
-  return { pre: range(s, start - 1), carry: range(start, e - 1), after: range(e, m), window: range(start, m) }
+  const carryDays = Number(w.carryDays ?? w.carry_days)
+  return { w0, carryDays, e: w0 + carryDays, m: dayNum(iso10(w.moveOut ?? w.move_out_date)) }
 }
 
-/** Throws unless every rent_carryovers row is internally exact (the carry is the half-up day share of the month rent). */
+/** The statement's credit days: "20 days (Oct 12 to Oct 31)" / "1 day (Oct 31)". */
+export function creditPeriodText(w) {
+  const { w0, carryDays, e } = facts(w)
+  return `${carryDays} ${carryDays === 1 ? 'day' : 'days'} (${span(w0, e - 1)})`
+}
+
+/** The days of the window after the cutoff (billed on the final bill): "Nov 1 to Nov 11" / "Nov 1". */
+export function finalPartText(w) {
+  const { e, m } = facts(w)
+  return span(e, m)
+}
+
+/** The whole window: "12 Oct - 11 Nov". */
+export function windowRange(w) {
+  const { w0, m } = facts(w)
+  return range(w0, m)
+}
+
+/** Throws unless every rent_carryovers row is internally exact (the cutoff-side part is the half-up day share of the month rent). */
 export function assertCarryRows(rows) {
   for (const r of rows || []) {
     const R = cents(r.month_rent), C = cents(r.carry_amount)
     const ok = Number.isInteger(r.cutoff_days) && Number.isInteger(r.carry_days) && r.carry_days > 0 && r.carry_days < r.cutoff_days
       && R > 0 && C > 0 && C < R && C === prorateCents(R, r.carry_days, r.cutoff_days)
       && dayNum(r.window_start) != null && dayNum(r.move_out_date) != null
-    if (!ok) throw new Error(`Advance window for tenant #${r.tenant_id}: the carried rent (${r.carry_amount}) does not match ${r.carry_days} of ${r.cutoff_days} days of ${r.month_rent}. Nothing was recorded.`)
+    if (!ok) throw new Error(`Advance window for tenant #${r.tenant_id}: the cutoff part (${r.carry_amount}) does not match ${r.carry_days} of ${r.cutoff_days} days of ${r.month_rent}. Nothing was recorded.`)
   }
 }
 
 const rentLine = (label, mid, c) => ({ label, mid, amount: c / 100, kind: 'charge', source: 'RENT', computed: c / 100 })
 
 /**
- * Final-bill rent lines from a stored rent_carryovers row. When the rent ends on the date the row was frozen for: the carried
- * part of the cutoff (carry_amount) + the rest of the advance month (month_rent - carry_amount); both use the frozen month rent.
- * Otherwise (early move-out, or the contract date moved after the freeze) the days actually stayed from window_start through
- * rentEndISO are prorated plainly (carry days over the cutoff's days, later days over each calendar month) and `warning` is set.
+ * Final-bill rent lines from a stored rent_carryovers row (the cutoff-side part was billed in full on the statement and
+ * credited there). When the rent ends on the date the row was frozen for: ONE line for the days after the cutoff,
+ * month_rent - carry_amount (frozen rent), so the window is exactly one monthly rent. Otherwise (the contract date moved
+ * after the freeze) the days after the cutoff through rentEndISO are prorated plainly by calendar month and `warning` is set.
  * Returns { lines, exact, warning }.
  */
 export function carryRentLines({ row, rentEndISO }) {
   const R = cents(row.month_rent), C = cents(row.carry_amount)
-  const W = Number(row.cutoff_days), carryDays = Number(row.carry_days)
-  const w0 = dayNum(row.window_start), e = w0 + carryDays
+  const { e, m } = facts(row)
   const frozen = iso10(row.move_out_date), end = iso10(rentEndISO), endN = dayNum(end)
   if (end === frozen) {
-    const lb = windowLabels(row)
-    return {
-      lines: [
-        rentLine('Rent Period (carried from the 2nd-to-last bill, vs. 1-month advance)', lb.carry, C),
-        rentLine('Rent Period (completes the 1-month advance)', lb.after, R - C),
-      ],
-      exact: true, warning: null,
-    }
+    return { lines: [rentLine('Rent Period (completes the 1-month advance)', range(e, m), R - C)], exact: true, warning: null }
   }
   const lines = []
-  const days = Math.max(0, Math.min(endN, e - 1) - w0 + 1)
-  if (days > 0) lines.push(rentLine(`Rent Period (${days} of ${W} days)`, `${dayMonth(w0)} - ${dayMonth(w0 + days - 1)}`, days === carryDays ? C : prorateCents(R, days, W)))
   let from = e
   while (from <= endN) {
     const monthEnd = snapToMonthEnd(isoOfDay(from))
@@ -105,6 +106,6 @@ export function carryRentLines({ row, rentEndISO }) {
   if (!lines.length) lines.push(rentLine('Rent Period', '', 0))
   return {
     lines, exact: false,
-    warning: `The advance window was recorded at Open Cutoff for a move-out on ${frozen}, but the rent now ends on ${end}: the rent from ${dayMonth(w0)} is prorated by days through ${end}, so the advance no longer covers exactly one month. Check the rent lines.`,
+    warning: `The advance window was recorded at Open Cutoff for a move-out on ${frozen}, but the rent now ends on ${end}: the days after ${isoOfDay(e - 1)} are prorated by calendar month, so the advance no longer covers exactly one month. Check the rent lines.`,
   }
 }

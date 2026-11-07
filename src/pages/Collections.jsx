@@ -482,7 +482,7 @@ export default function Collections() {
 
       {advData.error && (
         <div className="mb-3 px-4 py-3 bg-warning-bg border border-warning-border rounded-xl text-[13px] text-warning-text">
-          Advance data could not be loaded ({advData.error}); Rent + Water amounts include neither the second-to-last-bill advance window (rent carried to the final bill) nor any stored advance credit.
+          Advance credits could not be loaded ({advData.error}); Rent + Water amounts do not include any second-to-last-bill advance credit.
         </div>
       )}
 

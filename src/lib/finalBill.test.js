@@ -125,12 +125,16 @@ describe('receipt numbers', () => {
   })
 })
 
-describe('second-to-last-bill advance credit (stored rows only)', () => {
+describe('second-to-last-bill advance credit', () => {
   const t = tenant({ id: 1, rate: 6000, move_in_date: '2026-08-01', move_out_date: '2026-11-15' })
   const adv = (id, amount, extra = {}) => deposit({ id, tenant_id: 1, kind: 'ADVANCE', amount, ref_no: String(5000 + id), ...extra })
 
-  it('no live credit on the active cutoff (the advance window applies instead)', () => {
-    expect(advanceCredits({ tenants: [t], cutoff: OCT_ACTIVE, perTenant: [{ id: 1, rent: 6000 }], deposits: [adv(11, 6000)] }).size).toBe(0)
+  it('live on the active cutoff: rent x (window days in Oct) / 31 = 6,000 x 16/31 (window Oct 16 - Nov 15)', () => {
+    const m = advanceCredits({ tenants: [t], cutoff: OCT_ACTIVE, perTenant: [{ id: 1, rent: 6000 }], deposits: [adv(11, 6000)] })
+    expect(m.get(1)).toEqual({
+      amount: 3096.77, ref: 'S.I# 5011', allocations: [{ deposit_id: 11, amount: 3096.77 }], onFile: 6000, remaining: 2903.23,
+      window: { windowStart: '2026-10-16', cutoffDays: 31, carryDays: 16, moveOut: '2026-11-15', monthRentCents: 600000 },
+    })
   })
 
   it('a stored row on two receipts keeps its allocations and counts every advance receipt on file', () => {
@@ -149,10 +153,12 @@ describe('second-to-last-bill advance credit (stored rows only)', () => {
     expect(advanceCredits({ tenants: [t], cutoff: OCT_ACTIVE, perTenant: [{ id: 1, rent: 6000 }], deposits: [adv(11, 6000)], stored: elsewhere }).size).toBe(0)
   })
 
-  it('creditsToStore stores nothing (no live credit); final-billed tenants stay skipped', () => {
-    const rows = creditsToStore({ tenants: [t], cutoff: OCT, perTenant: [{ id: 1, rent: 6000 }], deposits: [adv(11, 4000), adv(12, 2000, { status: 'APPLIED' })] })
-    expect(rows).toEqual([])
-    expect(creditsToStore({ tenants: [t], cutoff: OCT, perTenant: [{ id: 1, rent: 6000 }], deposits: [adv(11, 4000)], finalBills: [{ tenant_id: 1, status: 'FINAL' }] })).toEqual([])
+  it('creditsToStore: from the stored window only, HELD receipts only, skips final-billed tenants, allocations add up', () => {
+    const carry = [{ tenant_id: 1, cutoff_id: OCT.id, move_out_date: '2026-11-15', window_start: '2026-10-16', cutoff_days: 31, carry_days: 16, month_rent: 6000, carry_amount: 3096.77 }]
+    const rows = creditsToStore({ tenants: [t], cutoff: OCT, perTenant: [{ id: 1, rent: 6000 }], deposits: [adv(11, 4000), adv(12, 2000, { status: 'APPLIED' })], carry })
+    expect(rows).toEqual([{ tenant_id: 1, cutoff_id: OCT.id, amount: 3096.77, ref_text: 'S.I# 5011', allocations: [{ deposit_id: 11, amount: 3096.77 }] }])
+    expect(creditsToStore({ tenants: [t], cutoff: OCT, perTenant: [{ id: 1, rent: 6000 }], deposits: [adv(11, 4000)] })).toEqual([])
+    expect(creditsToStore({ tenants: [t], cutoff: OCT, perTenant: [{ id: 1, rent: 6000 }], deposits: [adv(11, 4000)], carry, finalBills: [{ tenant_id: 1, status: 'FINAL' }] })).toEqual([])
   })
 
   it('assertCreditRows throws when allocations do not add up to the credit', () => {

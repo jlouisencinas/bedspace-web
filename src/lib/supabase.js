@@ -830,7 +830,7 @@ export async function fetchRentCarryovers() {
   return data
 }
 
-// Inputs of finalBill.cutoffAdvance() (advance window + legacy credits). Viewers cannot read these tables (RLS), so for
+// Inputs of finalBill.cutoffAdvance() (advance windows + stored advance credits). Viewers cannot read these tables (RLS), so for
 // them neither is applied. Never throws: a failure comes back as `error` so the page can say that the advance part is
 // missing instead of failing to load the whole billing view.
 export async function fetchAdvanceCreditData() {
@@ -856,7 +856,7 @@ export async function saveRentCarryovers(rows, actorId) {
     activity_type: 'Advance Window Recorded',
     entity_type:   'CUTOFF', entity_id: rows[0].cutoff_id,
     actor_id:      actorId || null,
-    notes:         `Second-to-last-bill rent carried to the final bill (advance window) recorded for ${rows.length} tenant(s): ${peso(rows.reduce((s, r) => s + Number(r.carry_amount), 0))}.`,
+    notes:         `Second-to-last-bill advance window recorded for ${rows.length} tenant(s): cutoff part ${peso(rows.reduce((s, r) => s + Number(r.carry_amount), 0))}.`,
     metadata:      { cutoff_id: rows[0].cutoff_id, tenant_ids: rows.map(r => r.tenant_id) },
   })
   return data

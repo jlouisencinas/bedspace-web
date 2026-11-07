@@ -4,7 +4,7 @@
  * Pure props for one printed monthly Statement of Account (Rent + Water or Electricity), from a computeCutoffBilling
  * perTenant row. Shared by the print pages and the tenant profile's statement preview, so a reprint is identical.
  */
-import { windowLabels } from './advanceWindow'
+import { creditPeriodText, finalPartText } from './advanceWindow'
 
 export const COMPANY = {
   address:    'JP Rizal ext., Cor Lapu-Lapu street, Brgy. West Rembo, Taguig City',
@@ -71,25 +71,23 @@ const cents = (v) => Math.round((Number(v) || 0) * 100)
 
 const php = n => 'Php ' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-/** A legacy stored advance credit's note: "Advance applied now: Php 5,000.00." (+ the remaining advance, if any). */
+/**
+ * The second-to-last statement's advance note, printed beside the charges (adds no height to the fixed half-page copy).
+ * Advance-window credit: "Remaining advance Php 1,774.19 will be credited on the final bill (Nov 1 to Nov 11)." (none when
+ * nothing remains). Legacy stored credit (no window): "Advance applied now: Php X." + the remaining advance, if any.
+ */
 export function advanceNote(credit) {
   if (!credit) return ''
-  const rest = cents(credit.remaining) > 0 ? ` Remaining advance ${php(credit.remaining)} will be credited on the final bill.` : ''
+  const left = cents(credit.remaining) > 0
+  if (credit.window) return left ? `Remaining advance ${php(credit.remaining)} will be credited on the final bill (${finalPartText(credit.window)}).` : ''
+  const rest = left ? ` Remaining advance ${php(credit.remaining)} will be credited on the final bill.` : ''
   return `Advance applied now: ${php(credit.amount)}.${rest}`
 }
 
-/**
- * The second-to-last statement of a leaver under the advance-window rule (row.advanceCarry from computeCutoffBilling): the
- * rent row covers the days before the advance month, and an information row shows the carried part in brackets (it is
- * billed on the final bill against the advance and is NOT part of this statement's total). Labels: windowLabels().
- */
-export const CARRY_ROW_LABEL = 'Rent - on final bill (vs. 1-month advance)'
-export function carryRows(carry) {
-  const lb = windowLabels(carry)
-  return {
-    rent: lb.pre,
-    info: { label: CARRY_ROW_LABEL, mid: lb.carry, amount: 0, info: true, amountText: `(${peso(carry.carryCents / 100)})` },
-  }
+/** The credit's days for on-screen sub-text: "20 days, Oct 12 to Oct 31"; '' for a legacy credit without a window. */
+export function creditSubText(credit) {
+  if (!credit?.window) return ''
+  return creditPeriodText(credit.window).replace(/ \((.*)\)$/, ', $1')
 }
 
 export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, copyLabel, billingDate, preparedBy, banner }) {
@@ -98,16 +96,15 @@ export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, cop
   const period = periodLabel(cutoff.water_start, cutoff.water_end)
   const room = roomRow || {}
   const sp = splits.find(s => s.room_id === t.room_id && s.tenant_id === t.id && s.utility === 'WATER')
-  const carry = t.advanceCarry || null
-  const cr = carry ? carryRows(carry) : null
-  const charges = [{ label: 'Monthly Rent', mid: cr ? cr.rent : period, amount: t.rent }]
-  if (cr) charges.push(cr.info)
+  const charges = [{ label: 'Monthly Rent', mid: period, amount: t.rent }]
   if (!t.special || t.water > 0) charges.push({ label: 'Add: Water (cu. m)', mid: cu(t.waterCons), amount: t.water })
   ;(t.addons || []).filter(a => a.bill_on !== 'ELECTRIC').forEach(a =>
     charges.push({ label: `Add: ${a.label}${a.recurring ? '' : ' · one-time'}`, mid: '', amount: Number(a.amount) }))
+  // Only the receipt ref and the credit's days go in the row; the rest of the breakdown is paymentNote (a long cell grew
+  // the fixed-height copy and clipped it).
   if (credit) charges.push({
-    label: 'Less: Advanced Payment',
-    mid: credit.ref || '',   // the breakdown goes in paymentNote: a long cell grew the fixed-height copy and clipped it
+    label: credit.window ? 'Less: Advance' : 'Less: Advanced Payment',
+    mid: credit.window ? [credit.ref, creditPeriodText(credit.window)].filter(Boolean).join(' | ') : (credit.ref || ''),
     amount: -credit.amount, amountText: '-' + peso(credit.amount),
   })
   return {

@@ -93,14 +93,18 @@ export function proratedAdvanceOut() {
 }
 
 // Advance window (requirements §5): rate 5,000, in Sep 1, planned and actual out Nov 11, advance 5,000, deposit 5,000.
-// Open Cutoff froze the Oct window: window_start 12 Oct (amounts: 20 of 31 days carried, 3,225.81; labelled 11 Oct - 31 Oct)
-// moved from the Oct statement (which billed 11 days, 1,774.19, labelled 1 Oct - 10 Oct) to the final bill.
+// The window is Oct 12 - Nov 11 (31 days, the Oct cutoff's day count). The Oct statement billed the full 5,000 and credited
+// 20/31 of it (Oct 12 to Oct 31, 3,225.81) as `Less: Advance`; Open Cutoff froze the window row and the credit row. The final
+// bill bills Nov 1 - 11 as 5,000 - 3,225.81 = 1,774.19 and credits the remaining advance 1,774.19.
 export const WINDOW_CARRY_ROW = {
   id: 1, tenant_id: 140, cutoff_id: 2, move_out_date: '2026-11-11', window_start: '2026-10-12',
   cutoff_days: 31, carry_days: 20, month_rent: 5000, carry_amount: 3225.81,
 }
-export function advanceWindowOut({ moveOutDate = '2026-11-11', rate = 5000, afterNoon = null } = {}) {
-  const t = tenant({ id: 140, name: 'Tenant Window', rate, move_in_date: '2026-09-01', move_out_date: '2026-11-11' })
+export const WINDOW_CREDIT_ROW = {
+  id: 4, tenant_id: 140, cutoff_id: 2, amount: 3225.81, ref_text: 'S.I# 5401', allocations: [{ deposit_id: 941, amount: 3225.81 }],
+}
+export function advanceWindowOut({ moveOutDate = '2026-11-11', plannedOut = '2026-11-11', rate = 5000, afterNoon = null } = {}) {
+  const t = tenant({ id: 140, name: 'Tenant Window', rate, move_in_date: '2026-09-01', move_out_date: plannedOut })
   return {
     tenant: t, tenants: [t], cutoffs: CUTOFFS, moveOutDate, now: NOW, vacatedAfterNoon: afterNoon,
     readings: {}, bundle: {},
@@ -109,5 +113,6 @@ export function advanceWindowOut({ moveOutDate = '2026-11-11', rate = 5000, afte
       deposit({ id: 942, tenant_id: 140, kind: 'DEPOSIT', amount: 5000, ref_no: '7401' }),
     ]]]),
     storedCarry: [WINDOW_CARRY_ROW],
+    storedCredits: [WINDOW_CREDIT_ROW],
   }
 }

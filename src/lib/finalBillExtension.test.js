@@ -31,22 +31,23 @@ describe('advance window with the month-end rule (active Oct)', () => {
     tenants: [tenant({ id: 1, rate: 5000, move_in_date: '2026-08-01', move_out_date })], cutoff: OCT_ACTIVE,
     perTenant: [{ id: 1, rent: 5000 }], deposits: [adv], ...extra,
   })
-  it('out Nov 30 -> no credit, no carry; out Nov 15 -> no credit, 16 of 31 days (2,580.65) carried to the final bill', () => {
+  it('out Nov 30 -> no credit, no window; out Nov 15 -> credit 2,580.65 (16 of 31 days, Oct 16 to Oct 31), 2,419.35 left for the final bill', () => {
     expect(advanceCredits(args('2026-11-30')).size).toBe(0)
     expect(advanceCarry(args('2026-11-30')).size).toBe(0)
-    expect(advanceCredits(args('2026-11-15')).size).toBe(0)
-    expect(advanceCarry(args('2026-11-15')).get(1)).toMatchObject({ windowStart: '2026-10-16', carryDays: 16, carryCents: 258065, rentCents: 241935 })
+    expect(advanceCredits(args('2026-11-15')).get(1)).toMatchObject({ amount: 2580.65, remaining: 2419.35, window: { windowStart: '2026-10-16', carryDays: 16 } })
+    expect(advanceCarry(args('2026-11-15')).get(1)).toMatchObject({ windowStart: '2026-10-16', carryDays: 16, carryCents: 258065 })
   })
   it('a stored row of a closed cutoff is still returned for that cutoff', () => {
     const stored = [{ tenant_id: 1, cutoff_id: SEP.id, amount: 4000, ref_text: 'S.I# 5031', allocations: [{ deposit_id: 31, amount: 4000 }] }]
     const m = advanceCredits({ ...args('2026-11-30'), cutoff: SEP, stored })
     expect(m.get(1)).toMatchObject({ amount: 4000, remaining: 1000 })
   })
-  it('Open Cutoff stores nothing for a month-end leaver; out Nov 15 stores a window, never a credit', () => {
-    expect(creditsToStore({ ...args('2026-11-30'), cutoff: OCT })).toEqual([])
+  it('Open Cutoff stores nothing for a month-end leaver; out Nov 15 stores a window, then the credit from it', () => {
     expect(carryToStore(args('2026-11-30'))).toEqual([])
-    expect(creditsToStore({ ...args('2026-11-15'), cutoff: OCT })).toEqual([])
-    expect(carryToStore(args('2026-11-15'))).toHaveLength(1)
+    expect(creditsToStore({ ...args('2026-11-30'), cutoff: OCT, carry: carryToStore(args('2026-11-30')) })).toEqual([])
+    const carry = carryToStore(args('2026-11-15'))
+    expect(carry).toHaveLength(1)
+    expect(creditsToStore({ ...args('2026-11-15'), cutoff: OCT, carry })).toMatchObject([{ amount: 2580.65 }])
   })
   it('the month-end leaver\'s final bill credits the full advance (no earlier credit)', () => {
     const t = tenant({ id: 1, rate: 5000, move_in_date: '2026-08-01', move_out_date: '2026-11-30' })

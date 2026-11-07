@@ -2,12 +2,12 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { ChevronDown, ChevronRight, RefreshCw, Eye, Printer, AlertTriangle } from 'lucide-react'
 import { fetchTenants, fetchAdvanceCreditData } from '../../lib/supabase'
-import { windowLabels } from '../../lib/advanceWindow'
 import { loadCutoffBillingInputs, computeCutoffBilling } from '../../lib/cutoffBilling'
 import { tenantCutoffs, paidByComponent, toCents2, statementForTenant, roomAsOf, hasTransferInWindow, HISTORY_CAP } from '../../lib/tenantStatements'
 import { centsToPeso } from '../../lib/tenantHistory'
 import { windowLastDay } from '../../lib/cutoffDates'
 import MonthlyStatementPreview from '../MonthlyStatementPreview'
+import { creditSubText } from '../../lib/monthlyStatement'
 
 // Same formatters as the Billing page, so every figure reads exactly as it does there.
 const peso = n => '₱' + (Math.abs(Number(n) || 0) < 0.005 ? 0 : Number(n)).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -258,7 +258,7 @@ function ActiveStatement({ cutoff, entry, paid, tenant, siblingIds, transfers, t
       {label}
       {advError && (
         <div className="text-[12px] text-warning-text bg-warning-bg border border-warning-border rounded-lg px-3 py-2">
-          Advance data could not be loaded ({advError}); the amounts below include neither the second-to-last-bill advance window (rent carried to the final bill) nor any stored advance credit.
+          Advance credits could not be loaded ({advError}); the amounts below do not include any second-to-last-bill advance credit.
         </div>
       )}
       {s.kind === 'WHOLE_ROOM' && (
@@ -288,22 +288,21 @@ function ActiveStatement({ cutoff, entry, paid, tenant, siblingIds, transfers, t
 
       <div className="grid gap-2 sm:grid-cols-2">
         <Block title="Rent + Water">
-          <Line label="Rent" value={s.rw.rent ? peso(s.rw.rent) : '—'}
-            sub={s.row?.advanceCarry ? `${windowLabels(s.row.advanceCarry).pre} · ${windowLabels(s.row.advanceCarry).carry} (${peso(s.row.advanceCarry.carryCents / 100)}) on the final bill, vs. 1-month advance` : undefined} />
+          <Line label="Rent" value={s.rw.rent ? peso(s.rw.rent) : '—'} />
           <Line label={`Water (${m3(s.rw.waterCons)} m³)`} value={peso(s.rw.water)}
             sub={row.transferred && row.oldWater > 0 ? `R${row.fromRoomNo}: ${peso(row.oldWater)} · R${row.room_no}: ${peso(row.water - row.oldWater)}` : null} />
           {s.rw.addons.map(a => <Line key={a.id} label={`${a.label}${a.recurring ? '' : ' (one-time)'}`} value={peso(a.amount)} muted />)}
           <Line label="RW Total" value={peso(s.rw.total)} strong />
           {s.credit && (
             <>
-              <Line label="Less: Advanced Payment" value={`-${peso(s.credit.amount)}`}
-                sub={[s.credit.ref, `remaining ${peso(s.credit.remaining)} for the final bill`].filter(Boolean).join(' · ')} />
+              <Line label={s.credit.window ? 'Less: Advance' : 'Less: Advanced Payment'} value={`-${peso(s.credit.amount)}`}
+                sub={[s.credit.ref, creditSubText(s.credit), `remaining ${peso(s.credit.remaining)} for the final bill`].filter(Boolean).join(' · ')} />
               <Line label="Net" value={peso(s.rw.net)} strong />
             </>
           )}
           <Line label="Paid" value={centsToPeso(paid.rwCents)} />
           {s.kind === 'BILLED' && <Balance billedCents={toCents2(s.rw.net)} paidCents={paid.rwCents} />}
-          {actions('RW', rwPrintable, advError ? 'Advance data could not be loaded: do not issue this statement until that is fixed' : '')}
+          {actions('RW', rwPrintable, advError ? 'Advance credits could not be loaded: do not issue this statement until that is fixed' : '')}
         </Block>
         <Block title="Electricity">
           <Line label={`Electricity (${m3(s.elec.elecCons)} kWh)`} value={peso(s.elec.elec)}
