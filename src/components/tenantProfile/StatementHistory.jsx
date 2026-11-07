@@ -257,7 +257,7 @@ function ActiveStatement({ cutoff, entry, paid, tenant, siblingIds, transfers, t
       {label}
       {advError && (
         <div className="text-[12px] text-warning-text bg-warning-bg border border-warning-border rounded-lg px-3 py-2">
-          Advance credits could not be loaded ({advError}); the amounts below do not include any second-to-last-bill advance credit.
+          Advance data could not be loaded ({advError}); the amounts below include neither the second-to-last-bill advance window (rent carried to the final bill) nor any stored advance credit.
         </div>
       )}
       {s.kind === 'WHOLE_ROOM' && (
@@ -301,7 +301,7 @@ function ActiveStatement({ cutoff, entry, paid, tenant, siblingIds, transfers, t
           )}
           <Line label="Paid" value={centsToPeso(paid.rwCents)} />
           {s.kind === 'BILLED' && <Balance billedCents={toCents2(s.rw.net)} paidCents={paid.rwCents} />}
-          {actions('RW', rwPrintable, advError ? 'Advance credits could not be loaded: do not issue this statement until that is fixed' : '')}
+          {actions('RW', rwPrintable, advError ? 'Advance data could not be loaded: do not issue this statement until that is fixed' : '')}
         </Block>
         <Block title="Electricity">
           <Line label={`Electricity (${m3(s.elec.elecCons)} kWh)`} value={peso(s.elec.elec)}

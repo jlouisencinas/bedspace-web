@@ -15,10 +15,11 @@
  * (the amount the system computed, so a staff edit can be flagged).
  */
 import {
-  dayNum, isoOfDay, addMonthsISO, classifyStay, appStart, computeCoverage, isCutoffClosed, cutoffForDate, finalCutoffForUtility, windowOf, pricingInfoForDay, snapToMonthEnd, stayRent, prorateCents, coveredEntries, parseCovered,
+  dayNum, isoOfDay, addMonthsISO, classifyStay, appStart, computeCoverage, isCutoffClosed, cutoffForDate, finalCutoffForUtility, windowOf, pricingInfoForDay, snapToMonthEnd, stayRent, prorateCents, coveredEntries, parseCovered, isStayBilled,
 } from './stay'
 import { resolveStartReading, splitUtility, resolveRate, checkReadingOrder } from './utilityPieces'
 import { hasExtension, extensionLine, extensionDetails, nightsWarning, extensionNights, NOON_CHOICE_MISSING } from './stayExtension'
+import { advanceWindow, assertCarryRows, carryRentLines } from './advanceWindow'
 
 export { addMonthsISO, cutoffForDate }
 
@@ -233,82 +234,124 @@ const advanceReceipts = (deposits, tenantIds, statuses) =>
   deposits.filter(d => tenantIds.has(d.tenant_id) && d.kind === 'ADVANCE' && statuses.includes(d.status))
 
 /**
- * Pro-rated second-to-last-bill advance credit, integer cents.
- * windowDays W = days of the second-to-last window (water_end exclusive); days D = days of the stay in the next window
- * up to and including the move-out day (capped at W). credit = min(half-up advance x D / W, rent); the rest of the
- * advance (advanceCents - creditCents, exact) is left for the final bill.
+ * Stored second-to-last-bill advance credits (legacy `advance_credits` rows, e.g. Sep 2026) for the tenants billed in `cutoff`.
+ * There is no live credit any more: a non-month-end leaver's advance covers the month ending on the move-out date instead
+ * (advanceCarry), and the whole advance is credited on the final bill. A stored row for (tenant, cutoff) is immutable.
+ * Whole-room tenancies count the advance of every same-name bed. Returns Map(tenantId -> { amount, ref, allocations,
+ * onFile, remaining }) where onFile is the advance on file and remaining = onFile - amount, the part left for the final bill.
  */
-export function proratedAdvanceCents({ advanceCents, rentCents, waterStart, waterEnd, moveOut }) {
-  const windowDays = dayNum(iso10(waterEnd)) - dayNum(iso10(waterStart))
-  const days = Math.min(Math.max(dayNum(iso10(moveOut)) - dayNum(iso10(waterEnd)) + 1, 0), Math.max(windowDays, 0))
-  const prorated = windowDays > 0 && days > 0 && advanceCents > 0 ? prorateCents(advanceCents, days, windowDays) : 0
-  const creditCents = rentCents == null ? prorated : Math.max(Math.min(prorated, rentCents), 0)
-  return { creditCents, days, windowDays }
-}
-
-/**
- * Second-to-last-bill advance credit for the tenants billed in `cutoff`.
- * Credit = min(advance on file x D / W, that period's rent) (proratedAdvanceCents): an adjustment, never cash.
- *  - A stored `advance_credits` row for (tenant, cutoff) always wins and is immutable.
- *  - A CLOSED cutoff with no stored row has no credit.
- *  - The ACTIVE cutoff (or `live: true`) is detected live from the move-out date, but a tenant whose
- *    advance was already credited in another cutoff (stored row) gets nothing: the advance is consumed.
- * Whole-room tenancies sum the advance of every same-name bed against the combined rent.
- * Returns Map(tenantId -> { amount, ref, allocations, onFile, remaining, days?, windowDays? }) where onFile is the advance
- * on file (receipts the credit drew on plus the tenant's other advance receipts) and remaining = onFile - amount, the
- * part that is left for the final bill. days / windowDays (the pro-ration) are set on live credits only.
- */
-export function advanceCredits({ tenants, cutoff, perTenant, deposits, stored = [], live = null, receiptStatuses = ['HELD', 'APPLIED'] }) {
+export function advanceCredits({ tenants, cutoff, perTenant, deposits, stored = [], receiptStatuses = ['HELD', 'APPLIED'] }) {
   const out = new Map()
   const byId = new Map(tenants.map(t => [t.id, t]))
-  const isLive = live ?? cutoff.is_active === true
   for (const row of perTenant || []) {
     if (row.special) continue
     const t = byId.get(row.id)
     if (!t) continue
     const mine = stored.find(s => s.tenant_id === t.id && s.cutoff_id === cutoff.id)
-    if (mine) {
-      const group = row.wholeRoom ? wholeRoomGroup(t, tenants) : [t]
-      const allocIds = new Set((mine.allocations || []).map(a => a.deposit_id))
-      const onFileC = (deposits || [])
-        .filter(d => d.kind === 'ADVANCE' && (allocIds.has(d.id) || (group.some(g => g.id === d.tenant_id) && receiptStatuses.includes(d.status))))
-        .reduce((s, d) => s + toCents(d.amount), 0)
-      const amountC = toCents(mine.amount)
-      // The day count is printed only while the current date still reproduces the frozen amount (never for pre-pro-rating rows).
-      const pro = billPosition(t, cutoff) === 'SECOND_TO_LAST' ? proratedAdvanceCents({
-        advanceCents: onFileC, rentCents: toCents(row.rent),
-        waterStart: cutoff.water_start, waterEnd: cutoff.water_end, moveOut: t.actual_move_out_date || t.move_out_date,
-      }) : null
-      out.set(t.id, {
-        amount: amountC / 100, ref: mine.ref_text || '', allocations: mine.allocations || [],
-        onFile: Math.max(onFileC, amountC) / 100, remaining: Math.max(onFileC - amountC, 0) / 100,
-        ...(pro && pro.creditCents === amountC ? { days: pro.days, windowDays: pro.windowDays } : {}),
-      })
-      continue
-    }
-    if (!isLive || billPosition(t, cutoff) !== 'SECOND_TO_LAST') continue
+    if (!mine) continue
     const group = row.wholeRoom ? wholeRoomGroup(t, tenants) : [t]
-    const receipts = advanceReceipts(deposits || [], new Set(group.map(g => g.id)), receiptStatuses)
-    const receiptIds = new Set(receipts.map(r => r.id))
-    if (stored.some(s => s.tenant_id === t.id || (s.allocations || []).some(a => receiptIds.has(a.deposit_id)))) continue
-    const totalC = receipts.reduce((s, r) => s + toCents(r.amount), 0)
-    const pro = proratedAdvanceCents({
-      advanceCents: totalC, rentCents: toCents(row.rent),
-      waterStart: cutoff.water_start, waterEnd: cutoff.water_end, moveOut: t.actual_move_out_date || t.move_out_date,
+    const allocIds = new Set((mine.allocations || []).map(a => a.deposit_id))
+    const onFileC = (deposits || [])
+      .filter(d => d.kind === 'ADVANCE' && (allocIds.has(d.id) || (group.some(g => g.id === d.tenant_id) && receiptStatuses.includes(d.status))))
+      .reduce((s, d) => s + toCents(d.amount), 0)
+    const amountC = toCents(mine.amount)
+    out.set(t.id, {
+      amount: amountC / 100, ref: mine.ref_text || '', allocations: mine.allocations || [],
+      onFile: Math.max(onFileC, amountC) / 100, remaining: Math.max(onFileC - amountC, 0) / 100,
     })
-    const alloc = allocate(receipts, pro.creditCents)
-    const cents = alloc.reduce((s, a) => s + a.cents, 0)
-    if (cents > 0) {
-      out.set(t.id, {
-        amount: cents / 100,
-        ref: refText('ADVANCE', receipts.filter(r => alloc.some(a => a.id === r.id))),
-        allocations: alloc.map(a => ({ deposit_id: a.id, amount: a.cents / 100 })),
-        onFile: totalC / 100, remaining: (totalC - cents) / 100,
-        days: pro.days, windowDays: pro.windowDays,
-      })
-    }
   }
   return out
+}
+
+const carryInfo = (cutoffId, w, rentC, stored) => ({
+  cutoffId, windowStart: w.windowStart, moveOut: w.moveOut, cutoffDays: w.cutoffDays, carryDays: w.carryDays,
+  preDays: w.cutoffDays - w.carryDays, carryCents: w.carryCents, monthRentCents: w.monthRentCents,
+  rentBeforeCents: rentC, rentCents: rentC - w.carryCents, stored,
+})
+
+/**
+ * Second-to-last statement of a non-month-end leaver: the advance covers the month ending on the move-out date, so the part
+ * of this cutoff's rent inside that month (the carry) moves to the final bill. Map(tenantId -> { cutoffId, windowStart,
+ * moveOut, cutoffDays, carryDays, preDays, carryCents, monthRentCents, rentBeforeCents, rentCents, stored }) where rentCents
+ * is the rent left on this statement.
+ *  - A stored `rent_carryovers` row for (tenant, cutoff) always wins (frozen at Open Cutoff, whatever the date is now).
+ *  - A CLOSED cutoff without one has no carry.
+ *  - The ACTIVE cutoff (or `live: true`) is detected live: billPosition SECOND_TO_LAST, an advance receipt on file, no stored
+ *    advance credit for the tenant or its receipts (advance consumed), not final-billed, not a whole-room row, no transfer
+ *    in the cutoff, not stay-billed, and advanceWindow() applies. Everyone else keeps the standard rule.
+ */
+export function advanceCarry({ tenants, cutoff, perTenant, deposits, stored = [], carry = [], finalBills = [], transfers = [], live = null, receiptStatuses = ['HELD', 'APPLIED'] }) {
+  const out = new Map()
+  const byId = new Map(tenants.map(t => [t.id, t]))
+  const isLive = live ?? cutoff.is_active === true
+  const finalIds = new Set((finalBills || []).filter(f => f.status === 'FINAL').map(f => f.tenant_id))
+  const s = dayNum(iso10(cutoff.water_start)), e = dayNum(iso10(cutoff.water_end))
+  for (const row of perTenant || []) {
+    if (row.special) continue
+    const t = byId.get(row.id)
+    if (!t) continue
+    const rentC = toCents(row.rent)
+    const mine = (carry || []).find(c => c.tenant_id === t.id && c.cutoff_id === cutoff.id)
+    if (mine) {
+      const carryC = toCents(mine.carry_amount)
+      if (rentC <= carryC) continue
+      out.set(t.id, carryInfo(cutoff.id, {
+        windowStart: iso10(mine.window_start), moveOut: iso10(mine.move_out_date), cutoffDays: Number(mine.cutoff_days),
+        carryDays: Number(mine.carry_days), carryCents: carryC, monthRentCents: toCents(mine.month_rent),
+      }, rentC, true))
+      continue
+    }
+    if (!isLive || row.wholeRoom || row.transferred || finalIds.has(t.id) || isStayBilled(t)) continue
+    if (billPosition(t, cutoff) !== 'SECOND_TO_LAST') continue
+    const tn = dayNum(iso10(t.transfer_date))
+    if ((transfers || []).some(x => x.tenant_id === t.id) || (tn != null && tn >= s && tn < e)) continue
+    const receipts = advanceReceipts(deposits || [], new Set([t.id]), receiptStatuses)
+    if (receipts.reduce((sum, r) => sum + toCents(r.amount), 0) <= 0) continue
+    const receiptIds = new Set(receipts.map(r => r.id))
+    if (stored.some(x => x.tenant_id === t.id || (x.allocations || []).some(a => receiptIds.has(a.deposit_id)))) continue
+    const w = advanceWindow({ moveOutISO: t.actual_move_out_date || t.move_out_date, cutoff, rentCents: rentC })
+    if (w) out.set(t.id, carryInfo(cutoff.id, w, rentC, false))
+  }
+  return out
+}
+
+/**
+ * Rows to insert into rent_carryovers when `cutoff` is closed (Open Cutoff): live detection on HELD receipts, minus rows
+ * already stored and tenants that already have a FINAL bill. perTenant = the raw computeBilling rows (full rent).
+ */
+export function carryToStore({ tenants, cutoff, perTenant, deposits, stored = [], carry = [], finalBills = [], transfers = [] }) {
+  const m = advanceCarry({ tenants, cutoff, perTenant, deposits, stored, carry: [], finalBills, transfers, live: true, receiptStatuses: ['HELD'] })
+  const rows = []
+  for (const [id, c] of m) {
+    if ((carry || []).some(x => x.tenant_id === id && x.cutoff_id === cutoff.id)) continue
+    rows.push({
+      tenant_id: id, cutoff_id: cutoff.id, move_out_date: c.moveOut, window_start: c.windowStart,
+      cutoff_days: c.cutoffDays, carry_days: c.carryDays, month_rent: c.monthRentCents / 100, carry_amount: c.carryCents / 100,
+    })
+  }
+  assertCarryRows(rows)
+  return rows
+}
+
+/**
+ * The advance part of a cutoff's statements (computeCutoffBilling): the carry reduces each affected row's rent (and total)
+ * and is attached as row.advanceCarry; the legacy stored credits are read from the reduced rows.
+ * advData = { deposits, finalBills, stored, carry }. Returns { perTenant, credits, carries }.
+ */
+export function cutoffAdvance({ cutoff, perTenant, tenants, advData, transfers = [] }) {
+  if (!perTenant?.length) return { perTenant: perTenant || [], credits: new Map(), carries: new Map() }
+  const carries = advanceCarry({
+    tenants, cutoff, perTenant, deposits: advData?.deposits || [], stored: advData?.stored || [], carry: advData?.carry || [],
+    finalBills: advData?.finalBills || [], transfers,
+  })
+  const rows = perTenant.map(r => {
+    const c = carries.get(r.id)
+    if (!c) return r
+    const rent = c.rentCents / 100
+    return { ...r, rent, total: rent + (r.water || 0) + (r.elec || 0) + (r.addonRentWater || 0) + (r.addonElectric || 0), advanceCarry: c }
+  })
+  const credits = advanceCredits({ tenants, cutoff, perTenant: rows, deposits: advData?.deposits || [], stored: advData?.stored || [] })
+  return { perTenant: rows, credits, carries }
 }
 
 /** Tenants on their second-to-last bill (live) whose advance was already credited in another cutoff. */
@@ -332,13 +375,13 @@ export function advanceAdjustments(args) {
 }
 
 /**
- * Rows to insert into advance_credits when `cutoff` is closed: live detection, minus what is already stored.
- * Only HELD receipts are credited, a tenant who already has a FINAL bill is skipped (the advance went to the
- * final bill), and a row whose allocations do not add up to its amount throws (G1 would reject it anyway).
+ * Rows to insert into advance_credits when `cutoff` is closed. Since the advance-window rule (advanceCarry / rent_carryovers)
+ * there is no live credit, so this is always empty; kept so Open Cutoff stays idempotent for the legacy table. A row whose
+ * allocations do not add up to its amount throws (G1 would reject it anyway).
  */
 export function creditsToStore({ tenants, cutoff, perTenant, deposits, stored = [], finalBills = [] }) {
   const finalIds = new Set((finalBills || []).filter(f => f.status === 'FINAL').map(f => f.tenant_id))
-  const credits = advanceCredits({ tenants, cutoff, perTenant, deposits, stored, live: true, receiptStatuses: ['HELD'] })
+  const credits = advanceCredits({ tenants, cutoff, perTenant, deposits, stored, receiptStatuses: ['HELD'] })
   const rows = []
   for (const [id, c] of credits) {
     if (finalIds.has(id) || stored.some(s => s.tenant_id === id && s.cutoff_id === cutoff.id)) continue
@@ -1110,6 +1153,29 @@ function buildRentLines({ tenant, cls, cov, cutoffs, moveInISO, moveOutISO }) {
   return { lines, warnings, info }
 }
 
+// The tenant's stored advance window that this final bill must bill: its cutoff is closed and its rent/water is not covered by
+// this bill (a covered cutoff bills its whole rent here anyway; only the electricity of that cutoff may still be covered). The latest one if there were ever several.
+function carryRowFor(storedCarry, tenantId, cutoffs, cov) {
+  const rows = (storedCarry || []).filter(r => r.tenant_id === tenantId && !cov.water.covered.some(c => c.id === r.cutoff_id)).filter(r => {
+    const c = cutoffs.find(x => x.id === r.cutoff_id)
+    return c && isCutoffClosed(c, cutoffs)
+  })
+  return rows.sort((a, b) => b.cutoff_id - a.cutoff_id)[0] || null
+}
+
+function carryRentResult(row, c) {
+  const res = carryRentLines({ row, rentEndISO: c.rentEnd })
+  const info = {
+    rule: c.rentCls.rentRule, months: c.rentCls.months,
+    summary: res.exact ? `advance month ${dayMonth(iso10(row.window_start))} - ${dayMonth(iso10(row.move_out_date))}` : undefined,
+    advance_window: {
+      cutoff_id: row.cutoff_id, window_start: iso10(row.window_start), move_out_date: iso10(row.move_out_date),
+      month_rent: toCents(row.month_rent) / 100, carry_amount: toCents(row.carry_amount) / 100, exact: res.exact,
+    },
+  }
+  return { lines: res.lines, warnings: res.warning ? [res.warning] : [], info }
+}
+
 const UTIL_LABEL = { WATER: 'Add: Water (cu. m)', ELECTRIC: 'Add: Electricity (per kWh)' }
 const UTIL_KEY = { WATER: 'water', ELECTRIC: 'electric' }
 const ROUNDING_RULE = 'Each reading-to-reading piece is rounded to the cent; the cents are shared by day-weights, any odd cent goes to the larger fractional share, ties to the lower tenant id (first bed).'
@@ -1124,6 +1190,8 @@ const ROUNDING_RULE = 'Each reading-to-reading piece is rounded to the cent; the
  *                interimsAll: every interim reading of the room (all cutoffs), splitFlags: Set('cutoffId|UTILITY'),
  *                addonFlags: add-on rows of the group }
  *   deposits / payments / plannedMoveOut / waived / siblingIds   Map(tenantId -> ...); storedCredits: array
+ *   storedCarry rent_carryovers rows: a closed second-to-last cutoff's carried rent is billed here (carryRentLines), with the
+ *              rest of the advance month, instead of the stay rent
  *   startOverrides { WATER, ELECTRIC }  start readings typed by staff (apply to the stay-billed tenants)
  *   isAdmin    admin may proceed without a cutoff holding the date (that utility's lines are 0, its reading is not saved)
  *
@@ -1137,7 +1205,7 @@ const ROUNDING_RULE = 'Each reading-to-reading piece is rounded to the cent; the
 export function buildFinalBillDrafts({
   group, cutoffs = [], tenants = [], moveOutDate, readings: rawReadings = {}, bundle = {}, deposits = new Map(), storedCredits = [],
   payments = new Map(), plannedMoveOut = new Map(), waived = new Map(), siblingIds = new Map(), startOverrides = {}, isAdmin = false, now = new Date(),
-  vacatedAfterNoon = null,
+  vacatedAfterNoon = null, storedCarry = [],
 }) {
   const moveOut = iso10(moveOutDate)
   const moveNum = dayNum(moveOut)
@@ -1334,7 +1402,10 @@ export function buildFinalBillDrafts({
   const sameNameOthers = (t) => roomId != null && tenants.some(x => x.is_active && x.id !== t.id && !groupIds.includes(x.id) && roomOf(x) === roomId && norm(x.name) === norm(t.name))
   for (const c of ctxs) {
     const { t, cls, cov } = c
-    const rentRes = buildRentLines({ tenant: t, cls: c.rentCls, cov, cutoffs, moveInISO: c.moveInISO, moveOutISO: c.rentEnd })
+    const carryRow = cls.kind === 'STAY_BILLED' ? null : carryRowFor(storedCarry, t.id, cutoffs, cov)
+    const rentRes = carryRow
+      ? carryRentResult(carryRow, c)
+      : buildRentLines({ tenant: t, cls: c.rentCls, cov, cutoffs, moveInISO: c.moveInISO, moveOutISO: c.rentEnd })
     for (const msg of rentRes.warnings) pushAll([c], msg)
     const lines = [...rentRes.lines]
     let extension = null
@@ -1396,6 +1467,7 @@ export function buildFinalBillDrafts({
         },
         rounding_rule: ROUNDING_RULE, rate_notes: [...new Set(c.notesRate)], group: { tenant_ids: groupIds },
         ...(rentRes.info.closed_cents != null ? { closed_rent: rentRes.info.closed_cents / 100 } : {}),
+        ...(rentRes.info.advance_window ? { advance_window: rentRes.info.advance_window } : {}),
       },
     }
     const fw = cov.water.final

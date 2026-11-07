@@ -5,7 +5,7 @@
  * database. Shared by MoveOutModal and the Approvals review so both rebuild from the same fresh data.
  */
 import {
-  supabase, fetchCutoffs, fetchTenants, fetchUtilityBill, fetchTenantDeposits, fetchStoredAdvanceCredits,
+  supabase, fetchCutoffs, fetchTenants, fetchUtilityBill, fetchTenantDeposits, fetchStoredAdvanceCredits, fetchRentCarryovers,
   fetchAdvanceSiblingIds, fetchPayments, fetchRoomInterimReadings, fetchSplits, fetchMoveOutRequestForBill,
 } from './supabase'
 import { classifyStay, computeCoverage, appStart, dayNum } from './stay'
@@ -31,7 +31,7 @@ export async function buildRequestFreshDrafts({ beds, moveOutDate, readings, vac
   }
   const res = buildFinalBillDrafts({
     group: b.group, cutoffs: b.cutoffs, tenants: b.tenants, moveOutDate, readings, bundle: b.bundle,
-    deposits: b.deposits, storedCredits: b.storedCredits, payments: b.payments, plannedMoveOut: b.plannedMoveOut,
+    deposits: b.deposits, storedCredits: b.storedCredits, storedCarry: b.storedCarry, payments: b.payments, plannedMoveOut: b.plannedMoveOut,
     siblingIds: b.siblingIds, startOverrides: { WATER: manual('water'), ELECTRIC: manual('electric') }, isAdmin: true, vacatedAfterNoon,
   })
   return { drafts: res.drafts, tenants: b.tenants }
@@ -70,7 +70,7 @@ const withRoom = (t) => ({
 })
 
 /**
- * Returns { cutoffs, tenants, group, roomId, plannedMoveOut, deposits, storedCredits, siblingIds, payments, bundle }
+ * Returns { cutoffs, tenants, group, roomId, plannedMoveOut, deposits, storedCredits, storedCarry, siblingIds, payments, bundle }
  * where `bundle` = { rowsByCutoff, interimsAll, splitFlags, addonFlags } as expected by buildFinalBillDrafts. `group` keeps
  * the order of `groupIds` (callers pass bed order).
  */
@@ -82,18 +82,20 @@ export async function loadMoveOutBundle({ groupIds, moveOutDate, excludeFinalBil
   const roomId = group[0].room_id
   const moveOut = iso10(moveOutDate)
 
-  const [deposits, payments, storedCredits] = await Promise.all([
+  const [deposits, payments, storedCredits, allCarry] = await Promise.all([
     Promise.all(group.map(t => fetchTenantDeposits(t.id))),
     Promise.all(group.map(t => fetchPayments(t.id))),
     fetchStoredAdvanceCredits(),
+    fetchRentCarryovers(),
   ])
+  const storedCarry = allCarry.filter(r => groupIds.includes(r.tenant_id))
   const depMap = new Map(group.map((t, i) => [t.id, deposits[i]]))
   const payMap = new Map(group.map((t, i) => [t.id, payments[i]]))
   const sibMap = new Map()
   for (const t of group) sibMap.set(t.id, await fetchAdvanceSiblingIds(t, depMap.get(t.id), storedCredits))
   const plannedMoveOut = new Map(group.map(t => [t.id, iso10(t.move_out_date)]))
 
-  const empty = { cutoffs, tenants, group, roomId, plannedMoveOut, deposits: depMap, storedCredits, siblingIds: sibMap, payments: payMap }
+  const empty = { cutoffs, tenants, group, roomId, plannedMoveOut, deposits: depMap, storedCredits, storedCarry, siblingIds: sibMap, payments: payMap }
   if (roomId == null || !moveOut) {
     return { ...empty, bundle: { rowsByCutoff: new Map([['WATER', new Map()], ['ELECTRIC', new Map()]]), interimsAll: [], splitFlags: new Set(), addonFlags: [] } }
   }

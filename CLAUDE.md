@@ -43,9 +43,9 @@ npm run build     # -> dist/
 - `src/lib/` data layer: `supabase.js` (queries + move-out/receipt writes), `appVersion.js` (pure build-id compare) +
   `appVersionCheck.js` (`assertAppCurrent`: money writes refuse from an outdated tab), `billing.js`, `collectionsRows.js` (Collections rows, cutoff outstanding, past-due candidates + refresh tracker, cutoff picker `?cutoff=`), `paymentRefs.js` (Collections payment S.I#/T.R#: normalise, display, edit rights), `cutoffBilling.js` (the one
   loader + compute for a cutoff's statements: Billing, print pages, profile history), `monthlyStatement.js` (printed
-  statement props), `billNumber.js` (monthly Billing No. `<room>-<YYYY>-<MM>`), `tenantStatements.js` (profile statement history), `finalBill.js`, `reservation.js` (reservation target date, Move In defaults), `stay.js`, `stayExtension.js` (late move-out: P500/night after the contract date, 12:00 PM checkout),
+  statement props), `billNumber.js` (monthly Billing No. `<room>-<YYYY>-<MM>`), `tenantStatements.js` (profile statement history), `finalBill.js`, `advanceWindow.js` (advance month ending on the move-out date: 2nd-to-last rent carried to the final bill, `rent_carryovers`), `reservation.js` (reservation target date, Move In defaults), `stay.js`, `stayExtension.js` (late move-out: P500/night after the contract date, 12:00 PM checkout),
   `utilityPieces.js`, `receiptLines.js`, `moveOutData.js`, `maintenanceTickets.js` (ticket target/place helpers), `pnl.js`,
-  `snapshot.js`, `occupancyMtd.js` (Dashboard Occupancy tile: Manila month-to-date window + MTD average / today figures),
+  `snapshot.js` (+ pure `snapshotCompute.js`: snapshot row, rent as the statements bill it), `occupancyMtd.js` (Dashboard Occupancy tile: Manila month-to-date window + MTD average / today figures),
   `auth.jsx`, `approvals.js`,
   `tenantProfile.js`, `tenantHistory.js` (profile history reads, in-house rule), `notify.js`, `visitors.js`, `idPhoto.js`, `guardShift.js`, `simCsv.js`, `theme.jsx`.
 - `supabase/functions/` notify-email Edge Function + `_shared/` (also imported by `src/`; `maintenance-locations.ts` = the

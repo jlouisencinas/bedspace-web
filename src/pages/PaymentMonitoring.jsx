@@ -149,7 +149,7 @@ export default function PaymentMonitoring() {
         <>
           {advData.error && (
             <div className="mt-4 px-4 py-3 bg-warning-bg border border-warning-border rounded-xl text-[13px] text-warning-text">
-              Advance credits could not be loaded ({advData.error}); outstanding balances do not include any second-to-last-bill advance credit.
+              Advance data could not be loaded ({advData.error}); outstanding balances include neither the second-to-last-bill advance window (rent carried to the final bill) nor any stored advance credit.
             </div>
           )}
           {isHistorical && (

@@ -9,9 +9,9 @@ import {
   fetchTransfersForCutoff, fetchAdvanceCreditData,
 } from './supabase'
 import { computeBilling } from './billing'
-import { advanceCredits } from './finalBill'
+import { cutoffAdvance } from './finalBill'
 
-export const NO_ADVANCE_DATA = { deposits: [], finalBills: [], stored: [], error: null }
+export const NO_ADVANCE_DATA = { deposits: [], finalBills: [], stored: [], carry: [], error: null }
 
 // Throws on any read error except the advance-credit data, which reports it in advData.error (as fetchAdvanceCreditData does).
 // shared.tenants / shared.advData skip those fetches when the caller already holds them.
@@ -28,10 +28,9 @@ export async function loadCutoffBillingInputs(cutoff, shared = {}) {
 // Pure. Never caches (the Billing page keeps its own cacheBilling call).
 export function computeCutoffBilling(cutoff, inputs) {
   const { bill, interims, tenants, splits, addons, areas, transfers, advData } = inputs
-  if (!cutoff || !bill?.length) return { perRoom: [], perTenant: [], stayBilled: [], credits: new Map() }
+  if (!cutoff || !bill?.length) return { perRoom: [], perTenant: [], stayBilled: [], credits: new Map(), carries: new Map() }
   const result = computeBilling(cutoff, bill, interims, tenants, splits, addons, areas, transfers)
-  const credits = result.perTenant.length
-    ? advanceCredits({ tenants, cutoff, perTenant: result.perTenant, deposits: advData.deposits, stored: advData.stored })
-    : new Map()
-  return { ...result, credits }
+  // A second-to-last leaver's rent is reduced here (advance window), so every page shows the same statement.
+  const adv = cutoffAdvance({ cutoff, perTenant: result.perTenant, tenants, advData, transfers })
+  return { ...result, perTenant: adv.perTenant, credits: adv.credits, carries: adv.carries }
 }

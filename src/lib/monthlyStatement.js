@@ -4,8 +4,6 @@
  * Pure props for one printed monthly Statement of Account (Rent + Water or Electricity), from a computeCutoffBilling
  * perTenant row. Shared by the print pages and the tenant profile's statement preview, so a reprint is identical.
  */
-import { prorateCents } from './stay'
-
 export const COMPANY = {
   address:    'JP Rizal ext., Cor Lapu-Lapu street, Brgy. West Rembo, Taguig City',
   bankName:   'NJL Corp.',
@@ -69,39 +67,26 @@ export const REPRINT_BANNER = (dateIso) =>
 
 const cents = (v) => Math.round((Number(v) || 0) * 100)
 
-// " (pro-rated D of W days)" only when advance x D / W reproduces the credit; a credit capped at the rent says " (pro-rated)";
-// a credit without a day count (stored before pro-rating, or its move-out date moved since) gets no note.
-export function proratedNote(credit) {
-  const { days, windowDays } = credit || {}
-  if (!(days > 0 && windowDays > 0)) return ''
-  const advC = cents(credit.amount) + cents(credit.remaining)
-  return prorateCents(advC, days, windowDays) === cents(credit.amount) ? ` (pro-rated ${days} of ${windowDays} days)` : ' (pro-rated)'
-}
-
 const php = n => 'Php ' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-// "Nov 1 to 11" / "Nov 1" / "Nov 28 to Dec 2": the D nights of the stay that start on `startIso`.
-function stayRange(startIso, days) {
-  const last = addDays(startIso, days - 1)
-  const [, sm, sd] = startIso.slice(0, 10).split('-'); const [, em, ed] = last.split('-')
-  if (days === 1) return `${MO[+sm-1]} ${+sd}`
-  return sm === em ? `${MO[+sm-1]} ${+sd} to ${+ed}` : `${MO[+sm-1]} ${+sd} to ${MO[+em-1]} ${+ed}`
+/** A legacy stored advance credit's note: "Advance applied now: Php 5,000.00." (+ the remaining advance, if any). */
+export function advanceNote(credit) {
+  if (!credit) return ''
+  const rest = cents(credit.remaining) > 0 ? ` Remaining advance ${php(credit.remaining)} will be credited on the final bill.` : ''
+  return `Advance applied now: ${php(credit.amount)}.${rest}`
 }
 
 /**
- * The second-to-last bill's advance note, printed beside the charges (it adds no height to the fixed half-page copy):
- * "Advance applied now: Php 1,774.19 (11 of 31 days, for your stay Nov 1 to 11). Remaining advance Php 3,225.81 will
- * be credited on the final bill." The stay starts on the day after this period (water_end, exclusive end). The day
- * count is shown only when it reproduces the credit (see proratedNote); otherwise "(pro-rated)" or nothing.
+ * The second-to-last statement of a leaver under the advance-window rule (row.advanceCarry from computeCutoffBilling):
+ * the rent line's period ends the day before the advance month, and the note names the carried part:
+ * "Rent for 12 Oct - 31 Oct (Php 3,225.81) is billed on your final bill, against your advance."
  */
-export function advanceNote(credit, cutoff) {
-  if (!credit) return ''
-  const note = proratedNote(credit)
-  let detail = ''
-  if (note.includes(' of ')) detail = ` (${credit.days} of ${credit.windowDays} days, for your stay ${stayRange(cutoff.water_end, credit.days)})`
-  else if (note) detail = ' (pro-rated)'
-  const rest = cents(credit.remaining) > 0 ? ` Remaining advance ${php(credit.remaining)} will be credited on the final bill.` : ''
-  return `Advance applied now: ${php(credit.amount)}${detail}.${rest}`
+export function carryRentPeriod(carry, cutoff) {
+  return periodLabel(cutoff.water_start, carry.windowStart)
+}
+export function carryNote(carry, cutoff) {
+  if (!carry) return ''
+  return `Rent for ${periodLabel(carry.windowStart, cutoff.water_end)} (${php(carry.carryCents / 100)}) is billed on your final bill, against your advance.`
 }
 
 export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, copyLabel, billingDate, preparedBy, banner }) {
@@ -110,7 +95,8 @@ export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, cop
   const period = periodLabel(cutoff.water_start, cutoff.water_end)
   const room = roomRow || {}
   const sp = splits.find(s => s.room_id === t.room_id && s.tenant_id === t.id && s.utility === 'WATER')
-  const charges = [{ label: 'Monthly Rent', mid: period, amount: t.rent }]
+  const carry = t.advanceCarry || null
+  const charges = [{ label: 'Monthly Rent', mid: carry ? carryRentPeriod(carry, cutoff) : period, amount: t.rent }]
   if (!t.special || t.water > 0) charges.push({ label: 'Add: Water (cu. m)', mid: cu(t.waterCons), amount: t.water })
   ;(t.addons || []).filter(a => a.bill_on !== 'ELECTRIC').forEach(a =>
     charges.push({ label: `Add: ${a.label}${a.recurring ? '' : ' · one-time'}`, mid: '', amount: Number(a.amount) }))
@@ -124,7 +110,7 @@ export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, cop
     name: t.name, room: t.room_no, asOf: fmt(asOf), due: fmt(due), billNo, preparedBy,
     charges,
     total: t.rent + t.water + (t.addonRentWater || 0) - (credit ? credit.amount : 0),
-    paymentNote: advanceNote(credit, cutoff) || undefined,
+    paymentNote: [carryNote(carry, cutoff), advanceNote(credit)].filter(Boolean).join(' ') || undefined,
     details: t.special ? null : {
       header: ['', 'Prev Reading', 'Actual Reading', 'Actual Room Consumption (cu. m)', 'Personal Consumption'],
       rows: [['Water', reading(room.water_prev), reading(room.water_curr),

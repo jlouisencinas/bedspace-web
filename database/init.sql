@@ -760,6 +760,46 @@ drop trigger if exists trg_advance_credits_guard on public.advance_credits;
 create trigger trg_advance_credits_guard before insert on public.advance_credits
   for each row execute function public.advance_credits_guard();
 
+-- Advance window (database/migrations/rent_carryovers.sql): second-to-last rent carried to the final bill, frozen at
+-- Open Cutoff. Immutable; the final bill bills carry_amount + (month_rent - carry_amount) and credits the whole advance.
+create table if not exists public.rent_carryovers (
+  id            serial primary key,
+  tenant_id     int not null references public.tenants(id),
+  cutoff_id     int not null references public.cutoffs(id),
+  move_out_date date not null,
+  window_start  date not null,
+  cutoff_days   int  not null check (cutoff_days > 0),
+  carry_days    int  not null check (carry_days > 0),
+  month_rent    numeric(10,2) not null check (month_rent > 0),
+  carry_amount  numeric(10,2) not null check (carry_amount > 0 and carry_amount < month_rent),
+  created_at    timestamptz default now(),
+  unique (tenant_id, cutoff_id),
+  check (carry_days < cutoff_days)
+);
+create index if not exists idx_rent_carryovers_tenant on public.rent_carryovers(tenant_id);
+
+-- No window once the tenant has a FINAL bill (like G1), and the row must match its cutoff's rent/water window.
+create or replace function public.rent_carryovers_guard() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare v_start date; v_end date;
+begin
+  if exists (select 1 from public.final_bills where tenant_id = new.tenant_id and status = 'FINAL') then
+    raise exception 'rent_carryovers: tenant % already has a final bill.', new.tenant_id;
+  end if;
+  select water_start, water_end into v_start, v_end from public.cutoffs where id = new.cutoff_id;
+  if v_start is null or v_end is null then
+    raise exception 'rent_carryovers: cutoff % has no rent/water window.', new.cutoff_id;
+  end if;
+  if new.cutoff_days <> (v_end - v_start) or new.window_start + new.carry_days <> v_end or new.move_out_date < v_end then
+    raise exception 'rent_carryovers: the window (% + % days, % days, out %) does not match cutoff % (% - %).',
+      new.window_start, new.carry_days, new.cutoff_days, new.move_out_date, new.cutoff_id, v_start, v_end;
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_rent_carryovers_guard on public.rent_carryovers;
+create trigger trg_rent_carryovers_guard before insert on public.rent_carryovers
+  for each row execute function public.rent_carryovers_guard();
+
 -- G2: a FINAL bill can never credit or forfeit more advance (or deposit) than the receipts hold.
 -- An advance credit stored for a cutoff whose window ends AFTER the bill's move-out date is an orphan (the final bill
 -- replaces that statement) and is not counted as used, mirroring the app rule R1.
@@ -2256,6 +2296,20 @@ create policy advance_credits_insert on public.advance_credits
 -- No UPDATE / DELETE policies on purpose: a recorded credit is immutable.
 drop policy if exists advance_credits_update on public.advance_credits;
 drop policy if exists advance_credits_delete on public.advance_credits;
+
+-- ── rent_carryovers ───────────────────────────────────────────────────────
+alter table public.rent_carryovers enable row level security;
+drop policy if exists rent_carryovers_select on public.rent_carryovers;
+create policy rent_carryovers_select on public.rent_carryovers
+  for select to authenticated
+  using (exists (select 1 from public.profiles where id = auth.uid() and role in ('admin','user')));
+drop policy if exists rent_carryovers_insert on public.rent_carryovers;
+create policy rent_carryovers_insert on public.rent_carryovers
+  for insert to authenticated
+  with check (exists (select 1 from public.profiles where id = auth.uid() and role = 'admin'));
+-- No UPDATE / DELETE policies on purpose: a recorded window is immutable.
+drop policy if exists rent_carryovers_update on public.rent_carryovers;
+drop policy if exists rent_carryovers_delete on public.rent_carryovers;
 
 -- ── addon_types ───────────────────────────────────────────────────────────
 alter table public.addon_types enable row level security;
