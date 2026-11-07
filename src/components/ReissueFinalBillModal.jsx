@@ -56,7 +56,7 @@ export default function ReissueFinalBillModal({ bill, tenant, onClose, onDone })
   function build() {
     const res = buildFinalBillDrafts({
       group: [pre.tenant], cutoffs: pre.cutoffs, tenants: pre.tenants, moveOutDate: moveOut, readings: pre.readings, bundle: pre.bundle,
-      deposits: pre.deposits, storedCredits: pre.storedCredits, payments: pre.payments, plannedMoveOut: pre.plannedMoveOut,
+      deposits: pre.deposits, storedCredits: pre.storedCredits, storedCarry: pre.storedCarry, payments: pre.payments, plannedMoveOut: pre.plannedMoveOut,
       waived: new Map([[bill.tenant_id, !!bill.forfeit_waived]]), siblingIds: pre.siblingIds, startOverrides: pre.startOverrides,
       isAdmin: true, vacatedAfterNoon: late ? afterNoon : null,
     })

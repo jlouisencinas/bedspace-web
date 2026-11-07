@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { notifyAsync } from './notify'
 import { normalizeLines, computeTotals, round2, assertCreditRows, verifyBillAgainstDb, vacatedRecord, normalizeReceiptRef, missingReceiptRefs, applyReceiptRefs, applyCheckRefs, asHeldForReissue, finalBillShapeProblem } from './finalBill'
+import { assertCarryRows } from './advanceWindow'
 import { assertAppCurrent } from './appVersionCheck'
 import { formatPaymentRefs } from './paymentRefs'
 import { finalCutoffForUtility, newLeaseMoveOutProblem, finalBilledStamps, planReattachment, cutoffDeleteBlocker, readingOnFileFor } from './stay'
@@ -818,16 +819,47 @@ export async function fetchStoredAdvanceCredits() {
   return data
 }
 
-// Inputs of finalBill.advanceCredits(). Viewers cannot read these tables (RLS), so for them the
-// credit is simply not applied. Never throws: a failure comes back as `error` so the page can say
-// that the credit is missing instead of failing to load the whole billing view.
+// Advance windows frozen at Open Cutoff (database/migrations/rent_carryovers.sql). Until that migration is applied the
+// table does not exist and no row can exist either, so "table not found" reads as no rows; any other error is thrown.
+export async function fetchRentCarryovers() {
+  const { data, error } = await supabase.from('rent_carryovers').select('*')
+  if (error) {
+    if (error.code === 'PGRST205' || error.code === '42P01') return []
+    throw error
+  }
+  return data
+}
+
+// Inputs of finalBill.cutoffAdvance() (advance windows + stored advance credits). Viewers cannot read these tables (RLS), so for
+// them neither is applied. Never throws: a failure comes back as `error` so the page can say that the advance part is
+// missing instead of failing to load the whole billing view.
 export async function fetchAdvanceCreditData() {
   try {
-    const [deposits, finalBills, stored] = await Promise.all([fetchAllTenantDeposits(), fetchFinalBillsLite(), fetchStoredAdvanceCredits()])
-    return { deposits, finalBills, stored, error: null }
+    const [deposits, finalBills, stored, carry] = await Promise.all([fetchAllTenantDeposits(), fetchFinalBillsLite(), fetchStoredAdvanceCredits(), fetchRentCarryovers()])
+    return { deposits, finalBills, stored, carry, error: null }
   } catch (e) {
-    return { deposits: [], finalBills: [], stored: [], error: e.message }
+    return { deposits: [], finalBills: [], stored: [], carry: [], error: e.message }
   }
+}
+
+// Admin session only (RLS). Idempotent per (tenant, cutoff): a window that is already recorded is kept (rows are immutable).
+export async function saveRentCarryovers(rows, actorId) {
+  await assertAppCurrent()
+  if (!rows.length) return []
+  assertCarryRows(rows)
+  const { data, error } = await supabase
+    .from('rent_carryovers')
+    .upsert(rows, { onConflict: 'tenant_id,cutoff_id', ignoreDuplicates: true })
+    .select()
+  if (error) throw error
+  await logActivity({
+    activity_type: 'Advance Window Recorded',
+    entity_type:   'CUTOFF', entity_id: rows[0].cutoff_id,
+    actor_id:      actorId || null,
+    notes:         `Second-to-last-bill advance window recorded for ${rows.length} tenant(s): cutoff part ${peso(rows.reduce((s, r) => s + Number(r.carry_amount), 0))}.`,
+    metadata:      { cutoff_id: rows[0].cutoff_id, tenant_ids: rows.map(r => r.tenant_id) },
+  })
+  return data
 }
 
 // Admin session only (RLS). Idempotent per (tenant, cutoff): a credit that is already recorded is kept.

@@ -500,10 +500,13 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   - **Final bill / move-out settlement — Phase 2 DONE** (rules below; what was built and its known
     limits are in the "Phase 2 as built" bullet that follows the rules). Only the refund tracker is left (Phase 3):
     - **Billing periods** follow the cutoff windows (rent/water 1st–EOM, electric 10th–10th).
-    - The **advance is credited against the rent of the second-to-last bill, pro-rated by days** (2026-11-06) — the
-      billing period *before* the one containing the move-out date gets advance x (days of the stay in the move-out
-      month) / (days of the second-to-last month); the rest of the advance is credited on the final bill. If the tenant stays only one or two billing
-      periods, the unused advance is credited on the final bill and any excess is refunded.
+    - The **1-month advance covers the W days ENDING on the move-out date** (2026-11-07, replaces the 2026-11-06
+      pro-rated credit and the short-lived "rent carried to the final bill" presentation): W = the day count of the
+      second-to-last cutoff (31 for Oct), counted back from the move-out date inclusive. The second-to-last bill bills the
+      full month's rent and credits the window's days inside it as "Less: Advance"; the final bill credits the rest of the
+      advance and bills the days after that cutoff as rent - that credit, so the advance pays exactly one month. Details
+      under "Second-to-last bill" below. A stay of only one or two billing periods, a month-end move-out and the other
+      fallbacks keep the standard rule: the whole advance on the final bill and any excess over charges refunded.
     - The **deposit covers the final bill**: prorated rent through the move-out date + utilities as
       of the move-out readings + any unsettled earlier amounts entered manually by staff. (Data in
       the app only started September 2026, so earlier unsettled balances are keyed in by staff.)
@@ -593,50 +596,67 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       in during the candidate window has no second-to-last bill (stays of only one or two billing periods get the
       advance on the final bill instead). **A move-out on a calendar month end has none either** (2026-11-06): when the
       date is the LAST day of the next window (`nextEnd - 1`, e.g. out Nov 30 for the Oct cutoff) the Oct bill is
-      `STANDARD` and the whole advance goes on the final bill (a full month); a non-month-end date in the next window
-      (Nov 15, Nov 29) still gets the Oct credit. This applies to the active cutoff (Oct 2026) and every later one: no badge,
-      no "Less advance", no credit line on PrintRentWater, no Collections / Payment Monitoring adjustment, and Open Cutoff
-      stores no `advance_credits` row for that tenant. Credits already stored for closed cutoffs (Sep 2026) are unchanged.
-      Billing (Rent + Water view) shows a "2nd-to-last bill" badge plus "Less advance (pro-rated D of W days) / Net";
-      PrintRentWater prints the credit line and the reduced total.
-      **The credit is pro-rated by days (2026-11-06, `proratedAdvanceCents` in `finalBill.js`):** W = days of the
-      second-to-last window (`water_end - water_start`, e.g. Oct = 31, Sep = 30, Feb = 28/29), D = days of the stay in the
-      next window through the move-out day inclusive (`moveOut - water_end + 1`, 1..W-1 since a month end is STANDARD);
-      A = advance on file (HELD/APPLIED ADVANCE receipts, whole-room beds summed; never the deposit or a reservation
-      payment). credit = min(half-up integer cents of A x D / W, that period's rent); remaining = A - credit, exact by
-      subtraction (it absorbs the rounding, so credit + remaining = A to the cent). The remaining part stays HELD and the
-      final bill credits it ("already credited P.. on <cutoff> · remaining P.. (credited here)"); the final bill's rent is
-      unchanged (Nov 1-23 on `stayRent`, no flat month). Worked example (rate and advance 5,000, out Nov 23, Oct window 31
-      days): Oct credit 5,000 x 23/31 = 3,709.68, Oct rent due 1,290.32 (+ water); final bill (in Sep 1) rent 3,833.33
-      (2 months + 23 of 30 days = 13,833.33 less 10,000.00 billed on closed statements), Less: Advanced Payment
-      -1,290.32, rent payable 2,543.01; total rent after the advance 1,290.32 + 2,543.01 = 3,833.33. Other days: out Nov 15
-      -> 2,419.35 (2,580.65 carried), Nov 1 -> 161.29 (4,838.71 carried, any excess on the final bill is returned), Nov 29
-      -> 4,677.42. Advance 6,000 on rent 5,000, out Nov 23 -> 4,451.61; out Nov 29 -> capped at 5,000.00. Printed: the
-      "Less: Advanced Payment" row shows only the receipt ref (S.I# 1234) and the amount; the breakdown is a bold note
-      under the bank details (beside the charges, so the fixed-height copy is not clipped): "Advance applied now: Php
-      3,709.68 (23 of 31 days, for your stay Nov 1 to 23). Remaining advance Php 1,290.32 will be credited on the final
-      bill." (owner-approved wording, 2026-11-06; the stay starts the day after the period. The day count and stay dates
-      print only while advance x D / W reproduces the credit; a credit capped at the rent says "(pro-rated)"; a stored
-      credit from before this rule, or one whose move-out date moved since, prints no detail; nothing remaining drops
-      the second sentence).
-      Live while the cutoff is ACTIVE (the amount follows the move-out date until Open Cutoff, which stores it and freezes
-      it). It applies to the active Oct 2026 cutoff too, so Oct statements printed before the deploy show the old full
-      credit and differ from a reprint. Stored credits (Sep 2026) and issued final bills are unchanged; Void & re-issue
-      keeps the stored credit. The credit is an **adjustment, not cash**: Collections' amount to collect is net of it,
-      and Payment Monitoring / Dashboard use it as `adjustments` in `buildPaymentMonitoring` (outstanding =
-      billed - adjustments - paid; "paid"/collected never includes it), so sum(bills) = sum(payments) +
-      adjustments + outstanding. Viewers cannot read the receipts (RLS), so their Dashboard summary omits it.
-    - **Stored credit (`advance_credits`) makes it immutable.** While a cutoff is ACTIVE the credit is detected
-      live from the move-out date. When the next cutoff is opened (Utilities "Open Cutoff", admin only: the button is
-      hidden for other roles) `recordAdvanceCredits` runs BEFORE `openCutoff` for the cutoff being closed, and a
-      failure ABORTS the open (nothing opened, error toast, safe to retry: recording is idempotent). Every
-      tenant who was on their second-to-last bill gets one row (tenant, cutoff, amount, ref text, `allocations` =
-      which receipts were used). From then on: a CLOSED cutoff's statement/adjustments read the stored row only (no
-      row = no credit); live detection for a later cutoff SKIPS a tenant who already has a stored credit (the advance
-      is consumed - a lease extension or date change can neither drop nor repeat it) and Billing shows "Advance
-      already credited in <cutoff>". The final-bill draft reads the stored rows first (matched by receipt, so
-      whole-room sibling beds are handled); there is no live estimate (the cutoff before the final one is always
-      closed, and stored, by then).
+      `STANDARD` and the whole advance goes on the final bill (a full month).
+      **Advance window and "Less: Advance" credit (2026-11-07, `src/lib/advanceWindow.js`, `advanceCarry` /
+      `advanceCredits` in `finalBill.js`).** For a SECOND_TO_LAST bill of cutoff [s, e) (W = e - s days: 31 Oct, 30 Sep,
+      28/29 Feb) and move-out M: the window is [M - W + 1, M] (inclusive; on calendar-month cutoffs this is the same day as
+      addMonths(M, -1) + 1). When the window starts strictly inside the cutoff: d = e - window start (the window's days in
+      the cutoff), credit basis = half-up cents of R x d / W (R = that row's monthly rent), Nov part = R - basis (exact by
+      subtraction, so the two parts always total R). **Credit = min(basis, advance on file)** (HELD/APPLIED ADVANCE receipts
+      of the tenant, used in id order). The statement bills the FULL rent ("Monthly Rent | 1 Oct - 31 Oct"), the water from
+      the real readings (unchanged), add-ons, and the row "Less: Advance | S.I# <n> | 20 days (Oct 12 to Oct 31) | -credit"
+      (singular "1 day (Oct 31)"; two receipts print "S.I# a & S.I# b"; a receipt without an S.I# prints only the days and
+      Billing shows "advance receipt has no S.I#"). Total amount due = rent + water + add-ons - credit. A side note beside
+      the charges (adds no height to the fixed copy) says "Remaining advance Php 1,774.19 will be credited on the final bill
+      (Nov 1 to Nov 11)." (none when nothing remains). The final bill bills ONE rent line "Rent Period (completes the
+      1-month advance) | 1 Nov - 11 Nov | R - basis" from the frozen `month_rent` (`carryRentLines`), credits the remaining
+      advance (`PARTLY_CREDITED_BEFORE`, "already credited P3,225.81 on Oct 2026 · remaining P1,774.19") and the deposit.
+      **Worked example** (synthetic: rate, advance and deposit 5,000, out Nov 11, Oct 31 days): window Oct 12 - Nov 11,
+      d = 20. Oct statement: rent 5,000.00 + water (from the readings; 193.80 for 1.25 cu.m in the example data) - Less:
+      Advance 3,225.81 = 1,967.99. Final bill: rent 1 Nov - 11 Nov 1,774.19, Less: Advanced Payment -1,774.19, Less: Deposit
+      -5,000.00, plus Nov utilities to the move-out readings. Advance used 3,225.81 + 1,774.19 = 5,000.00 exactly; rent
+      billed Oct + Nov = 6,774.19; each day Oct 12 - Nov 11 is paid once at 5,000/31. Other days (R 5,000, Oct cutoff;
+      credit / remaining = Nov part): out Nov 1 -> 4,838.71 / 161.29; Nov 5 -> 4,193.55 / 806.45; Nov 15 -> 2,580.65 /
+      2,419.35; Nov 29 -> 322.58 / 4,677.42; Nov 30 -> month end, no credit. Sep cutoff (W 30): out Oct 15 -> 2,500.00 /
+      2,500.00; out Oct 1 -> 4,833.33 / 166.67; out Oct 30 -> the window starts Oct 1, no Sep day, standard. Feb 2027 (W 28):
+      out Mar 15 -> window Feb 16 - Mar 15, 13 days, 2,321.43 / 2,678.57. An advance below the basis is credited whole
+      (remaining 0) and the Nov part is still billed in full.
+      **Standard rule instead** (full rent, no credit, whole advance on the final bill): month-end M; window not starting
+      strictly inside the cutoff; a whole-room row; a transfer in the cutoff; no HELD/APPLIED ADVANCE receipt; an advance
+      already consumed by a stored `advance_credits` row of another cutoff (Billing shows "Advance already credited in
+      <cutoff>"); a final-billed tenant; a stay-billed tenant.
+      Live while the cutoff is ACTIVE (the credit follows the move-out date until Open Cutoff freezes it, below). Billing,
+      PrintRentWater, MonthlyStatementPreview, Collections, Payment Monitoring, Dashboard and the profile history all read
+      the same `credits` from `computeCutoffBilling`. The credit is an **adjustment, not cash**: Collections' amount to
+      collect is net of it, and Payment Monitoring / Dashboard use it as `adjustments` in `buildPaymentMonitoring`
+      (outstanding = billed - adjustments - paid; "paid"/collected never includes it), so sum(bills) = sum(payments) +
+      adjustments + outstanding (example: 5,193.80 = 3,225.81 + 1,967.99 owed). Billing (Rent + Water) shows the
+      "2nd-to-last bill" badge (tooltip names the window) and "Less advance (20 days, Oct 12 to Oct 31) -3,225.81 / Net /
+      remaining 1,774.19 for the final bill". Viewers cannot read the receipts (RLS), so their figures omit it (banner).
+      **Legacy stored credits** (`advance_credits` rows without a window row, e.g. Sep 2026) print as "Less: Advanced
+      Payment | S.I# n" with the note "Advance applied now: Php X." (+ the remaining advance) and are netted the same way.
+    - **Stored credit and window make it immutable (Open Cutoff).** When the next cutoff is opened (Utilities "Open
+      Cutoff", admin only) `recordAdvanceCredits` runs BEFORE `openCutoff` for the cutoff being closed: first one
+      `rent_carryovers` row per affected tenant (`carryToStore`, HELD receipts only, final-billed tenants skipped,
+      `assertCarryRows`), then one `advance_credits` row derived from each stored window (`creditsToStore`: amount =
+      min(`carry_amount`, HELD advance), allocations to the receipts, `ref_text`; checked by `assertCreditRows` /
+      `assertWindowCreditRows` and guard G1). Either failure ABORTS the open (error toast); a retry skips rows already
+      stored on both tables. `rent_carryovers` (name historical, `database/migrations/rent_carryovers.sql`) is the frozen
+      window: `window_start` = M - W + 1, `carry_days` = d, `cutoff_days` = W, `month_rent` = R, `carry_amount` = the
+      basis, `move_out_date`; RLS read admin + user, insert admin, no update/delete; trigger `rent_carryovers_guard`
+      refuses a final-billed tenant or a window that does not match the cutoff. From then on a CLOSED cutoff reads the
+      stored rows only (a stored credit always wins; a window row without its credit row derives the credit from the
+      window), so a later move-out date or rate change cannot change an issued statement. The final bill
+      (`buildFinalBillDrafts({ storedCarry })`, also the approval recompute and Void & re-issue) values the days after the
+      cutoff from the window row. If the rent end differs from the frozen date (the contract date moved after the freeze),
+      the days after the cutoff are prorated by calendar month through the new date (Nov 5: 5/30 = 833.33), the remaining
+      advance is still credited and the draft warns that the advance no longer covers exactly one month. A stay extension
+      keeps the window to the contract date; the nights are the EXTENSION line. Early termination (out before the contract
+      date) forfeits the advance as before, and the forfeit takes back the stored Oct credit (clawback line below).
+      **Deploy order:** this rule must be deployed before the Nov 2026 cutoff is opened; opening it with an older frontend
+      freezes credits of the old amounts. Live detection for a later cutoff skips a tenant who already has a stored credit
+      (the advance is consumed); the final-bill draft reads the stored rows first (matched by receipt, so whole-room
+      sibling beds are handled).
     - **Final bill vs. the earlier credit (advance can never be used twice).** The final-bill draft, the Confirm
       step and an approval apply re-read the receipts, stored credits and cutoffs from the database and credit
       only what is left of every ADVANCE receipt: per receipt, remaining = amount - what a stored credit already
@@ -1238,6 +1258,9 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
     `beds`/`tenants`, never from stored `monthly_reports` rows. Only the historical "Occupancy Rate
     YTD" bar chart reads stored snapshots, so it only reflects a month once that month has actually
     been snapshotted.
+  - **Snapshot rent is the gross billed rent** (2026-11-07): `computeSnapshot` sums the `computeBilling` rows, so a
+    second-to-last leaver's Oct rent counts in full; the "Less: Advance" credit (§5) is an adjustment against an
+    already-received prepayment, not a reduction of the rent.
   - **When the snapshot is captured — DONE, embedded (not a scheduled job).** A cutoff's `water_*`
     and `electric_*` windows both open together, in one `cutoffs` row, via a single "Open Cutoff"
     action on the Utilities page (there is no separate water-only vs. electric-only cutoff-open
@@ -1456,7 +1479,8 @@ Tenants module.
     cutoff's bill (moved-out ones included); a tenant whose final bill covers the cutoff has no row (the balance lives on
     the final bill). A past cutoff with no utility bill says "No billing data for this cutoff".
   - **Figures:** billed amounts come from the shared loader `src/lib/cutoffBilling.js` (same as Billing, so mid-period
-    transfers are included), net of the second-to-last-bill advance credit; row logic in `src/lib/collectionsRows.js`.
+    transfers are included), net of the second-to-last-bill advance credit (§5, an adjustment); row logic in
+    `src/lib/collectionsRows.js`.
   - A late payment never moves `tenants.last_pay_eom` / `last_pay_10th` back to an earlier date than they hold.
   - **Picker (2026-11-06):** the cutoff dropdown sits next to the "Collections" title with older/newer arrow buttons
     (neighbours by `water_start`; `resolveCutoffId` / `adjacentCutoffId` in `collectionsRows.js`). The viewed cutoff is
@@ -1720,9 +1744,16 @@ Concrete follow-up work items surfaced by this requirements pass, for the dev pi
       or another browser does not see them.
 - [ ] (2026-11-06) The stay extension has no cap (P500/night, a warning above 7 nights); a long overstay should be a lease extension
       (edit the planned move-out date) instead.
-- [ ] (2026-11-06) The pro-rated second-to-last advance credit (§5) changed the live Oct 2026 statements of tenants moving
-      out in November (rent due goes up): copies printed before the deploy show the full credit; reprint and hand out
-      the new figures. A move-out on day 1-2 of the month gives a tiny credit and a large carry to the final bill (what the formula gives; no minimum credit).
+- [ ] (2026-11-07) The "Less: Advance" window credit (§5) replaced the pro-rated second-to-last credit of 2026-11-06 on the
+      live Oct 2026 statements of tenants moving out in November (not on the 30th): the credit is now rent x (window days
+      in Oct) / 31 (e.g. 3,225.81 instead of 1,774.19 for out Nov 11). Reprint and hand out any Oct statement printed under
+      the earlier models. Deploy before the Nov 2026 cutoff is opened (Open Cutoff freezes the credit).
+- [ ] (2026-11-07) A contract date moved after Open Cutoff froze the window: the final bill prorates the days after the cutoff
+      plainly and warns; the advance then no longer covers exactly one month (an earlier date leaves an excess credit, a
+      later one pays the extra days). Owner accepted this default; revisit if it happens in practice.
+- [ ] (2026-11-07) Pre-existing data oddities seen in the Oct 2026 leaver audit fall back to the standard rule (no credit): an
+      advance receipt recorded on an inactive duplicate tenant row, and a tenant whose advance was already credited in
+      Sep 2026. Fix the data separately if the owner wants them credited.
 - [ ] (2026-11-06) "Void & re-issue" is per bed: a final bill of a sibling group (several beds, one name) cannot be re-issued yet.
 - [ ] (2026-11-06) Final bills #7 and #26 were written by an outdated browser tab before guard G4 (§5): no cutoff, no covered
       periods, no advance check / vacated, no move-out interim readings. #26 is repaired separately (owner-approved data step);

@@ -534,14 +534,14 @@ function OpenCutoffModal({ cutoffs, actorId, isAdmin, onClose, onDone, show }) {
   async function submit(e) {
     e.preventDefault()
     if (!f.name || !f.water_start || !f.electric_start) { show('Fill name + both start dates.', 'error'); return }
-    if (!isAdmin) { show('Only an admin can open a cutoff, because opening one records the advance credits of the period being closed.', 'error'); return }
+    if (!isAdmin) { show('Only an admin can open a cutoff, because opening one records the advance credits and windows of the period being closed.', 'error'); return }
     setBusy(true)
-    // Record the second-to-last advance credits of the cutoff about to be closed BEFORE opening the next one.
+    // Record the second-to-last advance credits and windows of the cutoff about to be closed BEFORE opening the next one.
     // If that fails nothing is opened and the admin can simply retry (recording is idempotent).
     const closing = cutoffs.find(c => c.is_active)
     if (closing) {
       try { await recordAdvanceCredits(closing, actorId) } catch (e) {
-        show(`Cutoff NOT opened: the advance credits for "${closing.name}" could not be recorded (${e.message}). Nothing was changed; fix the problem and try again.`, 'error', { duration: 20000 })
+        show(`Cutoff NOT opened: the advance credits and windows for "${closing.name}" could not be recorded (${e.message}). Fix the problem and try again (anything already recorded is kept and not recorded twice).`, 'error', { duration: 20000 })
         setBusy(false); return
       }
     }

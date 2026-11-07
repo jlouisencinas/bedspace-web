@@ -5,15 +5,15 @@ import { describe, it, expect } from 'vitest'
 import { computeBilling } from './billing'
 import { buildPaymentMonitoring } from './collectionsSummary'
 import { allocateCents, splitUtility, centsOf, toHundredths } from './utilityPieces'
-import { computeTotals, toCents, buildFinalBillDraft, verifyBillAgainstDb } from './finalBill'
+import { computeTotals, toCents, buildFinalBillDraft, verifyBillAgainstDb, cutoffAdvance, carryToStore, creditsToStore } from './finalBill'
 import { parseMoney, centsToInput } from './receiptLines'
 import { prorateCents, dayNum, finalBilledStamps } from './stay'
 import { pickStatements, rentWaterRows, electricityRows } from './monthlyStatement'
 import { moveInEligibleBeds, deriveBedStatuses, isActiveTenantPerBedViolation } from './bedEligibility'
-import { OCT, CUTOFFS } from './__fixtures__/cutoffs'
+import { OCT, OCT_ACTIVE, CUTOFFS } from './__fixtures__/cutoffs'
 import { SCENARIOS, seeded } from './__fixtures__/scenarios'
-import { goldenWholeMonths, earlyWithPriorCredit, lateOneMonth, proratedAdvanceOut, NOW } from './__fixtures__/finalBill'
-import { payment, tenant, billRow, interim } from './__fixtures__/tenants'
+import { goldenWholeMonths, earlyWithPriorCredit, lateOneMonth, proratedAdvanceOut, advanceWindowOut, NOW } from './__fixtures__/finalBill'
+import { payment, tenant, billRow, interim, deposit } from './__fixtures__/tenants'
 
 const C = (n) => Math.round(n * 100)
 const run = (s) => computeBilling(OCT, s.billRows, s.interims || [], s.tenants, [], s.addons || [], [], s.transfers || [])
@@ -66,7 +66,7 @@ describe('1. a tenant\'s balance reconciles: billed = paid + adjustments + outst
   })
 
   it('a final bill\'s totals are the exact sum of its stored lines, and it verifies against the data it was built from', () => {
-    for (const f of [goldenWholeMonths(), earlyWithPriorCredit(), earlyWithPriorCredit({ waived: true }), lateOneMonth(), lateOneMonth({ afterNoon: false }), proratedAdvanceOut()]) {
+    for (const f of [goldenWholeMonths(), earlyWithPriorCredit(), earlyWithPriorCredit({ waived: true }), lateOneMonth(), lateOneMonth({ afterNoon: false }), proratedAdvanceOut(), advanceWindowOut(), advanceWindowOut({ moveOutDate: '2026-11-05' }), advanceWindowOut({ moveOutDate: '2026-11-05', plannedOut: '2026-11-05' })]) {
       const d = buildFinalBillDraft(f)
       const sum = (pred) => d.lines.filter(pred).reduce((s, l) => s + toCents(l.amount), 0)
       expect(toCents(d.totals.net_amount)).toBe(sum(() => true))
@@ -79,6 +79,45 @@ describe('1. a tenant\'s balance reconciles: billed = paid + adjustments + outst
       })
       expect(v.ok).toBe(true)
     }
+  })
+
+  it('advance window (owner example, out Nov 11): Oct full rent less the 20/31 credit, final bill Nov 1 - 11 = rent - credit; the advance is used once, to the cent', () => {
+    const t = tenant({ id: 140, rate: 5000, move_in_date: '2026-09-01', move_out_date: '2026-11-11' })
+    const advRec = deposit({ id: 941, tenant_id: 140, kind: 'ADVANCE', amount: 5000, ref_no: '5401' })
+    const octRows = computeBilling(OCT_ACTIVE, [billRow({ room: 101, water_prev: 0, water_curr: 1.25, water_rate: 155.04 })], [], [t], [], [], [], []).perTenant
+    const oct = cutoffAdvance({ cutoff: OCT_ACTIVE, perTenant: octRows, tenants: [t], advData: { deposits: [advRec], finalBills: [], stored: [], carry: [] } })
+    const row = oct.perTenant[0]
+    const credit = oct.credits.get(140)
+    expect(C(row.rent)).toBe(500000)
+    expect(C(credit.amount)).toBe(322581)
+    expect(C(credit.amount) + C(credit.remaining)).toBe(500000)
+    const paid = [payment({ id: 1, tenant_id: 140, cutoff_id: OCT.id, category: 'RENT_WATER', amount: 1000 })]
+    const [pm] = buildPaymentMonitoring(OCT_ACTIVE, [t], oct.perTenant, paid, new Map([[140, credit.amount]]))
+    expect(C(pm.billed.total)).toBe(519380)
+    expect(C(pm.outstanding)).toBe(C(pm.billed.total) - C(pm.paid.total) - C(credit.amount))
+    expect(C(pm.billed.total)).toBe(C(pm.paid.total) + C(pm.adjustments) + C(pm.outstanding) - C(pm.credit))
+
+    const storedCarry = carryToStore({ tenants: [t], cutoff: OCT_ACTIVE, perTenant: octRows, deposits: [advRec] }).map((r, i) => ({ id: i + 1, ...r }))
+    const storedCredits = creditsToStore({ tenants: [t], cutoff: OCT_ACTIVE, perTenant: octRows, deposits: [advRec], carry: storedCarry }).map((r, i) => ({ id: i + 1, ...r }))
+    const d = buildFinalBillDraft({ ...advanceWindowOut(), storedCarry, storedCredits })
+    const rentLines = d.lines.filter(l => l.source === 'RENT')
+    expect(rentLines.map(l => [l.mid, C(l.amount)])).toEqual([['1 Nov - 11 Nov', 177419]])
+    const advC = -C(d.lines.find(l => l.source === 'ADVANCE').amount)
+    const depC = -C(d.lines.find(l => l.source === 'DEPOSIT').amount)
+    expect(C(credit.amount) + advC).toBe(C(advRec.amount))
+    expect(C(row.rent) + C(rentLines[0].amount)).toBe(677419)
+    expect(C(credit.amount) + C(rentLines[0].amount)).toBe(500000)
+    expect(C(d.totals.net_amount)).toBe(d.lines.reduce((s, l) => s + C(l.amount), 0))
+    const billedC = C(pm.billed.total) + C(d.totals.total_charges)
+    expect(billedC).toBe(C(pm.paid.total) + C(credit.amount) + advC + depC + C(pm.outstanding) + C(d.totals.net_amount))
+
+    // Every day of the window [12 Oct, 11 Nov] is valued once at rent / 31: 20 days credited on Oct, 11 days billed on the final bill.
+    const w0 = dayNum(storedCarry[0].window_start), e = dayNum(OCT.water_end), m = dayNum('2026-11-11')
+    const days = [...Array(e - w0).keys()].map(i => w0 + i).concat([...Array(m - e + 1).keys()].map(i => e + i))
+    expect(new Set(days).size).toBe(days.length)
+    expect(days).toEqual([...Array(m - w0 + 1).keys()].map(i => w0 + i))
+    expect([e - w0, m - e + 1, days.length]).toEqual([20, 11, 31])
+    expect(C(rentLines[0].amount)).toBe(500000 - prorateCents(500000, 20, 31))
   })
 })
 

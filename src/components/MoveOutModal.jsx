@@ -171,7 +171,7 @@ export default function MoveOutModal({ bed, tenants: tenantsProp, onClose, onSub
     const res = buildFinalBillDrafts({
       group: b.group.filter(g => todo.some(t => t.id === g.id)), cutoffs: b.cutoffs, tenants: b.tenants, moveOutDate: form.actual_move_out_date,
       readings: { water: form.water_reading, electric: form.electric_reading }, bundle: b.bundle,
-      deposits: b.deposits, storedCredits: b.storedCredits, payments: b.payments, plannedMoveOut: b.plannedMoveOut,
+      deposits: b.deposits, storedCredits: b.storedCredits, storedCarry: b.storedCarry, payments: b.payments, plannedMoveOut: b.plannedMoveOut,
       waived: new Map(todo.map(g => [g.id, !!beds[g.id]?.waived])), siblingIds: b.siblingIds,
       startOverrides: { WATER: useOverrides.WATER === '' ? undefined : useOverrides.WATER, ELECTRIC: useOverrides.ELECTRIC === '' ? undefined : useOverrides.ELECTRIC },
       isAdmin, vacatedAfterNoon: late ? afterNoon : null,

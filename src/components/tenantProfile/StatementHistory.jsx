@@ -7,6 +7,7 @@ import { tenantCutoffs, paidByComponent, toCents2, statementForTenant, roomAsOf,
 import { centsToPeso } from '../../lib/tenantHistory'
 import { windowLastDay } from '../../lib/cutoffDates'
 import MonthlyStatementPreview from '../MonthlyStatementPreview'
+import { creditSubText } from '../../lib/monthlyStatement'
 
 // Same formatters as the Billing page, so every figure reads exactly as it does there.
 const peso = n => '₱' + (Math.abs(Number(n) || 0) < 0.005 ? 0 : Number(n)).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -294,8 +295,8 @@ function ActiveStatement({ cutoff, entry, paid, tenant, siblingIds, transfers, t
           <Line label="RW Total" value={peso(s.rw.total)} strong />
           {s.credit && (
             <>
-              <Line label="Less: Advanced Payment" value={`-${peso(s.credit.amount)}`}
-                sub={[s.credit.ref, `remaining ${peso(s.credit.remaining)} for the final bill`].filter(Boolean).join(' · ')} />
+              <Line label={s.credit.window ? 'Less: Advance' : 'Less: Advanced Payment'} value={`-${peso(s.credit.amount)}`}
+                sub={[s.credit.ref, creditSubText(s.credit), `remaining ${peso(s.credit.remaining)} for the final bill`].filter(Boolean).join(' · ')} />
               <Line label="Net" value={peso(s.rw.net)} strong />
             </>
           )}

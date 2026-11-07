@@ -4,7 +4,8 @@ import {
   setRoomSplit, saveAddon, deleteAddon,
 } from '../lib/supabase'
 import { loadCutoffBillingInputs, computeCutoffBilling } from '../lib/cutoffBilling'
-import { rentWaterRows, electricityRows, proratedNote } from '../lib/monthlyStatement'
+import { rentWaterRows, electricityRows, creditSubText } from '../lib/monthlyStatement'
+import { windowRange } from '../lib/advanceWindow'
 import { billPosition, advanceConsumed } from '../lib/finalBill'
 import { cacheBilling } from '../lib/billingCache'
 import { useToast } from '../components/Toast'
@@ -81,8 +82,8 @@ export default function Billing() {
   }
   useEffect(() => { load() }, [cutoffId])
 
-  // credits: second-to-last bill, the advance is credited against this period's rent automatically,
-  // computed from the tenant's move-out date (not stored, not cash).
+  // credits: second-to-last bill of a non-month-end leaver, the advance window's part inside this period is credited
+  // against the full rent (live from the move-out date on the active cutoff, stored at Open Cutoff; an adjustment, not cash).
   const { perRoom, perTenant, stayBilled, credits } = useMemo(() => {
     const result = computeCutoffBilling(cutoff, { bill, interims, tenants, splits, addons, areas, transfers, advData })
     if (cutoff && bill.length) cacheBilling(cutoff.id, result.perTenant)
@@ -260,10 +261,16 @@ export default function Billing() {
                       {t.name}
                       {canPrint && printable.has(t.id) && holds.includes(t.id) && <span className="badge ml-1.5 bg-warning-bg text-warning-text" style={{ border: '1px solid var(--warning-border)' }} title="Held: not in Print selected; print it later on its own">Held</span>}
                       {t.settled     && <span className="badge oor ml-1.5">moved out</span>}
-                      {billCat === 'RENT_WATER' && !t.special && cutoff && (cutoff.is_active
-                        ? billPosition(tenantById.get(t.id), cutoff) === 'SECOND_TO_LAST'
-                        : advData.stored.some(s => s.tenant_id === t.id && s.cutoff_id === cutoff.id)) && (
-                        <span className="badge leased ml-1.5" title="Move-out falls in the next period: the advance, pro-rated by the days of the stay in that period, is credited against this period's rent automatically">2nd-to-last bill</span>
+                      {billCat === 'RENT_WATER' && !t.special && cutoff && (credits.has(t.id) || (cutoff.is_active
+                        && billPosition(tenantById.get(t.id), cutoff) === 'SECOND_TO_LAST')) && (
+                        <span className="badge leased ml-1.5" title={credits.get(t.id)?.window
+                          ? `The 1-month advance covers ${windowRange(credits.get(t.id).window)} (move-out ${credits.get(t.id).window.moveOut}): ${creditSubText(credits.get(t.id))} is credited on this bill, the rest of the advance on the final bill.`
+                          : credits.has(t.id)
+                            ? 'Advance credit recorded for this period.'
+                            : 'Move-out falls in the next period; the advance is credited on the final bill (standard rule for this tenant).'}>2nd-to-last bill</span>
+                      )}
+                      {credits.get(t.id)?.window && !credits.get(t.id).ref && (
+                        <div className="text-[10px] font-normal text-warning-text mt-0.5">advance receipt has no S.I#</div>
                       )}
                       {consumed.has(t.id) && (
                         <div className="text-[10px] font-normal text-ink-muted mt-0.5">Advance already credited in {consumed.get(t.id)}</div>
@@ -307,8 +314,8 @@ export default function Billing() {
                           {peso(rwTotal)}
                           {credits.has(t.id) && (
                             <div className="text-[10px] font-normal text-success-text leading-[1.3] mt-0.5 tabular-nums"
-                              title={[credits.get(t.id).ref, `credited ${peso(credits.get(t.id).amount)} on this bill${proratedNote(credits.get(t.id))}`, `remaining ${peso(credits.get(t.id).remaining)} for the final bill`].filter(Boolean).join(' · ')}>
-                              Less advance{proratedNote(credits.get(t.id))} -{peso(credits.get(t.id).amount)}<br />Net {peso(rwTotal - credits.get(t.id).amount)}
+                              title={[credits.get(t.id).ref, `credited ${peso(credits.get(t.id).amount)} on this bill`, `remaining ${peso(credits.get(t.id).remaining)} for the final bill`].filter(Boolean).join(' · ')}>
+                              Less advance{creditSubText(credits.get(t.id)) ? ` (${creditSubText(credits.get(t.id))})` : ''} -{peso(credits.get(t.id).amount)}<br />Net {peso(rwTotal - credits.get(t.id).amount)}
                               <br />remaining {peso(credits.get(t.id).remaining)} for the final bill
                             </div>
                           )}

@@ -43,7 +43,7 @@ npm run build     # -> dist/
 - `src/lib/` data layer: `supabase.js` (queries + move-out/receipt writes), `appVersion.js` (pure build-id compare) +
   `appVersionCheck.js` (`assertAppCurrent`: money writes refuse from an outdated tab), `billing.js`, `collectionsRows.js` (Collections rows, cutoff outstanding, past-due candidates + refresh tracker, cutoff picker `?cutoff=`), `paymentRefs.js` (Collections payment S.I#/T.R#: normalise, display, edit rights), `cutoffBilling.js` (the one
   loader + compute for a cutoff's statements: Billing, print pages, profile history), `monthlyStatement.js` (printed
-  statement props), `billNumber.js` (monthly Billing No. `<room>-<YYYY>-<MM>`), `tenantStatements.js` (profile statement history), `finalBill.js`, `reservation.js` (reservation target date, Move In defaults), `stay.js`, `stayExtension.js` (late move-out: P500/night after the contract date, 12:00 PM checkout),
+  statement props), `billNumber.js` (monthly Billing No. `<room>-<YYYY>-<MM>`), `tenantStatements.js` (profile statement history), `finalBill.js`, `advanceWindow.js` (2nd-to-last advance window: the W days ending on the move-out date, `Less: Advance` credit days, final-bill rent after the cutoff, `rent_carryovers`), `reservation.js` (reservation target date, Move In defaults), `stay.js`, `stayExtension.js` (late move-out: P500/night after the contract date, 12:00 PM checkout),
   `utilityPieces.js`, `receiptLines.js`, `moveOutData.js`, `maintenanceTickets.js` (ticket target/place helpers), `pnl.js`,
   `snapshot.js`, `occupancyMtd.js` (Dashboard Occupancy tile: Manila month-to-date window + MTD average / today figures),
   `auth.jsx`, `approvals.js`,

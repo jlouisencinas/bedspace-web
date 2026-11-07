@@ -4,7 +4,7 @@
  * Pure props for one printed monthly Statement of Account (Rent + Water or Electricity), from a computeCutoffBilling
  * perTenant row. Shared by the print pages and the tenant profile's statement preview, so a reprint is identical.
  */
-import { prorateCents } from './stay'
+import { creditPeriodText, finalPartText } from './advanceWindow'
 
 export const COMPANY = {
   address:    'JP Rizal ext., Cor Lapu-Lapu street, Brgy. West Rembo, Taguig City',
@@ -69,39 +69,25 @@ export const REPRINT_BANNER = (dateIso) =>
 
 const cents = (v) => Math.round((Number(v) || 0) * 100)
 
-// " (pro-rated D of W days)" only when advance x D / W reproduces the credit; a credit capped at the rent says " (pro-rated)";
-// a credit without a day count (stored before pro-rating, or its move-out date moved since) gets no note.
-export function proratedNote(credit) {
-  const { days, windowDays } = credit || {}
-  if (!(days > 0 && windowDays > 0)) return ''
-  const advC = cents(credit.amount) + cents(credit.remaining)
-  return prorateCents(advC, days, windowDays) === cents(credit.amount) ? ` (pro-rated ${days} of ${windowDays} days)` : ' (pro-rated)'
-}
-
 const php = n => 'Php ' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-// "Nov 1 to 11" / "Nov 1" / "Nov 28 to Dec 2": the D nights of the stay that start on `startIso`.
-function stayRange(startIso, days) {
-  const last = addDays(startIso, days - 1)
-  const [, sm, sd] = startIso.slice(0, 10).split('-'); const [, em, ed] = last.split('-')
-  if (days === 1) return `${MO[+sm-1]} ${+sd}`
-  return sm === em ? `${MO[+sm-1]} ${+sd} to ${+ed}` : `${MO[+sm-1]} ${+sd} to ${MO[+em-1]} ${+ed}`
+/**
+ * The second-to-last statement's advance note, printed beside the charges (adds no height to the fixed half-page copy).
+ * Advance-window credit: "Remaining advance Php 1,774.19 will be credited on the final bill (Nov 1 to Nov 11)." (none when
+ * nothing remains). Legacy stored credit (no window): "Advance applied now: Php X." + the remaining advance, if any.
+ */
+export function advanceNote(credit) {
+  if (!credit) return ''
+  const left = cents(credit.remaining) > 0
+  if (credit.window) return left ? `Remaining advance ${php(credit.remaining)} will be credited on the final bill (${finalPartText(credit.window)}).` : ''
+  const rest = left ? ` Remaining advance ${php(credit.remaining)} will be credited on the final bill.` : ''
+  return `Advance applied now: ${php(credit.amount)}.${rest}`
 }
 
-/**
- * The second-to-last bill's advance note, printed beside the charges (it adds no height to the fixed half-page copy):
- * "Advance applied now: Php 1,774.19 (11 of 31 days, for your stay Nov 1 to 11). Remaining advance Php 3,225.81 will
- * be credited on the final bill." The stay starts on the day after this period (water_end, exclusive end). The day
- * count is shown only when it reproduces the credit (see proratedNote); otherwise "(pro-rated)" or nothing.
- */
-export function advanceNote(credit, cutoff) {
-  if (!credit) return ''
-  const note = proratedNote(credit)
-  let detail = ''
-  if (note.includes(' of ')) detail = ` (${credit.days} of ${credit.windowDays} days, for your stay ${stayRange(cutoff.water_end, credit.days)})`
-  else if (note) detail = ' (pro-rated)'
-  const rest = cents(credit.remaining) > 0 ? ` Remaining advance ${php(credit.remaining)} will be credited on the final bill.` : ''
-  return `Advance applied now: ${php(credit.amount)}${detail}.${rest}`
+/** The credit's days for on-screen sub-text: "20 days, Oct 12 to Oct 31"; '' for a legacy credit without a window. */
+export function creditSubText(credit) {
+  if (!credit?.window) return ''
+  return creditPeriodText(credit.window).replace(/ \((.*)\)$/, ', $1')
 }
 
 export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, copyLabel, billingDate, preparedBy, banner }) {
@@ -114,17 +100,24 @@ export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, cop
   if (!t.special || t.water > 0) charges.push({ label: 'Add: Water (cu. m)', mid: cu(t.waterCons), amount: t.water })
   ;(t.addons || []).filter(a => a.bill_on !== 'ELECTRIC').forEach(a =>
     charges.push({ label: `Add: ${a.label}${a.recurring ? '' : ' · one-time'}`, mid: '', amount: Number(a.amount) }))
-  if (credit) charges.push({
-    label: 'Less: Advanced Payment',
-    mid: credit.ref || '',   // the breakdown goes in paymentNote: a long cell grew the fixed-height copy and clipped it
-    amount: -credit.amount, amountText: '-' + peso(credit.amount),
-  })
+  // Only the receipt ref and the credit's days go in the row; the rest of the breakdown is paymentNote. The window credit
+  // prints them as two short small lines (midLines, `small`): one long wrapping cell widened the middle column, wrapped the
+  // labels and the amount and pushed the fixed-height copy past its height (late-fee line clipped).
+  if (credit) {
+    const lines = credit.window ? [credit.ref, creditPeriodText(credit.window)].filter(Boolean) : null
+    charges.push({
+      label: credit.window ? 'Less: Advance' : 'Less: Advanced Payment',
+      mid: lines ? lines.join(' | ') : (credit.ref || ''),
+      ...(lines ? { midLines: lines, small: true } : {}),
+      amount: -credit.amount, amountText: '-' + peso(credit.amount),
+    })
+  }
   return {
     company: COMPANY, copyLabel, peso,
     name: t.name, room: t.room_no, asOf: fmt(asOf), due: fmt(due), billNo, preparedBy,
     charges,
     total: t.rent + t.water + (t.addonRentWater || 0) - (credit ? credit.amount : 0),
-    paymentNote: advanceNote(credit, cutoff) || undefined,
+    paymentNote: advanceNote(credit) || undefined,
     details: t.special ? null : {
       header: ['', 'Prev Reading', 'Actual Reading', 'Actual Room Consumption (cu. m)', 'Personal Consumption'],
       rows: [['Water', reading(room.water_prev), reading(room.water_curr),
