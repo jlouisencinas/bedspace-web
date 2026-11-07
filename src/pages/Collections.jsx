@@ -5,7 +5,7 @@ import {
   fetchPaymentsForCutoff, fetchAdvanceCreditData, setPaymentReceiptRefs,
 } from '../lib/supabase'
 import { loadCutoffBillingInputs, computeCutoffBilling } from '../lib/cutoffBilling'
-import { buildCollectionRows, cutoffOutstanding, pickPastDueCandidates, resolveCutoffId, adjacentCutoffId, createPastDueRefresh } from '../lib/collectionsRows'
+import { buildCollectionRows, cutoffOutstanding, countFullyPaid, pickPastDueCandidates, resolveCutoffId, adjacentCutoffId, createPastDueRefresh } from '../lib/collectionsRows'
 import { normalizePaymentRef, formatPaymentRefs, effectivePaymentLines, canEditPaymentRef, validateStagedRefs } from '../lib/paymentRefs'
 import { useAuth } from '../lib/auth'
 import { useToast } from '../components/Toast'
@@ -101,20 +101,30 @@ function PaymentLines({ pays, refEdit }) {
   )
 }
 
-function PayCell({ row, category, pays, billed, selected, onToggle, onAmountChange, onRefChange, refEdit }) {
-  const netPaid = r2(pays.reduce((s, p) => s + Number(p.amount || 0), 0))
+function PayCell({ row, category, pays, status, selected, onToggle, onAmountChange, onRefChange, refEdit }) {
+  const { state, billed, paid: netPaid, remaining, over } = status
   const key     = `${row.id}:${category}`
   const staged  = selected.get(key)
-  const remaining = Math.max(r2(billed - netPaid), 0)
 
-  if (netPaid > 0) {
+  if (state === 'partial' || state === 'paid' || state === 'over') {
     return (
       <div className="space-y-1.5">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-success-bg text-success-text border border-success-border">
-            ✓ Paid
-          </span>
-          <span className="text-[13px] font-semibold text-success-text">{fmtPeso(netPaid)}</span>
+          {state === 'partial' ? (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-warning-bg text-warning-text border border-warning-border">
+              Partial · Remaining {fmtPeso(remaining)}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-success-bg text-success-text border border-success-border">
+              ✓ Paid
+            </span>
+          )}
+          {state === 'over' && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-info-bg text-info-text border border-info-border">
+              Overpaid {fmtPeso(over)}
+            </span>
+          )}
+          <span className={`text-[13px] font-semibold ${state === 'partial' ? 'text-ink' : 'text-success-text'}`}>{fmtPeso(netPaid)}</span>
           <span className="text-[11px] text-ink-faint">{fmtDate(lastPaymentDate(pays))}</span>
           <button
             onClick={() => onToggle(row, category, remaining)}
@@ -123,6 +133,7 @@ function PayCell({ row, category, pays, billed, selected, onToggle, onAmountChan
             {staged ? 'cancel' : '+ add'}
           </button>
         </div>
+        <div className="text-[11px] text-ink-faint">Billed {fmtPeso(billed)} · Paid {fmtPeso(netPaid)}</div>
         <PaymentLines pays={pays} refEdit={refEdit} />
         {staged && (
           <>
@@ -406,11 +417,10 @@ export default function Collections() {
 
   const rwPaidTotal   = r2(collectionRows.reduce((s, r) => s + r.rwPays.reduce((ss, p) => ss + Number(p.amount || 0), 0), 0))
   const elecPaidTotal = r2(collectionRows.reduce((s, r) => s + r.elecPays.reduce((ss, p) => ss + Number(p.amount || 0), 0), 0))
-  // Net-sum, not `.length > 0` — a fully-voided cell (paid then undone) must
-  // revert to "unpaid" here, and `.length` would still count the void row.
-  const rwCount   = collectionRows.filter(r => r2(r.rwPays.reduce((s, p) => s + Number(p.amount || 0), 0)) > 0).length
-  const elecCount = collectionRows.filter(r => r2(r.elecPays.reduce((s, p) => s + Number(p.amount || 0), 0)) > 0).length
+  const rwCount   = countFullyPaid(collectionRows, 'rw')
+  const elecCount = countFullyPaid(collectionRows, 'elec')
   const n         = collectionRows.length
+  const outstanding = cutoffOutstanding(collectionRows)
 
   const selectedList  = Array.from(selected.values())
   const selectedTotal = r2(selectedList.reduce((s, x) => s + parseAmt(x.amount), 0))
@@ -524,6 +534,13 @@ export default function Collections() {
               Electricity: <strong className="text-success-text">{elecCount}/{n}</strong> paid
               {elecPaidTotal > 0 && <strong className="text-navy-600 ml-1">· {fmt(elecPaidTotal)}</strong>}
             </span>
+            <span className="text-ink-faint">|</span>
+            <span className="text-ink-muted text-[12px]">
+              Remaining: <strong className={outstanding.total > 0 ? 'text-warning-text' : 'text-success-text'}>{fmtPeso(outstanding.total)}</strong>
+              {outstanding.total > 0 && (
+                <span className="text-ink-faint ml-1">(Rent+Water {fmtPeso(outstanding.rw)} · Electricity {fmtPeso(outstanding.elec)})</span>
+              )}
+            </span>
           </div>
 
           <div className="table-wrap">
@@ -551,7 +568,7 @@ export default function Collections() {
                     <td>
                       <PayCell
                         row={r} category="RENT_WATER" pays={r.rwPays}
-                        billed={r.billed.rw}
+                        status={r.status.rw}
                         selected={selected} onToggle={toggleCell} onAmountChange={updateAmount}
                         onRefChange={updateRef} refEdit={refEdit}
                       />
@@ -559,7 +576,7 @@ export default function Collections() {
                     <td>
                       <PayCell
                         row={r} category="ELECTRICITY" pays={r.elecPays}
-                        billed={r.billed.elec}
+                        status={r.status.elec}
                         selected={selected} onToggle={toggleCell} onAmountChange={updateAmount}
                         onRefChange={updateRef} refEdit={refEdit}
                       />
