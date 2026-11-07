@@ -93,8 +93,8 @@ export function proratedAdvanceOut() {
 }
 
 // Advance window (requirements §5): rate 5,000, in Sep 1, planned and actual out Nov 11, advance 5,000, deposit 5,000.
-// Open Cutoff froze the Oct window: the advance month is 12 Oct - 11 Nov, so 12 Oct - 31 Oct (20 of 31 days, 3,225.81)
-// was carried from the Oct statement (which billed 1 Oct - 11 Oct, 1,774.19) to the final bill.
+// Open Cutoff froze the Oct window: window_start 12 Oct (amounts: 20 of 31 days carried, 3,225.81; labelled 11 Oct - 31 Oct)
+// moved from the Oct statement (which billed 11 days, 1,774.19, labelled 1 Oct - 10 Oct) to the final bill.
 export const WINDOW_CARRY_ROW = {
   id: 1, tenant_id: 140, cutoff_id: 2, move_out_date: '2026-11-11', window_start: '2026-10-12',
   cutoff_days: 31, carry_days: 20, month_rent: 5000, carry_amount: 3225.81,

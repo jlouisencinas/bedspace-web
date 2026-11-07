@@ -600,16 +600,23 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       **Advance window (2026-11-07, `src/lib/advanceWindow.js` + `advanceCarry` in `finalBill.js`).** For a
       SECOND_TO_LAST bill of cutoff [s, e) (W = e - s days) and move-out M: window start W0 = addMonths(M, -1) + 1 day.
       When s < W0 < e: preDays = W0 - s, carryDays = e - W0, carry = half-up cents of R x carryDays / W (R = that row's
-      monthly rent), pre = R - carry (exact). The statement's rent is `pre`, printed as a normal positive "Monthly Rent"
-      line with its own period (1 Oct - 11 Oct), utilities unchanged, NO "Less: Advanced Payment" line, and a bold note
-      beside the charges: "Rent for 12 Oct - 31 Oct (Php 3,225.81) is billed on your final bill, against your advance."
-      The final bill bills the carried part (`Rent Period (20 of 31 days)`, 12 October - 31 October, carry) and the rest
-      of the advance month (`Rent Period (completes the 1-month advance)`, 01 November - 11 November, R - carry, so the
-      window is exactly ONE monthly rent), both from the frozen `month_rent`, and credits the full advance
-      (`NOT_CREDITED_BEFORE`). Worked example (the owner's example: rate and advance 5,000, out Nov 11, Oct
-      31 days): W0 = 12 Oct, Oct statement rent 1 Oct - 11 Oct 1,774.19 + water 193.80 = 1,967.99 (was 3,419.61 under the
-      pro-rated credit); final bill rent 3,225.81 + 1,774.19 = 5,000.00 less advance 5,000.00 = 0, plus Nov utilities less
-      the deposit. Days: Oct 1-11 (statement) + Oct 12-31 + Nov 1-11 (final) = 42, each once. Other days (R 5,000, Oct):
+      monthly rent), pre = R - carry (exact). **Labels (2026-11-07, owner):** the dates printed for the window start one
+      day earlier, on addMonths(M, -1) (out 11 Nov -> "11 Oct - 11 Nov"); the amounts keep the day counts above
+      (`windowLabels` in `advanceWindow.js`, the one label helper for the statement, Billing, the profile history and the
+      final bill; stored `rent_carryovers.window_start` stays W0). The statement's rent is `pre`, printed as a normal
+      positive "Monthly Rent | 1 Oct - 10 Oct" row, followed (second-to-last carry case only) by the information row
+      "Rent - on final bill (vs. 1-month advance) | 11 Oct - 31 Oct | (P3,225.81)", in brackets and NOT added to the total;
+      utilities unchanged, NO "Less: Advanced Payment" line and no side note. The final bill bills the carried part
+      (`Rent Period (carried from the 2nd-to-last bill, vs. 1-month advance)`, 11 Oct - 31 Oct, carry) and the rest of the
+      advance month (`Rent Period (completes the 1-month advance)`, 1 Nov - 11 Nov, R - carry, so the window is exactly
+      ONE monthly rent), both from the frozen `month_rent`, and credits the full advance (`NOT_CREDITED_BEFORE`). Worked
+      example (the owner's example: rate and advance 5,000, out Nov 11, Oct 31 days): W0 = 12 Oct (label 11 Oct), Oct
+      statement rent 1 Oct - 10 Oct 1,774.19 + water 193.80 = 1,967.99 (was 3,419.61 under the pro-rated credit); final
+      bill rent 3,225.81 (11 Oct - 31 Oct) + 1,774.19 (1 Nov - 11 Nov) = 5,000.00 less advance 5,000.00 = 0, plus Nov
+      utilities less the deposit. Labels: 1-10 Oct + 11-31 Oct + 1-11 Nov, each day once (amount days 11 + 20 + 11).
+      Label edge: when addMonths(M, -1) is the cutoff's first day (out 1 Nov for Oct, 1 Oct for Sep, 1 Mar for Feb) the
+      statement still bills one day (161.29), so the labels follow the amount days instead: "1 Oct" / "2 Oct - 31 Oct" /
+      "1 Nov". A one-day range prints as a single date. Other days (R 5,000, Oct):
       out Nov 1 -> pre 161.29 / carry 4,838.71; Nov 15 -> 2,419.35 / 2,580.65; Nov 29 -> 4,677.42 / 322.58; Sep cutoff,
       out Oct 15 -> 2,500.00 / 2,500.00; Feb 2027, out Mar 15 -> 2,678.57 / 2,321.43.
       **Standard rule instead** (full rent on the statement, whole advance on the final bill, excess over charges
@@ -625,7 +632,7 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
       `rent_carryovers`, below). Because the rent itself is lower, Billing, PrintRentWater, MonthlyStatementPreview,
       Collections, Payment Monitoring, Dashboard and the profile history all show the reduced rent through
       `computeCutoffBilling`, and no adjustment is recorded for these tenants. Billing (Rent + Water) shows the
-      "2nd-to-last bill" badge and, under the rent, "covers 1 Oct - 11 Oct / 12 Oct - 31 Oct P3,225.81 to final bill".
+      "2nd-to-last bill" badge and, under the rent, "covers 1 Oct - 10 Oct / 11 Oct - 31 Oct (P3,225.81) on final bill" (the profile history shows the same under Rent).
       **Legacy stored credits** (`advance_credits` rows written before this rule, e.g. Sep 2026) still print as "Less:
       Advanced Payment" with the note "Advance applied now: Php X." (+ "Remaining advance Php Y will be credited on the
       final bill."), are an **adjustment, not cash** (Collections' amount to collect is net of it; Payment Monitoring /

@@ -19,7 +19,7 @@ import {
 } from './stay'
 import { resolveStartReading, splitUtility, resolveRate, checkReadingOrder } from './utilityPieces'
 import { hasExtension, extensionLine, extensionDetails, nightsWarning, extensionNights, NOON_CHOICE_MISSING } from './stayExtension'
-import { advanceWindow, assertCarryRows, carryRentLines } from './advanceWindow'
+import { advanceWindow, assertCarryRows, carryRentLines, windowLabels } from './advanceWindow'
 
 export { addMonthsISO, cutoffForDate }
 
@@ -1167,7 +1167,7 @@ function carryRentResult(row, c) {
   const res = carryRentLines({ row, rentEndISO: c.rentEnd })
   const info = {
     rule: c.rentCls.rentRule, months: c.rentCls.months,
-    summary: res.exact ? `advance month ${dayMonth(iso10(row.window_start))} - ${dayMonth(iso10(row.move_out_date))}` : undefined,
+    summary: res.exact ? `advance month ${windowLabels(row).window}` : undefined,
     advance_window: {
       cutoff_id: row.cutoff_id, window_start: iso10(row.window_start), move_out_date: iso10(row.move_out_date),
       month_rent: toCents(row.month_rent) / 100, carry_amount: toCents(row.carry_amount) / 100, exact: res.exact,

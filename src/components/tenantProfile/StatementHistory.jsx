@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { ChevronDown, ChevronRight, RefreshCw, Eye, Printer, AlertTriangle } from 'lucide-react'
 import { fetchTenants, fetchAdvanceCreditData } from '../../lib/supabase'
+import { windowLabels } from '../../lib/advanceWindow'
 import { loadCutoffBillingInputs, computeCutoffBilling } from '../../lib/cutoffBilling'
 import { tenantCutoffs, paidByComponent, toCents2, statementForTenant, roomAsOf, hasTransferInWindow, HISTORY_CAP } from '../../lib/tenantStatements'
 import { centsToPeso } from '../../lib/tenantHistory'
@@ -287,7 +288,8 @@ function ActiveStatement({ cutoff, entry, paid, tenant, siblingIds, transfers, t
 
       <div className="grid gap-2 sm:grid-cols-2">
         <Block title="Rent + Water">
-          <Line label="Rent" value={s.rw.rent ? peso(s.rw.rent) : '—'} />
+          <Line label="Rent" value={s.rw.rent ? peso(s.rw.rent) : '—'}
+            sub={s.row?.advanceCarry ? `${windowLabels(s.row.advanceCarry).pre} · ${windowLabels(s.row.advanceCarry).carry} (${peso(s.row.advanceCarry.carryCents / 100)}) on the final bill, vs. 1-month advance` : undefined} />
           <Line label={`Water (${m3(s.rw.waterCons)} m³)`} value={peso(s.rw.water)}
             sub={row.transferred && row.oldWater > 0 ? `R${row.fromRoomNo}: ${peso(row.oldWater)} · R${row.room_no}: ${peso(row.water - row.oldWater)}` : null} />
           {s.rw.addons.map(a => <Line key={a.id} label={`${a.label}${a.recurring ? '' : ' (one-time)'}`} value={peso(a.amount)} muted />)}

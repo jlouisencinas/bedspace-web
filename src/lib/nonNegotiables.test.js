@@ -6,6 +6,7 @@ import { computeBilling } from './billing'
 import { buildPaymentMonitoring } from './collectionsSummary'
 import { allocateCents, splitUtility, centsOf, toHundredths } from './utilityPieces'
 import { computeTotals, toCents, buildFinalBillDraft, verifyBillAgainstDb, cutoffAdvance, carryToStore } from './finalBill'
+import { windowLabels } from './advanceWindow'
 import { parseMoney, centsToInput } from './receiptLines'
 import { prorateCents, dayNum, finalBilledStamps } from './stay'
 import { pickStatements, rentWaterRows, electricityRows } from './monthlyStatement'
@@ -81,7 +82,7 @@ describe('1. a tenant\'s balance reconciles: billed = paid + adjustments + outst
     }
   })
 
-  it('advance window (owner example, out Nov 11): Oct 1-11 on the statement, Oct 12-31 + Nov 1-11 on the final bill, each day once; the advance cancels the window to the cent', () => {
+  it('advance window (owner example, out Nov 11): statement 1 Oct - 10 Oct, final bill 11 Oct - 31 Oct + 1 Nov - 11 Nov, each day once; the advance cancels the window to the cent', () => {
     const t = tenant({ id: 140, rate: 5000, move_in_date: '2026-09-01', move_out_date: '2026-11-11' })
     const advRec = deposit({ id: 941, tenant_id: 140, kind: 'ADVANCE', amount: 5000, ref_no: '5401' })
     const octRows = computeBilling(OCT_ACTIVE, [billRow({ room: 101, water_prev: 0, water_curr: 1.25, water_rate: 155.04 })], [], [t], [], [], [], []).perTenant
@@ -95,7 +96,7 @@ describe('1. a tenant\'s balance reconciles: billed = paid + adjustments + outst
     const storedCarry = carryToStore({ tenants: [t], cutoff: OCT_ACTIVE, perTenant: octRows, deposits: [advRec] }).map((r, i) => ({ id: i + 1, ...r }))
     const d = buildFinalBillDraft({ ...advanceWindowOut(), storedCarry })
     const rentLines = d.lines.filter(l => l.source === 'RENT')
-    expect(rentLines.map(l => [l.mid, C(l.amount)])).toEqual([['12 October - 31 October', 322581], ['01 November - 11 November', 177419]])
+    expect(rentLines.map(l => [l.mid, C(l.amount)])).toEqual([['11 Oct - 31 Oct', 322581], ['1 Nov - 11 Nov', 177419]])
     const windowC = rentLines.reduce((s, l) => s + C(l.amount), 0)
     expect(windowC).toBe(500000)
     expect(windowC + C(d.lines.find(l => l.source === 'ADVANCE').amount)).toBe(0)
@@ -108,7 +109,10 @@ describe('1. a tenant\'s balance reconciles: billed = paid + adjustments + outst
       .concat([...Array(m - e + 1).keys()].map(i => e + i))                     // final: 1 Nov - 11 Nov
     expect(new Set(days).size).toBe(days.length)
     expect(days).toEqual([...Array(m - s + 1).keys()].map(i => s + i))
-    expect([w0 - s, e - w0, m - e + 1]).toEqual([11, 20, 11])
+    expect([w0 - s, e - w0, m - e + 1]).toEqual([11, 20, 11])   // amount day counts (unchanged)
+    // The printed labels move the window start back one day (addMonths(M, -1)): 1-10 Oct + 11-31 Oct + 1-11 Nov, still each day once.
+    expect(windowLabels(row.advanceCarry)).toEqual({ pre: '1 Oct - 10 Oct', carry: '11 Oct - 31 Oct', after: '1 Nov - 11 Nov', window: '11 Oct - 11 Nov' })
+    expect([(w0 - 1) - s, e - (w0 - 1), m - e + 1].reduce((a, b) => a + b)).toBe(m - s + 1)
   })
 })
 

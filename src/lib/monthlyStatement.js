@@ -4,6 +4,8 @@
  * Pure props for one printed monthly Statement of Account (Rent + Water or Electricity), from a computeCutoffBilling
  * perTenant row. Shared by the print pages and the tenant profile's statement preview, so a reprint is identical.
  */
+import { windowLabels } from './advanceWindow'
+
 export const COMPANY = {
   address:    'JP Rizal ext., Cor Lapu-Lapu street, Brgy. West Rembo, Taguig City',
   bankName:   'NJL Corp.',
@@ -77,16 +79,17 @@ export function advanceNote(credit) {
 }
 
 /**
- * The second-to-last statement of a leaver under the advance-window rule (row.advanceCarry from computeCutoffBilling):
- * the rent line's period ends the day before the advance month, and the note names the carried part:
- * "Rent for 12 Oct - 31 Oct (Php 3,225.81) is billed on your final bill, against your advance."
+ * The second-to-last statement of a leaver under the advance-window rule (row.advanceCarry from computeCutoffBilling): the
+ * rent row covers the days before the advance month, and an information row shows the carried part in brackets (it is
+ * billed on the final bill against the advance and is NOT part of this statement's total). Labels: windowLabels().
  */
-export function carryRentPeriod(carry, cutoff) {
-  return periodLabel(cutoff.water_start, carry.windowStart)
-}
-export function carryNote(carry, cutoff) {
-  if (!carry) return ''
-  return `Rent for ${periodLabel(carry.windowStart, cutoff.water_end)} (${php(carry.carryCents / 100)}) is billed on your final bill, against your advance.`
+export const CARRY_ROW_LABEL = 'Rent - on final bill (vs. 1-month advance)'
+export function carryRows(carry) {
+  const lb = windowLabels(carry)
+  return {
+    rent: lb.pre,
+    info: { label: CARRY_ROW_LABEL, mid: lb.carry, amount: 0, info: true, amountText: `(${peso(carry.carryCents / 100)})` },
+  }
 }
 
 export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, copyLabel, billingDate, preparedBy, banner }) {
@@ -96,7 +99,9 @@ export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, cop
   const room = roomRow || {}
   const sp = splits.find(s => s.room_id === t.room_id && s.tenant_id === t.id && s.utility === 'WATER')
   const carry = t.advanceCarry || null
-  const charges = [{ label: 'Monthly Rent', mid: carry ? carryRentPeriod(carry, cutoff) : period, amount: t.rent }]
+  const cr = carry ? carryRows(carry) : null
+  const charges = [{ label: 'Monthly Rent', mid: cr ? cr.rent : period, amount: t.rent }]
+  if (cr) charges.push(cr.info)
   if (!t.special || t.water > 0) charges.push({ label: 'Add: Water (cu. m)', mid: cu(t.waterCons), amount: t.water })
   ;(t.addons || []).filter(a => a.bill_on !== 'ELECTRIC').forEach(a =>
     charges.push({ label: `Add: ${a.label}${a.recurring ? '' : ' · one-time'}`, mid: '', amount: Number(a.amount) }))
@@ -110,7 +115,7 @@ export function rentWaterProps({ t, cutoff, roomRow, splits, credit, billNo, cop
     name: t.name, room: t.room_no, asOf: fmt(asOf), due: fmt(due), billNo, preparedBy,
     charges,
     total: t.rent + t.water + (t.addonRentWater || 0) - (credit ? credit.amount : 0),
-    paymentNote: [carryNote(carry, cutoff), advanceNote(credit)].filter(Boolean).join(' ') || undefined,
+    paymentNote: advanceNote(credit) || undefined,
     details: t.special ? null : {
       header: ['', 'Prev Reading', 'Actual Reading', 'Actual Room Consumption (cu. m)', 'Personal Consumption'],
       rows: [['Water', reading(room.water_prev), reading(room.water_curr),

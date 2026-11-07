@@ -1,7 +1,7 @@
 // Advance window (docs/requirements.md §5): the 1-month advance of a non-month-end leaver covers the month ending on the
 // move-out date; the second-to-last statement bills only the days before it, the rest moves to the final bill.
 import { describe, it, expect } from 'vitest'
-import { advanceWindow, assertCarryRows, carryRentLines } from './advanceWindow'
+import { advanceWindow, assertCarryRows, carryRentLines, windowLabels } from './advanceWindow'
 import {
   advanceCarry, carryToStore, cutoffAdvance, creditsToStore, buildFinalBillDraft, verifyBillAgainstDb, toCents,
 } from './finalBill'
@@ -61,6 +61,43 @@ describe('advanceWindow', () => {
           // The final bill's two parts of the advance month add up to exactly one monthly rent.
           expect(r.carryCents + (R - r.carryCents)).toBe(R)
         }
+      }
+    }
+  })
+})
+
+describe('windowLabels (display only, amounts unchanged)', () => {
+  const lb = (cutoff, m) => windowLabels(win(cutoff, m))
+  it('owner example: window labelled from addMonths(M, -1): 1 Oct - 10 Oct / 11 Oct - 31 Oct / 1 Nov - 11 Nov', () => {
+    expect(lb(OCT_ACTIVE, '2026-11-11')).toEqual({ pre: '1 Oct - 10 Oct', carry: '11 Oct - 31 Oct', after: '1 Nov - 11 Nov', window: '11 Oct - 11 Nov' })
+    expect(windowLabels(WINDOW_CARRY_ROW)).toEqual(lb(OCT_ACTIVE, '2026-11-11'))
+  })
+  it('edge: out on the first day of the next window (1 Nov): the statement still bills one day, so its label is "1 Oct"', () => {
+    const w = win(OCT_ACTIVE, '2026-11-01')
+    expect(w.preCents).toBe(16129)
+    expect(windowLabels(w)).toEqual({ pre: '1 Oct', carry: '2 Oct - 31 Oct', after: '1 Nov', window: '2 Oct - 1 Nov' })
+    expect(lb(SEP_ACTIVE, '2026-10-01').pre).toBe('1 Sep')
+    expect(lb(FEB27_ACTIVE, '2027-03-01').pre).toBe('1 Feb')
+  })
+  it('edge: one-day labels and clamped month math', () => {
+    expect(lb(OCT_ACTIVE, '2026-11-02')).toMatchObject({ pre: '1 Oct', carry: '2 Oct - 31 Oct', after: '1 Nov - 2 Nov' })
+    expect(lb(OCT_ACTIVE, '2026-11-29')).toMatchObject({ pre: '1 Oct - 28 Oct', carry: '29 Oct - 31 Oct' })
+    expect(lb(FEB27_ACTIVE, '2027-03-27')).toMatchObject({ pre: '1 Feb - 26 Feb', carry: '27 Feb - 28 Feb', after: '1 Mar - 27 Mar' })
+  })
+  it('property: the three labels cover the cutoff start .. M with no gap or overlap, and the statement label is never empty', () => {
+    for (const c of [FEB27_ACTIVE, FEB28_ACTIVE, SEP_ACTIVE, OCT_ACTIVE]) {
+      const e = dayNum(c.water_end)
+      for (let m = e; m < e + 31; m++) {
+        const w = win(c, isoOfDay(m))
+        if (!w) continue
+        const l = windowLabels(w)
+        const year = c.water_start.slice(0, 4)
+        const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+        const day = (txt) => { const [d, mo] = txt.split(' '); return dayNum(`${year}-${String(MON.indexOf(mo) + 1).padStart(2, '0')}-${d.padStart(2, '0')}`) }
+        const span = (txt) => { expect(txt).toMatch(/^\d{1,2} [A-Z][a-z]{2}( - \d{1,2} [A-Z][a-z]{2})?$/); const [a, b = a] = txt.split(' - '); return [day(a), day(b)] }
+        const [p0, p1] = span(l.pre), [c0, c1] = span(l.carry), [a0, a1] = span(l.after)
+        expect([p0, c0, a0, a1]).toEqual([dayNum(c.water_start), p1 + 1, c1 + 1, m])
+        expect(p1 >= p0 && c1 >= c0 && a1 >= a0).toBe(true)
       }
     }
   })
@@ -140,14 +177,16 @@ describe('printed second-to-last statement (advance window)', () => {
   const props = (row, credit) => rentWaterProps({ t: row, cutoff, roomRow: {}, splits: [], credit, billNo: 'X-1', copyLabel: 'Tenant copy', billingDate: '2026-10-31' })
   const base = { id: 1, name: 'Tenant 1', room_id: 11, room_no: '101', water: 193.8, waterCons: 1.25, addons: [] }
 
-  it('owner example: rent 1 Oct - 11 Oct 1,774.19, no advance line, total 1,967.99, note names the carried part', () => {
+  it('owner example: Monthly Rent 1 Oct - 10 Oct 1,774.19, then the carried row 11 Oct - 31 Oct in brackets, not in the total (1,967.99); no side note', () => {
     const carry = advanceWindow({ moveOutISO: '2026-11-11', cutoff, rentCents: 500000 })
     const p = props({ ...base, rent: 1774.19, advanceCarry: carry })
-    expect(p.charges[0]).toMatchObject({ label: 'Monthly Rent', mid: '1 Oct - 11 Oct', amount: 1774.19 })
+    expect(p.charges[0]).toMatchObject({ label: 'Monthly Rent', mid: '1 Oct - 10 Oct', amount: 1774.19 })
+    expect(p.charges[1]).toMatchObject({ label: 'Rent - on final bill (vs. 1-month advance)', mid: '11 Oct - 31 Oct', amount: 0, amountText: '(₱3,225.81)', info: true })
+    expect(p.charges[2].label).toBe('Add: Water (cu. m)')
     expect(p.charges.some(c => c.label === 'Less: Advanced Payment')).toBe(false)
     expect(p.charges.every(c => c.amount >= 0)).toBe(true)
     expect(toCents(p.total)).toBe(196799)
-    expect(p.paymentNote).toBe('Rent for 12 Oct - 31 Oct (Php 3,225.81) is billed on your final bill, against your advance.')
+    expect(p.paymentNote).toBeUndefined()
   })
 
   it('a legacy stored credit still prints the credit line; a plain statement has no note', () => {
@@ -155,6 +194,7 @@ describe('printed second-to-last statement (advance window)', () => {
     const line = p.charges.find(c => c.label === 'Less: Advanced Payment')
     expect(line).toMatchObject({ mid: 'S.I# 1234', amount: -5000 })
     expect(p.charges[0].mid).toBe('1 Oct - 31 Oct')
+    expect(p.charges.some(c => c.info)).toBe(false)
     expect(p.paymentNote).toBe('Advance applied now: Php 5,000.00.')
     expect(toCents(p.total)).toBe(toCents(5000 + 193.8 - 5000))
     expect(props({ ...base, rent: 5000 }).paymentNote).toBeUndefined()
@@ -164,14 +204,15 @@ describe('printed second-to-last statement (advance window)', () => {
 describe('final bill with a stored advance window', () => {
   const rent = (d) => d.lines.filter(l => l.source === 'RENT').map(l => [l.label, l.mid, l.amount])
 
-  it('rent 12 October - 31 October 3,225.81 + 01 November - 11 November 1,774.19; full advance -5,000 credited; rent net 0', () => {
+  it('rent 11 Oct - 31 Oct 3,225.81 + 1 Nov - 11 Nov 1,774.19; full advance -5,000 credited; rent net 0', () => {
     const f = advanceWindowOut()
     const d = buildFinalBillDraft(f)
     expect(d.blocking).toEqual([])
     expect(rent(d)).toEqual([
-      ['Rent Period (20 of 31 days)', '12 October - 31 October', 3225.81],
-      ['Rent Period (completes the 1-month advance)', '01 November - 11 November', 1774.19],
+      ['Rent Period (carried from the 2nd-to-last bill, vs. 1-month advance)', '11 Oct - 31 Oct', 3225.81],
+      ['Rent Period (completes the 1-month advance)', '1 Nov - 11 Nov', 1774.19],
     ])
+    expect(d.details.stay.rent_summary).toBe('advance month 11 Oct - 11 Nov')
     expect(d.lines.find(l => l.source === 'ADVANCE')).toMatchObject({ kind: 'credit', amount: -5000 })
     expect(d.check.status).toBe('NOT_CREDITED_BEFORE')
     const rentC = d.lines.filter(l => l.source === 'RENT').reduce((s, l) => s + toCents(l.amount), 0)

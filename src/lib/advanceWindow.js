@@ -34,6 +34,28 @@ export function advanceWindow({ moveOutISO, cutoff, rentCents }) {
   return { windowStart: isoOfDay(w0), moveOut: M, cutoffDays, preDays, carryDays, carryCents, preCents: rentCents - carryCents, monthRentCents: rentCents }
 }
 
+const MON3 = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+const shortDay = (n) => { const [, m, d] = isoOfDay(n).split('-'); return `${+d} ${MON3[+m - 1]}` }
+const range = (a, b) => (a === b ? shortDay(a) : `${shortDay(a)} - ${shortDay(b)}`)
+
+/**
+ * Display labels of an advance window (amounts are not affected). The window is labelled from addMonths(M, -1) to M
+ * (out 11 Nov -> "11 Oct - 11 Nov"), so the statement's part ends the day before it and the carried part starts on it:
+ * pre "1 Oct - 10 Oct", carry "11 Oct - 31 Oct", after "1 Nov - 11 Nov". The amounts stay on the stored day counts
+ * (pre = days before window_start, carry = carry_days). When addMonths(M, -1) is the cutoff's first day (out 1 Nov for
+ * Oct) that label would leave the statement no day although it bills one, so then the labels follow the stored days
+ * (pre "1 Oct", carry "2 Oct - 31 Oct"). Accepts a carry info (windowStart, cutoffDays, carryDays, moveOut) or a
+ * rent_carryovers row. Returns { pre, carry, after, window }.
+ */
+export function windowLabels(w) {
+  const w0 = dayNum(iso10(w.windowStart ?? w.window_start))
+  const carryDays = Number(w.carryDays ?? w.carry_days), cutoffDays = Number(w.cutoffDays ?? w.cutoff_days)
+  const m = dayNum(iso10(w.moveOut ?? w.move_out_date))
+  const e = w0 + carryDays, s = e - cutoffDays
+  const start = w0 - 1 > s ? w0 - 1 : w0
+  return { pre: range(s, start - 1), carry: range(start, e - 1), after: range(e, m), window: range(start, m) }
+}
+
 /** Throws unless every rent_carryovers row is internally exact (the carry is the half-up day share of the month rent). */
 export function assertCarryRows(rows) {
   for (const r of rows || []) {
@@ -60,10 +82,11 @@ export function carryRentLines({ row, rentEndISO }) {
   const w0 = dayNum(row.window_start), e = w0 + carryDays
   const frozen = iso10(row.move_out_date), end = iso10(rentEndISO), endN = dayNum(end)
   if (end === frozen) {
+    const lb = windowLabels(row)
     return {
       lines: [
-        rentLine(`Rent Period (${carryDays} of ${W} days)`, `${dayMonth(w0)} - ${dayMonth(e - 1)}`, C),
-        rentLine('Rent Period (completes the 1-month advance)', `${dayMonth(e)} - ${dayMonth(endN)}`, R - C),
+        rentLine('Rent Period (carried from the 2nd-to-last bill, vs. 1-month advance)', lb.carry, C),
+        rentLine('Rent Period (completes the 1-month advance)', lb.after, R - C),
       ],
       exact: true, warning: null,
     }

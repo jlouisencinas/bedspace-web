@@ -4,7 +4,8 @@ import {
   setRoomSplit, saveAddon, deleteAddon,
 } from '../lib/supabase'
 import { loadCutoffBillingInputs, computeCutoffBilling } from '../lib/cutoffBilling'
-import { rentWaterRows, electricityRows, periodLabel } from '../lib/monthlyStatement'
+import { rentWaterRows, electricityRows } from '../lib/monthlyStatement'
+import { windowLabels } from '../lib/advanceWindow'
 import { billPosition, advanceConsumed } from '../lib/finalBill'
 import { cacheBilling } from '../lib/billingCache'
 import { useToast } from '../components/Toast'
@@ -262,7 +263,7 @@ export default function Billing() {
                       {billCat === 'RENT_WATER' && !t.special && cutoff && (t.advanceCarry || credits.has(t.id)
                         || (cutoff.is_active && billPosition(tenantById.get(t.id), cutoff) === 'SECOND_TO_LAST')) && (
                         <span className="badge leased ml-1.5" title={t.advanceCarry
-                          ? `The 1-month advance covers ${t.advanceCarry.windowStart} to the move-out on ${t.advanceCarry.moveOut}. Rent here covers ${periodLabel(cutoff.water_start, t.advanceCarry.windowStart)}; ${periodLabel(t.advanceCarry.windowStart, cutoff.water_end)} (${peso(t.advanceCarry.carryCents / 100)}) moves to the final bill, against the advance.`
+                          ? `The 1-month advance covers ${windowLabels(t.advanceCarry).window} (move-out ${t.advanceCarry.moveOut}). Rent here covers ${windowLabels(t.advanceCarry).pre}; ${windowLabels(t.advanceCarry).carry} (${peso(t.advanceCarry.carryCents / 100)}) moves to the final bill, against the advance.`
                           : credits.has(t.id)
                             ? 'Advance credit recorded for this period (stored before the advance-window rule).'
                             : 'Move-out falls in the next period; the advance is credited on the final bill (standard rule for this tenant).'}>2nd-to-last bill</span>
@@ -281,8 +282,8 @@ export default function Billing() {
                           {t.rent ? peso(t.rent) : '—'}
                           {t.advanceCarry && (
                             <div className="text-[10px] font-normal text-ink-muted leading-[1.3] mt-0.5 tabular-nums">
-                              covers {periodLabel(cutoff.water_start, t.advanceCarry.windowStart)}<br />
-                              {periodLabel(t.advanceCarry.windowStart, cutoff.water_end)} {peso(t.advanceCarry.carryCents / 100)} to final bill
+                              covers {windowLabels(t.advanceCarry).pre}<br />
+                              {windowLabels(t.advanceCarry).carry} ({peso(t.advanceCarry.carryCents / 100)}) on final bill
                             </div>
                           )}
                         </td>
