@@ -374,6 +374,17 @@ already-`CONVERTED` room. No approval-request fallback, consistent with the reco
   Per Room reconciliation and Collections are exactly the same whether a tenant is held or not. In print, every print page
   lets the app shell grow to its full height, so every selected statement prints on its own A4 page; before 2026-11-06 the
   app shell's one-screen height clipped the print to the first page.
+- **Per Tenant search (2026-11-07).** Billing's Per Tenant view has a search box at the end of the toolbar (inline on
+  desktop, its own full-width line on a phone; hidden in Per Room and Report). It matches the tenant name, room (also the
+  transfer origin room of a `101→102` row), and bed; case-insensitive, extra spaces ignored, every word must match
+  (`filterBillingRows` in `src/lib/billingSearch.js`). Moved-out rows are searchable. It only narrows the rows displayed,
+  in the main table and in the "Billed on final bill (one-month stays)" table (hidden, as when it has no rows, if none
+  match): "N of M" (main table) shows while searching, a no-match search shows "No tenants match …" (or, when the only
+  matches are one-month stays, says how many match there), and × or Escape clears it. The Totals rows
+  (with a note "Totals cover all tenants, not just matches"), the Report view, "Print all" and "Print selected (n)" always
+  use the full list, so no amount, count, print link or saved data changes. While searching, the header select-all holds or
+  unholds only the visible printable rows; holds of hidden rows are untouched. The search stays when the cutoff or the
+  Rent + Water / Electricity category changes and resets when the page is left.
 - **Commercial Rent + Water statement always has both rows (2026-11-07).** A `COMMERCIAL` tenant's Rent + Water statement
   lists "Monthly Rent" and "Add: Water (cu. m)" every time, also at 0.00 cu. m / P0.00 (`rentWaterProps` in
   `monthlyStatement.js`, so the Billing preview, the print page and the profile statement history all match). Before, a special

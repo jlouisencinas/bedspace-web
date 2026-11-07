@@ -9,6 +9,8 @@ import { windowRange } from '../lib/advanceWindow'
 import { commercialWaterIssues } from '../lib/commercialWater'
 import { billPosition, advanceConsumed } from '../lib/finalBill'
 import { cacheBilling } from '../lib/billingCache'
+import { filterBillingRows } from '../lib/billingSearch'
+import SearchInput from '../components/SearchInput'
 import { useToast } from '../components/Toast'
 import { useAuth } from '../lib/auth'
 import { requestApproval } from '../lib/approvals'
@@ -28,6 +30,7 @@ export default function Billing() {
   const [loading,     setLoading]     = useState(true)
   const [view,        setView]        = useState('tenants')
   const [billCat,     setBillCat]     = useState('RENT_WATER')
+  const [search,      setSearch]      = useState('')
 
   const [splits,      setSplits]      = useState([])
   const [splitRoom,   setSplitRoom]   = useState(null)
@@ -105,6 +108,18 @@ export default function Billing() {
   const selectedCount = printable.size - heldPrintable.length
   const toggleHold = (id) => saveHolds(holds.includes(id) ? holds.filter(x => x !== id) : [...holds, id])
 
+  const shown = useMemo(() => filterBillingRows(perTenant, search), [perTenant, search])
+  const shownStay = useMemo(() => filterBillingRows(stayBilled, search), [stayBilled, search])
+  const filtering = search.trim() !== ''
+  const visPrintable = shown.filter(t => printable.has(t.id))
+  const visAllPrinting = visPrintable.length > 0 && visPrintable.every(t => !holds.includes(t.id))
+  function toggleVisibleHolds() {
+    const vis = new Set(visPrintable.map(t => t.id))
+    saveHolds(visAllPrinting ? [...new Set([...holds, ...vis])] : holds.filter(id => !vis.has(id)))
+  }
+  const totalsNote = filtering && <div className="text-[10px] font-normal normal-case tracking-normal text-ink-muted">Totals cover all tenants, not just matches</div>
+  const printAllTitle = filtering ? 'Includes all tenants, not only the search matches' : undefined
+
   const splitFlags = useMemo(() => {
     const s = new Set(); splits.forEach(x => s.add(`${x.room_id}|${x.utility}`)); return s
   }, [splits])
@@ -174,10 +189,10 @@ export default function Billing() {
 
         {view === 'tenants' && canPrint && cutoffId && (
           <div className="flex gap-1.5 items-center flex-wrap">
-            <Link className="btn-xs blue inline-flex items-center gap-1" to={`${printPath}?cutoff=${cutoffId}`}><Printer size={11} /> Print all</Link>
+            <Link className="btn-xs blue inline-flex items-center gap-1" to={`${printPath}?cutoff=${cutoffId}`} title={printAllTitle}><Printer size={11} /> Print all</Link>
             {selectedCount > 0 && heldPrintable.length > 0
-              ? <Link className="btn-xs blue inline-flex items-center gap-1" to={`${printPath}?cutoff=${cutoffId}&skip=${heldPrintable.join(',')}`}><Printer size={11} /> Print selected ({selectedCount})</Link>
-              : <button className="btn-xs" disabled><Printer size={11} /> Print selected ({selectedCount})</button>}
+              ? <Link className="btn-xs blue inline-flex items-center gap-1" to={`${printPath}?cutoff=${cutoffId}&skip=${heldPrintable.join(',')}`} title={printAllTitle}><Printer size={11} /> Print selected ({selectedCount})</Link>
+              : <button className="btn-xs" disabled title={printAllTitle}><Printer size={11} /> Print selected ({selectedCount})</button>}
             {holds.length > 0 && <button className="btn-xs" onClick={() => saveHolds([])} title="Holds are kept in this browser only">Clear holds ({holds.length})</button>}
           </div>
         )}
@@ -196,6 +211,24 @@ export default function Billing() {
               </button>
             ))}
           </div>
+        )}
+
+        {view === 'tenants' && (
+          <div className="relative w-full sm:w-60">
+            <SearchInput value={search} onChange={e => setSearch(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Escape') setSearch('') }}
+              placeholder="Search name, room, bed…" aria-label="Search tenants"
+              className="w-full !pr-8 [&::-webkit-search-cancel-button]:hidden" />
+            {search && (
+              <button type="button" onClick={() => setSearch('')} aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-faint hover:text-ink">
+                <X size={13} />
+              </button>
+            )}
+          </div>
+        )}
+        {view === 'tenants' && filtering && (
+          <span className="text-[12px] text-ink-muted">{shown.length} of {perTenant.length}</span>
         )}
 
       </div>
@@ -227,8 +260,11 @@ export default function Billing() {
               <tr>
                 {canPrint && (
                   <th className="w-8" title="Print: untick to hold a statement and print it later">
-                    <input type="checkbox" checked={printable.size > 0 && heldPrintable.length === 0} disabled={!printable.size}
-                      onChange={() => saveHolds(heldPrintable.length === 0 ? [...new Set([...holds, ...printable])] : holds.filter(id => !printable.has(id)))} />
+                    {filtering
+                      ? <input type="checkbox" checked={visAllPrinting} disabled={!visPrintable.length} onChange={toggleVisibleHolds}
+                          title="Select or hold only the rows shown by the search" />
+                      : <input type="checkbox" checked={printable.size > 0 && heldPrintable.length === 0} disabled={!printable.size}
+                          onChange={() => saveHolds(heldPrintable.length === 0 ? [...new Set([...holds, ...printable])] : holds.filter(id => !printable.has(id)))} />}
                   </th>
                 )}
                 <th>Tenant</th><th>Room</th><th>Bed</th>
@@ -255,7 +291,14 @@ export default function Billing() {
               </tr>
             </thead>
             <tbody>
-              {perTenant.map(t => {
+              {filtering && shown.length === 0 && (
+                <tr><td colSpan={(canPrint ? 1 : 0) + 3 + (billCat === 'RENT_WATER' ? 7 : 6)} className="text-left sm:text-center text-ink-muted py-6">
+                  {/* sticky: on a phone the wide table scrolls sideways, so a centred cell would put the text off-screen */}
+                  <div className="sticky left-0 max-w-[85vw] whitespace-normal sm:static sm:max-w-none">{shownStay.length
+                    ? <>No tenants match "{search.trim()}" in this table; {shownStay.length} match in the one-month stays below.</>
+                    : <>No tenants match "{search.trim()}".</>}</div></td></tr>
+              )}
+              {shown.map(t => {
                 const rwTotal   = (t.rent || 0) + (t.water || 0) + (t.addonRentWater || 0)
                 const elecTotal = (t.elec  || 0) + (t.addonElectric || 0)
                 return (
@@ -373,7 +416,7 @@ export default function Billing() {
             <tfoot>
               {billCat === 'RENT_WATER' ? (
                 <tr className="bg-surface-2 border-t-2 border-navy-700">
-                  <td colSpan={canPrint ? 4 : 3} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wide">Totals</td>
+                  <td colSpan={canPrint ? 4 : 3} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wide">Totals{totalsNote}</td>
                   <td className="text-right font-extrabold">{peso(totals.rent)}</td>
                   <td colSpan={2}></td>
                   <td></td>
@@ -383,7 +426,7 @@ export default function Billing() {
                 </tr>
               ) : (
                 <tr className="bg-surface-2 border-t-2 border-amber-500">
-                  <td colSpan={canPrint ? 4 : 3} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wide">Totals</td>
+                  <td colSpan={canPrint ? 4 : 3} className="text-[11px] font-extrabold text-ink-muted uppercase tracking-wide">Totals{totalsNote}</td>
                   <td colSpan={2}></td>
                   <td></td>
                   <td className="text-right font-extrabold">{peso(totals.elec)}</td>
@@ -399,13 +442,13 @@ export default function Billing() {
               It reduces what is owed (an adjustment, not a payment); the totals above are before the credit.
             </div>
           )}
-          {stayBilled.length > 0 && (
+          {shownStay.length > 0 && (
             <div className="px-4 py-3 border-t border-line-subtle">
               <div className="text-[11px] font-bold uppercase tracking-wider text-ink-faint mb-1.5">Billed on final bill (one-month stays)</div>
               <table>
                 <thead><tr><th>Tenant</th><th>Room</th><th>Bed</th><th>Stay</th><th className="text-right">Monthly rate</th><th></th></tr></thead>
                 <tbody>
-                  {stayBilled.map(t => (
+                  {shownStay.map(t => (
                     <tr key={t.id}>
                       <td className="td-name">{t.name}</td><td>{t.room_no}</td><td><strong>{t.bed}</strong></td>
                       <td>{t.move_in} to {t.move_out}</td><td className="text-right">{peso(t.rate)}</td>
